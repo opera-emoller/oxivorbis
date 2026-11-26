@@ -295,11 +295,18 @@ pub struct Options {
     /// Ogg stream serial number; `None` = [`DEFAULT_SERIAL`]. Streams
     /// that are chained or multiplexed together need distinct serials.
     pub serial: Option<u32>,
-    /// Comment-header vendor string; `None` = [`DEFAULT_VENDOR`].
+    /// Comment-header vendor string; `None` = [`DEFAULT_VENDOR`]. Written
+    /// as given (any UTF-8); a vendor string or comment longer than
+    /// `u32::MAX` bytes is truncated to that length.
     pub vendor: Option<String>,
     /// User comments (`("TITLE", "...")` etc.), written to the comment
-    /// header in order as `KEY=value`. Vorbis expects keys of printable
-    /// ASCII without `=`; they are written as given.
+    /// header in order as `KEY=value`.
+    ///
+    /// The Vorbis spec allows only ASCII 0x20..=0x7D other than `=` in
+    /// keys, so any other byte is dropped from the key: `"A=B"` becomes
+    /// `"AB"`, `"TÍTLE"` becomes `"TTLE"`. A comment whose key is left
+    /// empty (including an empty key) is skipped. Values are written as
+    /// given and may contain `=` and any UTF-8.
     pub comments: Vec<(String, String)>,
 }
 
@@ -327,7 +334,18 @@ impl Options {
         self
     }
 
-    /// Append a user comment `key=value`.
+    /// Append a user comment `key=value`. Bytes the Vorbis spec doesn't
+    /// allow in a key (anything outside ASCII 0x20..=0x7D, and `=`) are
+    /// dropped from `key`, and the comment is skipped if no key is left;
+    /// see [`Options::comments`].
+    ///
+    /// ```
+    /// # use lewtoff::Options;
+    /// let opts = Options::default()
+    ///     .with_comment("TITLE", "a=b")  // TITLE=a=b
+    ///     .with_comment("A=B", "v")      // written as AB=v
+    ///     .with_comment("", "skipped");  // not written
+    /// ```
     pub fn with_comment(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.comments.push((key.into(), value.into()));
         self
@@ -338,7 +356,7 @@ impl Options {
         let comments: Vec<Vec<u8>> = self
             .comments
             .iter()
-            .map(|(k, v)| format!("{k}={v}").into_bytes())
+            .filter_map(|(k, v)| comment_bytes(k, v))
             .collect();
         encode::EncoderCore::new(
             rate,
@@ -349,6 +367,22 @@ impl Options {
             &comments,
         )
     }
+}
+
+/// `KEY=value` bytes for one user comment, with the key reduced to what
+/// the Vorbis comment spec allows (ASCII 0x20..=0x7D except `=`); `None`
+/// if no key byte survives.
+fn comment_bytes(key: &str, value: &str) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = key
+        .bytes()
+        .filter(|&b| (0x20..=0x7D).contains(&b) && b != b'=')
+        .collect();
+    if out.is_empty() {
+        return None;
+    }
+    out.push(b'=');
+    out.extend_from_slice(value.as_bytes());
+    Some(out)
 }
 
 /// Streaming Ogg Vorbis encoder.

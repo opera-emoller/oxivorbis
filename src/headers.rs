@@ -68,9 +68,13 @@ pub fn write_id_header_with(
 /// Write the Vorbis comment header packet (packet type 0x03): the vendor
 /// string, then each user comment (`KEY=value` bytes) in order.
 ///
-/// Per Vorbis I §4.2.3.
+/// Per Vorbis I §4.2.3. Lengths and the comment count are 32-bit fields:
+/// a string longer than `u32::MAX` bytes is truncated to `u32::MAX` bytes
+/// and comments past the `u32::MAX`th are dropped, so the header always
+/// stays self-consistent (rather than the length wrapping).
 pub fn write_comment_header<C: AsRef<[u8]>>(w: &mut BitWriter, vendor: &[u8], comments: &[C]) {
     let write_str = |w: &mut BitWriter, s: &[u8]| {
+        let s = &s[..s.len().min(U32_MAX)];
         w.write(s.len() as u32, 32);
         for &b in s {
             w.write(b as u32, 8);
@@ -81,12 +85,16 @@ pub fn write_comment_header<C: AsRef<[u8]>>(w: &mut BitWriter, vendor: &[u8], co
         w.write(b as u32, 8);
     }
     write_str(w, vendor);
+    let comments = &comments[..comments.len().min(U32_MAX)];
     w.write(comments.len() as u32, 32);
     for c in comments {
         write_str(w, c.as_ref());
     }
     w.write(1, 1);
 }
+
+/// `u32::MAX` as a length (`usize::MAX` where usize is narrower).
+const U32_MAX: usize = u32::MAX as usize;
 
 /// Write a complete, pre-built setup header packet (as produced by the
 /// setup generator; it already starts with the 0x05 + "vorbis" sync).

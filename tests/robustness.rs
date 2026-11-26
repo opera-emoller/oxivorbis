@@ -458,3 +458,77 @@ fn adversarial_f32_tiny_inputs() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Comment header
+// ---------------------------------------------------------------------------
+
+/// Encode a short clip with `opts` and return lewton's view of the
+/// comment header: (vendor, [(key, value)]).
+fn decoded_comments(opts: &Options) -> (String, Vec<(String, String)>) {
+    let ogg = lewtoff::encode(&[0i16; 4410], SampleRate::Hz44100, Channels::Mono, opts);
+    let rdr = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(&ogg))
+        .expect("lewton rejects the headers");
+    (rdr.comment_hdr.vendor, rdr.comment_hdr.comment_list)
+}
+
+fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+    v.iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// Keys are reduced to the bytes the Vorbis comment spec allows (ASCII
+/// 0x20..=0x7D except '='); comments left without a key are skipped;
+/// values and the vendor string are written as given.
+#[test]
+fn comment_keys_are_sanitized() {
+    let opts = Options::default()
+        .with_vendor("vendör = 1.0")
+        .with_comment("TITLE", "Example")
+        .with_comment("A=B", "v")
+        .with_comment("", "empty key")
+        .with_comment("==", "only equals")
+        .with_comment("TÍTLE", "non-ASCII key")
+        .with_comment("ÄÖ", "nothing left")
+        .with_comment("\tKEY\n\u{7f}~", "controls, DEL and ~ dropped")
+        .with_comment("SP ACE}", "space and } kept")
+        .with_comment("K", "a=b=c ü\u{0}");
+    let (vendor, comments) = decoded_comments(&opts);
+    assert_eq!(vendor, "vendör = 1.0");
+    assert_eq!(
+        comments,
+        pairs(&[
+            ("TITLE", "Example"),
+            ("AB", "v"),
+            ("TTLE", "non-ASCII key"),
+            ("KEY", "controls, DEL and ~ dropped"),
+            ("SP ACE}", "space and } kept"),
+            ("K", "a=b=c ü\u{0}"),
+        ])
+    );
+}
+
+/// Valid keys are untouched, and setting no comments writes none.
+#[test]
+fn comment_defaults_and_valid_keys() {
+    let (vendor, comments) = decoded_comments(&Options::default());
+    assert_eq!(vendor, lewtoff::DEFAULT_VENDOR);
+    assert!(comments.is_empty());
+
+    let printable: String = (0x20u8..=0x7D)
+        .filter(|&b| b != b'=')
+        .map(char::from)
+        .collect();
+    let opts = Options::default()
+        .with_comment(printable.clone(), "all allowed bytes")
+        .with_comment("artist", "lowercase kept");
+    let (_, comments) = decoded_comments(&opts);
+    assert_eq!(
+        comments,
+        vec![
+            (printable, "all allowed bytes".to_string()),
+            ("artist".to_string(), "lowercase kept".to_string()),
+        ]
+    );
+}
