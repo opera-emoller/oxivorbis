@@ -279,6 +279,7 @@ fn setup_cache_is_thread_safe() {
 /// at most 256 long blocks in flight), at q5 and q-1 (4096-sample blocks).
 /// The serial build trails by well under a second.
 #[test]
+#[cfg_attr(debug_assertions, ignore = "45 s of audio; run with --release")]
 fn streaming_lag_is_bounded() {
     let pcm = music(45 * 44_100, 5);
     let pool = rayon::ThreadPoolBuilder::new()
@@ -406,57 +407,78 @@ fn adversarial(frames: usize, ch: usize) -> Vec<(&'static str, Vec<f32>)> {
     v
 }
 
-/// Extreme finite f32 at q-1/0/5/10 in every config: no panic (debug
-/// builds check integer overflow) and a stream lewton decodes to the
-/// right length.
-#[test]
-fn adversarial_f32_decodes() {
+/// Extreme finite f32 at q-1/0/5/10: no panic (debug builds check
+/// integer overflow) and a stream lewton decodes to the right length.
+fn adversarial_f32_decodes(rate: SampleRate, channels: Channels) {
     // Shorter in debug builds, which are slow.
     let frames = if cfg!(debug_assertions) {
         9_000
     } else {
         30_000
     };
-    for (rate, channels) in CONFIGS {
-        let ch = channels.count() as usize;
-        for (name, pcm) in adversarial(frames, ch) {
-            for q in [-1.0f32, 0.0, 5.0, 10.0] {
-                let opts = Options::default().with_quality(Quality::new(q).unwrap());
-                let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
-                let got = decode(&ogg);
-                assert_eq!(
-                    got, frames,
-                    "{name} q{q} {rate:?} {channels:?}: decoded {got} frames"
-                );
-            }
+    let ch = channels.count() as usize;
+    for (name, pcm) in adversarial(frames, ch) {
+        for q in [-1.0f32, 0.0, 5.0, 10.0] {
+            let opts = Options::default().with_quality(Quality::new(q).unwrap());
+            let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+            let got = decode(&ogg);
+            assert_eq!(
+                got, frames,
+                "{name} q{q} {rate:?} {channels:?}: decoded {got} frames"
+            );
         }
     }
 }
 
 /// A single huge sample, alone and in tiny inputs.
-#[test]
-fn adversarial_f32_tiny_inputs() {
-    for (rate, channels) in CONFIGS {
-        let ch = channels.count() as usize;
-        for v in [
-            3.3e7f32,
-            -3.3e7,
-            1e30,
-            f32::MAX,
-            f32::MIN,
-            f32::MIN_POSITIVE,
-        ] {
-            for frames in [1usize, 2, 64, 300] {
-                let pcm = vec![v; frames * ch];
-                for q in [-1.0f32, 0.0, 5.0, 10.0] {
-                    let opts = Options::default().with_quality(Quality::new(q).unwrap());
-                    let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
-                    let got = decode(&ogg);
-                    assert_eq!(got, frames, "{v} x{frames} q{q} {rate:?} {channels:?}");
-                }
+fn adversarial_f32_tiny_inputs(rate: SampleRate, channels: Channels) {
+    let ch = channels.count() as usize;
+    for v in [
+        3.3e7f32,
+        -3.3e7,
+        1e30,
+        f32::MAX,
+        f32::MIN,
+        f32::MIN_POSITIVE,
+    ] {
+        for frames in [1usize, 2, 64, 300] {
+            let pcm = vec![v; frames * ch];
+            for q in [-1.0f32, 0.0, 5.0, 10.0] {
+                let opts = Options::default().with_quality(Quality::new(q).unwrap());
+                let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+                let got = decode(&ogg);
+                assert_eq!(got, frames, "{v} x{frames} q{q} {rate:?} {channels:?}");
             }
         }
     }
+}
+
+/// One test per config, so the test runner can spread them over cores.
+macro_rules! adversarial_tests {
+    ($($config:ident: $rate:ident, $ch:ident;)*) => {
+        mod adversarial_f32 {
+            use super::*;
+            $(
+                mod $config {
+                    use super::*;
+                    #[test]
+                    fn decodes() {
+                        adversarial_f32_decodes(SampleRate::$rate, Channels::$ch);
+                    }
+                    #[test]
+                    fn tiny_inputs() {
+                        adversarial_f32_tiny_inputs(SampleRate::$rate, Channels::$ch);
+                    }
+                }
+            )*
+        }
+    };
+}
+adversarial_tests! {
+    hz44100_stereo: Hz44100, Stereo;
+    hz44100_mono: Hz44100, Mono;
+    hz48000_stereo: Hz48000, Stereo;
+    hz48000_mono: Hz48000, Mono;
 }
 
 // ---------------------------------------------------------------------------
