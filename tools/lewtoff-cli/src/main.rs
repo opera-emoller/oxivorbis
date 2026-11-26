@@ -20,6 +20,17 @@ fn die(msg: &str) -> ! {
     std::process::exit(2);
 }
 
+/// `r.read(buf)`, retried when a signal interrupts it (EINTR) before any
+/// data was read.
+fn read_retrying(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match r.read(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            other => return other,
+        }
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let stream = args.first().is_some_and(|a| a == "--stream");
@@ -60,7 +71,8 @@ fn main() {
         let mut carry: Option<u8> = None;
         let mut samples: Vec<i16> = Vec::with_capacity(buf.len() / 2 + 1);
         loop {
-            let n = stdin.read(&mut buf).expect("read stdin failed");
+            let n = read_retrying(&mut stdin, &mut buf)
+                .unwrap_or_else(|e| die(&format!("read stdin failed: {e}")));
             if n == 0 {
                 break;
             }
@@ -92,4 +104,43 @@ fn main() {
 
     let ogg = lewtoff::encode(&samples, rate, channels, &opts);
     out.write_all(&ogg).expect("write stdout failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_retrying;
+    use std::io::{self, Read};
+
+    /// Fails with `Interrupted` on every other call.
+    struct Flaky<'a>(&'a [u8], bool);
+    impl Read for Flaky<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.1 = !self.1;
+            if self.1 {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            self.0.read(buf)
+        }
+    }
+
+    #[test]
+    fn retries_interrupted_reads() {
+        let mut r = Flaky(b"abc", false);
+        let mut buf = [0u8; 8];
+        assert_eq!(read_retrying(&mut r, &mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], b"abc");
+        assert_eq!(read_retrying(&mut r, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn other_errors_propagate() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        let err = read_retrying(&mut Broken, &mut [0u8; 4]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
 }
