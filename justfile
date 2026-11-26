@@ -27,6 +27,7 @@ fmt-check:
 clippy:
     cargo clippy --all-targets -- -D warnings
     cargo clippy --all-targets --features parallel -- -D warnings
+    cargo clippy --workspace --all-targets --features lewtoff/oracle,lewtoff/parallel -- -D warnings
 
 # All unit + integration tests. Uses cargo-nextest if available
 # (~40% faster wall-clock and ~99% less output on green runs).
@@ -43,10 +44,28 @@ test:
 test-verbose:
     cargo nextest run --no-tests=warn
 
+# Build every C oracle from the pristine vendored libvorbis 1.3.7 /
+# libogg 1.3.5 (checksums verified first). Needs only a C compiler.
+oracles:
+    ./tools/oracle-encoder/build.sh
+    ./tools/oracle-encoder/build_quality_dumpers.sh
+    ./tools/oracle-encoder/build_dsp_oracle.sh
+
+# Regenerate every oracle-derived committed file and fail on any diff
+# (what CI runs on Linux/gcc and macOS/clang).
+check-fresh: oracles
+    ./tools/oracle-encoder/check_fresh.sh
+
+# The release-only streaming tests (10 s chunking invariance, pages before
+# finish, bounded buffer over 10 minutes), as CI runs them.
+test-release:
+    cargo nextest run --release --no-tests=fail \
+        -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes))'
+
 # Oracle parity: encodes the same input via lewtoff and via the in-tree
-# oracle-encoder (libvorbis 1.3.7, deterministic flags), byte-diffs the
-# output. Runs both serial and parallel paths so a regression in either
-# is caught locally.
+# oracle-encoder (pristine libvorbis 1.3.7, deterministic flags) and
+# byte-diffs the output. Runs both serial and parallel paths so a
+# regression in either is caught locally.
 parity:
     cargo nextest run --features oracle --no-tests=warn parity_
     cargo nextest run --features oracle,parallel --no-tests=warn parity_
@@ -179,16 +198,22 @@ parity-diff a b:
 # Regenerate src/setup_books.bin (every reachable static codebook, packed
 # by libvorbis's vorbis_staticbook_pack) and src/setup_templates.rs (the
 # floor/residue/mapping/setup templates) from the vendored libvorbis.
-# Requires a C compiler and libogg headers.
+# Requires a C compiler.
 regen-setup-templates:
     ./tools/gen-setup-templates/run.sh
 
-# Regenerate tests/vectors/headers/*.bin reference files from a fresh
-# ffmpeg-libvorbis encode for each supported (rate × channels) combo.
+# Regenerate tests/vectors/headers/*.bin and tests/vectors/ogg/* from the
+# oracle-encoder for each supported (rate × channels) combo.
 regen-header-vectors:
+    ./tools/oracle-encoder/build.sh
     cargo run -p gen-header-vectors
-    # tests/vectors/headers/setup.bin is a frozen libvorbis Q5 setup header;
-    # the generated one is checked against golden hashes in setup_gen tests.
+
+# Rewrite tests/vectors/golden/*.ogg (the oracle outputs tests/golden.rs
+# compares against, also on wasm) from a fresh oracle run.
+regen-golden-vectors:
+    ./tools/oracle-encoder/build.sh
+    LEWTOFF_BLESS=1 cargo nextest run --features oracle --no-tests=fail \
+        -E 'binary(golden) & test(golden_vectors_are_fresh)'
 
 # Regenerate src/tables/quality.rs (libvorbis 44.1/48 kHz mode-template
 # tables for quality-dependent setup) by compiling the vendored headers.
@@ -217,67 +242,38 @@ regen-dsp-manifest:
     ./tools/oracle-encoder/build_dsp_oracle.sh
     ./tools/oracle-encoder/dsp_oracle manifest > tools/oracle-encoder/dsp_manifest.txt
 
-# Regenerate tests/vectors/mdct/*.bin from libvorbis 1.3.7.
-# Requires ~/Documents/src/libvorbis cloned and clang on PATH.
+# Regenerate tests/vectors/mdct/*.bin (n=2048 forward MDCT) from the
+# pristine vendored libvorbis 1.3.7 mdct.c. Requires a C compiler.
 regen-mdct-vectors:
-    mkdir -p tests/vectors/mdct
-    clang -O2 -ffp-contract=off -o tools/gen-vectors-mdct/harness \
-        tools/gen-vectors-mdct/harness.c \
-        ~/Documents/src/libvorbis/lib/mdct.c \
-        -I$HOME/Documents/src/libvorbis/lib \
-        -I$HOME/Documents/src/libvorbis/include \
-        -I/opt/homebrew/include \
-        -lm
-    cd tests/vectors/mdct && $PWD/../../../tools/gen-vectors-mdct/harness
-    rm tools/gen-vectors-mdct/harness
+    ./tools/gen-vectors-mdct/run.sh
 
-# Headless wasm parity check (uses wasm-pack + a node runtime).
+# The non-oracle test suite on wasm32-wasip1 under wasmtime: unit tests
+# (incl. the DSP manifest), header/MDCT vectors, encode smoke tests, the
+# psy snapshot and tests/golden.rs (lewtoff vs committed oracle output),
+# exercising wasm's own libm and codegen. Needs wasmtime on PATH
+# (`brew install wasmtime`, or see https://wasmtime.dev).
 wasm-test:
-    wasm-pack test --node
+    rustup target add wasm32-wasip1
+    CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test --target wasm32-wasip1 \
+        --lib --test golden --test encode_smoke --test headers --test ogg_headers \
+        --test mdct --test psy --test codebook
 
+# Debug dumps of the first short block of a 440 Hz sine, from the
+# INSTRUMENTED libvorbis copy (tools/debug-libvorbis-dump, not the oracle).
 debug-dump-c:
-    #!/usr/bin/env bash
-    set -e
-    TOOL=tools/debug-libvorbis-dump
-    /usr/bin/clang -O0 -g -std=c11 -ffp-contract=off \
-      -I$TOOL/vendored-libvorbis \
-      -I$TOOL/vendored-libvorbis/include \
-      -I/opt/homebrew/include \
-      $TOOL/harness.c \
-      $TOOL/vendored-libvorbis/debug_dump.c \
-      $TOOL/vendored-libvorbis/analysis.c \
-      $TOOL/vendored-libvorbis/bitrate.c \
-      $TOOL/vendored-libvorbis/block.c \
-      $TOOL/vendored-libvorbis/codebook.c \
-      $TOOL/vendored-libvorbis/envelope.c \
-      $TOOL/vendored-libvorbis/floor0.c \
-      $TOOL/vendored-libvorbis/floor1.c \
-      $TOOL/vendored-libvorbis/info.c \
-      $TOOL/vendored-libvorbis/lookup.c \
-      $TOOL/vendored-libvorbis/lpc.c \
-      $TOOL/vendored-libvorbis/lsp.c \
-      $TOOL/vendored-libvorbis/mapping0.c \
-      $TOOL/vendored-libvorbis/mdct.c \
-      $TOOL/vendored-libvorbis/misc.c \
-      $TOOL/vendored-libvorbis/psy.c \
-      $TOOL/vendored-libvorbis/registry.c \
-      $TOOL/vendored-libvorbis/res0.c \
-      $TOOL/vendored-libvorbis/sharedbook.c \
-      $TOOL/vendored-libvorbis/smallft.c \
-      $TOOL/vendored-libvorbis/synthesis.c \
-      $TOOL/vendored-libvorbis/vorbisenc.c \
-      $TOOL/vendored-libvorbis/window.c \
-      -L/opt/homebrew/lib -logg -lm \
-      -o $TOOL/harness
-    $TOOL/harness
-    echo "dumps in /tmp/lewtoff-debug/c_*"
+    mkdir -p /tmp/lewtoff-debug
+    ./tools/debug-libvorbis-dump/build.sh
+    ./tools/debug-libvorbis-dump/harness
+    @echo "dumps in /tmp/lewtoff-debug/c_*"
 
 debug-dump-rust:
-    LEWTOFF_DEBUG_DUMP=1 cargo run --bin debug-rust-dump
-    echo "dumps in /tmp/lewtoff-debug/r_*"
+    mkdir -p /tmp/lewtoff-debug
+    LEWTOFF_DEBUG_DUMP=1 cargo run -p debug-rust-dump
+    @echo "dumps in /tmp/lewtoff-debug/r_*"
 
-debug-diff: debug-dump-rust
-    cargo run --bin debug-diff
+# Layer-by-layer comparison of the two dumps.
+debug-diff: debug-dump-c debug-dump-rust
+    cargo run -p debug-diff
 
 clean:
     cargo clean

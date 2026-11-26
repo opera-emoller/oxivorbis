@@ -6,13 +6,18 @@ This product includes software developed by the Xiph.Org Foundation
 
 The Rust source under src/ is a clean-room port of portions of libvorbis
 1.3.7 <https://github.com/xiph/vorbis>, which is distributed under the
-3-clause BSD license reproduced below. lewtoff additionally vendors a
-copy of the libvorbis source under
-tools/debug-libvorbis-dump/vendored-libvorbis/ for use as a parity
-oracle during development; that copy retains its upstream BSD license
-unchanged. See tools/debug-libvorbis-dump/vendored-libvorbis/COPYING for
-the verbatim text and the per-file headers for individual copyright
-holders.
+3-clause BSD license reproduced below.
+
+The repository (not the published crate) additionally vendors, for use
+as parity oracles during development:
+- the unmodified libvorbis 1.3.7 sources under tools/libvorbis-1.3.7/;
+- the unmodified libogg 1.3.5 sources under tools/libogg-1.3.5/
+  (Copyright (c) 2002, Xiph.org Foundation, same 3-clause BSD terms);
+- an instrumented copy of libvorbis under
+  tools/debug-libvorbis-dump/vendored-libvorbis/, for debugging only.
+Each retains its upstream BSD license; see the COPYING file in each
+directory for the verbatim text and the per-file headers for individual
+copyright holders.
 
 ----------------------------------------------------------------------
 
