@@ -49,9 +49,12 @@
 //! # Cargo features
 //!
 //! - **`parallel`** (off by default): analyze blocks (MDCT, psychoacoustics,
-//!   floor, residue) on the global Rayon thread pool. The API and the output
-//!   bytes are unchanged; long inputs encode several times faster. Leave it
-//!   off for `wasm32` targets and when you already parallelize across files.
+//!   floor, residue) on the current Rayon thread pool. The API and the
+//!   output bytes are unchanged; long inputs encode several times faster.
+//!   Streaming output trails the input by up to about 16 s of audio.
+//!   Encoding from inside a Rayon pool (e.g. one file per `par_iter` item)
+//!   is safe. Leave it off for `wasm32` targets; it isn't needed when you
+//!   already parallelize across files.
 //!
 //! The crate has no other public features; `oracle` and `__internal` exist
 //! only for this crate's own test suite and are not part of the API.

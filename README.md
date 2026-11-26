@@ -130,10 +130,14 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
   (512/4096-sample blocks) and match byte for byte as well.
 - **f32 edge cases:** values outside ±1.0, subnormals and `-0.0` are
   encoded the way libvorbis encodes them. Parity is tested up to ±10⁴.
-  At extreme magnitudes libvorbis's own float-to-int conversions are
-  undefined, but lewtoff still produces a valid stream. NaN and
-  ±infinity make libvorbis emit a corrupt stream, so lewtoff encodes
-  them as `0.0`.
+  At extreme magnitudes, quantized values pass ±2³¹, where libvorbis's
+  float-to-int conversions are undefined behaviour in C. lewtoff's
+  conversions saturate instead (Rust `as`), and the integer sums over
+  them wrap, as C's do in practice. The result is always a valid,
+  decodable stream, but it is not guaranteed to match libvorbis there.
+  This is tested up to ±`f32::MAX` at every quality and configuration
+  with overflow checks on. NaN and ±infinity make libvorbis emit a
+  corrupt stream, so lewtoff encodes them as `0.0`.
 - **Odd sample counts in stereo:** `Encoder::write` holds an unpaired
   trailing sample until the next call. `finish` and the one-shot
   functions drop a final unpaired sample.
@@ -145,8 +149,13 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
 
 - **Audio:** every audio packet, granule position and page boundary is
   identical to what libvorbis 1.3.7 produces when it is built without
-  FMA contraction and fed the same samples in 64-frame
-  `vorbis_analysis_wrote` chunks. How you split the input across
+  FMA contraction, with a stable `qsort`, and fed the same samples in
+  64-frame `vorbis_analysis_wrote` chunks. The `qsort` condition matters
+  at q0 to q3 only: libvorbis's noise normalization sorts values that
+  can tie, and lewtoff breaks ties the stable way. The reference build
+  links a stable merge sort. glibc's `qsort`, a merge sort, gives the
+  same order. macOS libc's `qsort` can order ties differently, so stock
+  libvorbis on macOS can differ from lewtoff at q0 to q3. How you split the input across
   `write` calls does not affect the output. The concatenated output of
   `write`/`write_f32` and `finish` is exactly what `encode`/`encode_f32`
   return.
@@ -173,11 +182,17 @@ lewtoff's output is also identical on Windows x86_64 (MSVC).
 
 This works because libvorbis's encoder uses f32 throughout. Without FMA
 contraction, Rust's `f32` arithmetic on every tier-1 target gives the
-same IEEE 754 results as that C build. Transcendentals
-(`sin`/`cos`/`log`/`exp`) are precomputed into tables taken from
-libvorbis, so at runtime the encoder only does table lookups and
-arithmetic, and platform libm differences don't matter. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
+same IEEE 754 results as that C build. The per-block work is that
+arithmetic, `sqrt` (correctly rounded everywhere) and table lookups.
+The MDCT, FFT and block-window trig tables are taken bit for bit from
+libvorbis. A few setup-time tables do call the platform libm, as
+libvorbis does: the envelope analysis windows (`sin`), and the
+psychoacoustic model's bark and octave scales, ATH and tone-curve maps
+(`atan`, `log`, `exp`). libm results can differ by an ulp between
+platforms. Every decision those values feed (rounded band edges and
+comparisons) has been checked to be robust to ±1 ulp in all supported
+configurations, so the output does not depend on the platform's libm.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
 ## Features
 
@@ -187,12 +202,32 @@ arithmetic, and platform libm differences don't matter. See
 
 The `parallel` feature spreads per-block analysis (MDCT, FFT,
 psychoacoustics, floor, residue) across the global
-[Rayon](https://crates.io/crates/rayon) thread pool. Envelope analysis,
+[Rayon](https://crates.io/crates/rayon) thread pool, or across the
+current pool when called inside `ThreadPool::install`. Envelope analysis,
 bit-packing and Ogg page emission stay serial. The API is unchanged and
-the output bytes are identical to the serial build. Blocks are
-processed in bounded, pipelined batches of 32 × the thread count, so
-streaming memory stays bounded. In exchange, `write` hands back pages a
-few seconds of audio later than the serial build.
+the output bytes are identical to the serial build.
+
+Blocks are processed in pipelined batches of 32 per Rayon thread, capped
+at 256 long blocks (about 6 s of 44.1 kHz audio), with up to three
+batches in flight. In exchange for the speed, `write` hands back pages
+later than the serial build, and streaming uses more memory. Both are
+bounded, independent of input length and, past 8 threads, of the core
+count. Measured streaming 10 minutes of 44.1 kHz stereo at q5:
+
+| Rayon threads | Output lag behind input | Peak RSS |
+|---------------|-------------------------|----------|
+| serial build  | 0.35 s                  | 3.6 MB   |
+| 1             | 2.4 s                   | 6.0 MB   |
+| 10            | 15.6 s                  | 19 MB    |
+| 64            | 15.6 s                  | 30 MB    |
+
+The lag bound is about 16 s of audio at any thread count and quality.
+Memory grows slowly past 10 threads from per-thread scratch buffers.
+
+Encoding from inside a Rayon pool also works, for example one file per
+`par_iter` item or under `ThreadPool::install`, including a 1-thread
+pool. On a pool thread each batch runs on Rayon's work-stealing joins
+instead of blocking, so there is no deadlock and no oversubscription.
 
 Leave `parallel` off in these cases:
 
@@ -200,8 +235,8 @@ Leave `parallel` off in these cases:
   cross-origin isolation headers. The default build has no such
   requirements and compiles for `wasm32-unknown-unknown` as is.
 - **You already parallelize across files**, for example in an asset
-  pipeline. Rayon would not oversubscribe the CPU, but the per-batch
-  bookkeeping is overhead you don't need.
+  pipeline. That is safe with `parallel` on, but it isn't needed: one
+  file per core already keeps the CPU busy.
 - **Short clips:** sub-second inputs have too few blocks to keep all
   cores busy.
 
@@ -218,7 +253,7 @@ Homebrew, an optimized build.
 | Encoder              | Wall time | CPU time | Peak RSS, 10 min streamed |
 |----------------------|-----------|----------|---------------------------|
 | lewtoff (serial)     | ~305 ms   | ~300 ms  | ~3.5 MB                   |
-| lewtoff (`parallel`) | ~73 ms    | ~520 ms  | ~22 MB                    |
+| lewtoff (`parallel`) | ~73 ms    | ~520 ms  | ~19 MB                    |
 | oggenc               | ~268 ms   | ~265 ms  | ~3 MB                     |
 
 The input was a synthesized tone-plus-pink-noise signal. On real music
