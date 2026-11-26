@@ -859,21 +859,24 @@ fn seed_chase(
     // Positions on the stack strictly increase, so `i < pos[top-1] + lp`
     // implies `i < pos[top] + lp`; that test is dropped here. The `stack < 2`
     // case pushes unconditionally, as does the loop once a pop leaves one.
+    // The top entry is also kept in registers (`ta`), so the common
+    // no-pop test does not wait on the previous iteration's store.
+    let mut ta = 0.0_f32;
     for i in 0..n {
         let v = seeds[i];
         while sp >= 2 {
-            let top = sp - 1;
-            let at = ampstack[top];
-            if v < at || !(at <= ampstack[top - 1] && i < posstack[top - 1] + lp) {
+            let (p2, a2) = (posstack[sp - 2], ampstack[sp - 2]);
+            if v < ta || !(ta <= a2 && i < p2 + lp) {
                 break;
             }
             sp -= 1;
+            ta = a2;
         }
         posstack[sp] = i;
         ampstack[sp] = v;
+        ta = v;
         sp += 1;
     }
-
     let stack = sp;
     let mut pos: usize = 0;
     for i in 0..stack {
