@@ -256,16 +256,17 @@ pub(crate) fn mapping0_forward(
         let lam = add_345(scale_dB + to_db(fft_buf[0]));
         logfft[i][0] = lam;
         local_ampmax[i] = lam;
-        // Bins 1..n/2
-        let mut j = 1usize;
-        while j < n - 1 {
-            let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-            let t = add_345(scale_dB + 0.5_f32 * to_db(temp));
-            logfft[i][(j + 1) >> 1] = t;
+        // Bins 1..n/2: element-wise (vectorizes), then the running max in
+        // libvorbis's order.
+        let lf = &mut logfft[i][..n2];
+        for (o, p) in lf[1..].iter_mut().zip(fft_buf[1..n - 1].chunks_exact(2)) {
+            let temp = p[0] * p[0] + p[1] * p[1];
+            *o = add_345(scale_dB + 0.5_f32 * to_db(temp));
+        }
+        for &t in &lf[1..] {
             if t > local_ampmax[i] {
                 local_ampmax[i] = t;
             }
-            j += 2;
         }
         if do_dump && i == 0 {
             dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", &logfft[i]);
