@@ -919,25 +919,26 @@ fn max_seeds(
         if minV > p.vi.tone_abs_limit {
             minV = p.vi.tone_abs_limit;
         }
-        while pos < end {
-            pos += 1;
-            if pos >= 0 && pos < n as i64 {
-                let sv = seed[pos as usize];
-                if (sv > NEGINF && sv < minV) || minV == NEGINF {
-                    minV = sv;
+        if pos < end {
+            // libvorbis steps pos to end, folding in each in-range line;
+            // the fold is a select (no data-dependent branch).
+            let a = (pos + 1).max(0);
+            let b = end.min(n as i64 - 1);
+            if a <= b {
+                for &sv in &seed[a as usize..=b as usize] {
+                    let take = ((sv > NEGINF) & (sv < minV)) | (minV == NEGINF);
+                    minV = if take { sv } else { minV };
                 }
             }
+            pos = end;
         }
 
         let end2 = pos + p.firstoc;
         while linpos < p.n && p.octave[linpos] as i64 <= end2 {
-            if flr[linpos] < minV {
-                flr[linpos] = minV;
-            }
+            flr[linpos] = if flr[linpos] < minV { minV } else { flr[linpos] };
             linpos += 1;
         }
     }
-
     let minV = if n > 0 { seed[n - 1] } else { NEGINF };
     while linpos < p.n {
         if flr[linpos] < minV {
