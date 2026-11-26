@@ -59,7 +59,31 @@ fn lewtoff_encode(
         2 => lewtoff::Channels::Stereo,
         _ => unreachable!("channels validated at CLI"),
     };
-    lewtoff::encode_with_base_quality_and_meta(pcm, r, c, quality, serial, Some(vendor), Some(tag))
+    // Stream through `Encoder` in pseudo-random chunk sizes (seeded by the
+    // input length, so a case stays reproducible): every case then checks
+    // chunking invariance against the oracle too. Sizes include 1 and odd
+    // counts that split stereo frames.
+    let mut enc =
+        lewtoff::encoder_with_base_quality_and_meta(r, c, quality, serial, Some(vendor), Some(tag));
+    let mut out = Vec::new();
+    let mut state = (pcm.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rest = pcm;
+    while !rest.is_empty() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let n = match state % 4 {
+            0 => 1,
+            1 => (state >> 8) as usize % 130,
+            2 => (state >> 8) as usize % 9000,
+            _ => rest.len(),
+        }
+        .min(rest.len());
+        out.extend_from_slice(enc.write(&rest[..n]));
+        rest = &rest[n..];
+    }
+    out.extend_from_slice(&enc.finish());
+    out
 }
 
 // ---------------------------------------------------------------------------
