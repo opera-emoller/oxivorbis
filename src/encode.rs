@@ -487,6 +487,16 @@ impl EncoderCore {
             self.preextrapolate();
         }
         let post_len = self.bs.long * 3;
+        // Only the first `post_used` extrapolated samples can reach the
+        // bitstream; the rest stay 0.0. Relative to eof E: the last
+        // block's center is < E + bs1/2, so the envelope search consults
+        // marks only for j < testW < E + 5*bs1/4 + bs0/4 (block windows end
+        // before E + bs1). Mark j/64 depends on envelope steps up to
+        // j/64 + 1, each reading 128 samples, so nothing at or past
+        // testW + 3*64 is observed. This also skips the far end of the
+        // decaying LPC tail, where it goes subnormal (slow on x86).
+        let post_used =
+            post_len.min(5 * self.bs.long / 4 + self.bs.short / 4 + 3 * SEARCHSTEP as usize);
         self.eofflag = self.pcm_current;
         let eof_rel = self.eofflag - self.total_shift();
         let phys_eof = (self.eofflag - self.base) as usize;
@@ -506,8 +516,8 @@ impl EncoderCore {
                     &lpc,
                     &head[phys_eof - LPC_ORDER_POST..],
                     LPC_ORDER_POST,
-                    tail,
-                    post_len,
+                    &mut tail[..post_used],
+                    post_used,
                 );
             }
             // else: libvorbis zero-fills (already zero from resize).

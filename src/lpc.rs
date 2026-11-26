@@ -155,13 +155,22 @@ pub fn lpc_predict(coeff: &[f32], prime: &[f32], m: usize, data: &mut [f32], n: 
     //   for(j=0;j<m;j++) y-=work[o++]*coeff[--p];
     // No FMA — matches the C source semantics exactly (separate mul + sub).
     // Tests against the no-FMA C debug harness pass byte-identically.
-    for i in 0..n {
+    let mut i = 0;
+    while i < n {
         let mut y = 0.0f32;
         for (o, p) in (i..i + m).zip((0..m).rev()) {
             y -= work[o] * coeff[p];
         }
         data[i] = y;
         work[m + i] = y;
+        i += 1;
+        // A decaying prediction eventually runs on subnormals, which cost
+        // a microcode assist per operation on x86. Once the whole window
+        // is tiny, continue in the exact f64 emulation instead. (Other
+        // targets, e.g. Apple Silicon, run subnormals at full speed.)
+        if SLOW_SUBNORMALS && is_tiny(y) && work[i..i + m].iter().all(|&v| is_tiny(v)) {
+            i = predict_tiny(coeff, m, &mut work, data, i, n);
+        }
     }
 
     if crate::debug_dump::dump_enabled() {
@@ -175,6 +184,106 @@ pub fn lpc_predict(coeff: &[f32], prime: &[f32], m: usize, data: &mut [f32], n: 
             let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_predict_out.bin", &bytes);
         }
     }
+}
+
+/// x86 takes a microcode assist on subnormal operands and results.
+const SLOW_SUBNORMALS: bool = cfg!(any(target_arch = "x86", target_arch = "x86_64"));
+
+/// `|v| < 2^-96`, tested on the bits (no FP op on a subnormal).
+#[inline]
+fn is_tiny(v: f32) -> bool {
+    v.to_bits() & 0x7fff_ffff < (127 - 96) << 23
+}
+
+/// 2^e as f64, for e in the f64 normal range.
+const fn pow2(e: i32) -> f64 {
+    f64::from_bits(((1023 + e) as u64) << 52)
+}
+
+/// Widen an f32 to f64 exactly, without a subnormal f32 FP operand.
+#[inline]
+fn widen(v: f32) -> f64 {
+    let b = v.to_bits();
+    if b & 0x7f80_0000 != 0 {
+        v as f64
+    } else {
+        let mag = (b & 0x7f_ffff) as f64 * pow2(-149);
+        if b >> 31 != 0 { -mag } else { mag }
+    }
+}
+
+/// Round an f64 to the nearest f32 (ties to even, gradual underflow),
+/// returned as f64, without producing a subnormal f32 in hardware.
+#[inline]
+fn round_f32(x: f64) -> f64 {
+    let a = x.abs();
+    if a < pow2(-126) {
+        // a + 1.5*2^-97 lies in [2^-97, 2^-96), whose ulp is 2^-149: the
+        // f32 subnormal spacing. The subtraction is exact (Sterbenz).
+        const MAGIC: f64 = f64::from_bits(((1023 - 97) << 52) | (1 << 51));
+        ((a + MAGIC) - MAGIC).copysign(x)
+    } else {
+        x as f32 as f64
+    }
+}
+
+/// Narrow an f64 that holds an f32 value, without a subnormal f32 FP result.
+#[inline]
+fn narrow(x: f64) -> f32 {
+    let a = x.abs();
+    if a < pow2(-126) {
+        let mant = (a * pow2(149)) as u32;
+        f32::from_bits(((x.is_sign_negative() as u32) << 31) | mant)
+    } else {
+        x as f32
+    }
+}
+
+/// The `lpc_predict` recursion from output `i` on, while all values stay
+/// below 2^-96, computed in f64 with explicit f32 rounding: bit-identical
+/// to the f32 loop. Each product of two f32s is exact in f64 and then
+/// rounded once. A difference of two f32s is exact in f64 whenever its
+/// f32 result is subnormal; otherwise rounding to f64 and then to f32
+/// equals direct f32 rounding (53 >= 2*24 + 2). No intermediate can
+/// overflow or underflow in f64. Returns where the f32 loop resumes.
+fn predict_tiny(
+    coeff: &[f32],
+    m: usize,
+    work: &mut [f32],
+    data: &mut [f32],
+    mut i: usize,
+    n: usize,
+) -> usize {
+    let c: Vec<f64> = coeff[..m].iter().map(|&v| widen(v)).collect();
+    // w[k] mirrors work[i0 + k].
+    let i0 = i;
+    let mut w: Vec<f64> = work[i..i + m].iter().map(|&v| widen(v)).collect();
+    w.reserve(n - i);
+    // Trailing run of exact zeros in the window. Once all m values are
+    // ±0 and the coefficients are finite, every product is ±0 and
+    // y = +0 - (±0) = +0, so the rest of the output is +0.0.
+    let finite = c.iter().all(|v| v.is_finite());
+    let mut zeros = w.iter().rev().take_while(|&&v| v == 0.0).count();
+    while i < n {
+        if finite && zeros >= m {
+            data[i..n].fill(0.0);
+            return n;
+        }
+        let mut y = 0.0f64;
+        for (o, p) in (i - i0..i - i0 + m).zip((0..m).rev()) {
+            y = round_f32(y - round_f32(w[o] * c[p]));
+        }
+        let y32 = narrow(y);
+        data[i] = y32;
+        work[m + i] = y32;
+        w.push(y);
+        i += 1;
+        zeros = if y == 0.0 { zeros + 1 } else { 0 };
+        if !is_tiny(y32) {
+            break;
+        }
+    }
+    i
 }
 
 /// Compute pre-stream extrapolated samples using the same algorithm as
@@ -313,5 +422,61 @@ mod tests {
             predicted[0].abs() > 1e-6,
             "prediction should be non-zero for sine"
         );
+    }
+
+    /// The f64 emulation of the subnormal tail must match plain f32
+    /// arithmetic bit for bit.
+    #[test]
+    fn predict_tiny_matches_f32() {
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = || {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            st
+        };
+        let mut unit = || (rnd() >> 11) as f64 / (1u64 << 53) as f64;
+        for case in 0..1200 {
+            let m = [1, 2, 16, 32][case % 4];
+            // Mildly decaying random filters, sometimes unstable.
+            let coeff: Vec<f32> = (0..m)
+                .map(|_| ((unit() - 0.5) * 2.4 / m as f64) as f32)
+                .collect();
+            let e = -80.0 - 70.0 * unit();
+            let sparse = case % 3 == 0;
+            let prime: Vec<f32> = (0..m)
+                .map(|_| {
+                    let v = ((unit() - 0.5) * 2f64.powf(e)) as f32;
+                    if sparse && unit() < 0.7 { 0.0 } else { v }
+                })
+                .collect();
+            let n = 600;
+            let mut got = vec![0.0f32; n];
+            lpc_predict(&coeff, &prime, m, &mut got, n);
+            let mut work = prime.clone();
+            // predict_tiny directly (lpc_predict only uses it on x86).
+            let mut tiny = vec![0.0f32; n];
+            let mut tiny_work = prime.clone();
+            tiny_work.resize(m + n, 0.0);
+            let end = predict_tiny(&coeff, m, &mut tiny_work, &mut tiny, 0, n);
+            for (i, g) in got.iter().enumerate() {
+                let mut y = 0.0f32;
+                for (o, p) in (i..i + m).zip((0..m).rev()) {
+                    y -= work[o] * coeff[p];
+                }
+                work.push(y);
+                assert_eq!(g.to_bits(), y.to_bits(), "case {case} i {i}");
+                if i < end {
+                    assert_eq!(tiny[i].to_bits(), y.to_bits(), "case {case} i {i}");
+                }
+            }
+        }
+        for _ in 0..200_000 {
+            let x = (unit() - 0.5) * 2f64.powf(-100.0 - 60.0 * unit());
+            assert_eq!(round_f32(x).to_bits(), (x as f32 as f64).to_bits(), "{x:e}");
+            let v = x as f32;
+            assert_eq!(widen(v).to_bits(), (v as f64).to_bits());
+            assert_eq!(narrow(v as f64).to_bits(), v.to_bits());
+        }
     }
 }

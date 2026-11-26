@@ -165,17 +165,26 @@ impl EnvelopeLookup {
             penalty = gi.stretch_penalty;
         }
 
-        // window + MDCT in place
-        let mut vec = [0.0f32; ENV_WINLENGTH];
-        for i in 0..ENV_WINLENGTH {
-            vec[i] = data[i] * self.mdct_win[i];
-        }
-        let mut vec_in: [f32; ENV_WINLENGTH] = vec;
+        // window + MDCT in place. If every sample is below 2^-100 (e.g. the
+        // subnormal end of the EOS extrapolation), the MDCT outputs are
+        // far below 2^-76, so every square below rounds to +0.0 exactly as
+        // for zeros: keep vec_out zero and skip the (on x86, very slow)
+        // subnormal arithmetic.
         let mut vec_out = [0.0f32; ENV_WINLENGTH / 2];
-        mdct_forward_envelope(&vec_in, &mut vec_out);
-        // Reuse vec to hold output spread/limited values across band loop:
-        // first half stores spreaded values, second half unused.
-        let _ = &mut vec_in;
+        if data[..ENV_WINLENGTH]
+            .iter()
+            .any(|v| v.to_bits() & 0x7fff_ffff >= (127 - 100) << 23)
+        {
+            let mut vec = [0.0f32; ENV_WINLENGTH];
+            for i in 0..ENV_WINLENGTH {
+                vec[i] = data[i] * self.mdct_win[i];
+            }
+            let mut vec_in: [f32; ENV_WINLENGTH] = vec;
+            mdct_forward_envelope(&vec_in, &mut vec_out);
+            // Reuse vec to hold output spread/limited values across band loop:
+            // first half stores spreaded values, second half unused.
+            let _ = &mut vec_in;
+        }
 
         // Near-DC accumulator decay term.
         let decay_init = {
@@ -515,6 +524,44 @@ mod tests {
         eprintln!("ramp first marks at indices: {:?}", first_marks);
         let n_short = n_short_blocks_at_start_bs(BlockSizes::BS_256_2048, &marks);
         assert_eq!(n_short, 2, "ramp: 2 short (got {n_short})");
+    }
+
+    /// `amp` skips the MDCT for windows below 2^-100; check that the
+    /// MDCT outputs there stay below 2^-76, so their squares are +0.0.
+    #[test]
+    fn tiny_window_mdct_squares_to_zero() {
+        let max = f32::from_bits(((127 - 100) << 23) - 1);
+        let mut st = 1u32;
+        for case in 0..2000 {
+            let mut x = [0.0f32; ENV_WINLENGTH];
+            for (i, v) in x.iter_mut().enumerate() {
+                st = st.wrapping_mul(1664525).wrapping_add(1013904223);
+                let mag = if case % 2 == 0 {
+                    max
+                } else {
+                    f32::from_bits(st >> 5 & 0x0d7f_ffff)
+                };
+                // Sign patterns: random, or aligned with an MDCT basis vector.
+                let k = (case / 2 % 64) as f64;
+                let c = ((std::f64::consts::PI / 64.0) * (i as f64 + 0.5 + 32.0) * (k + 0.5)).cos();
+                let neg = if case % 4 < 2 { c < 0.0 } else { st & 1 != 0 };
+                *v = if neg { -mag } else { mag };
+            }
+            let lookup = EnvelopeLookup::new(1, 0.0);
+            for (v, w) in x.iter_mut().zip(lookup.mdct_win.iter()) {
+                *v *= *w;
+            }
+            let mut out = [0.0f32; ENV_WINLENGTH / 2];
+            mdct_forward_envelope(&x, &mut out);
+            for v in out {
+                assert!(
+                    v.abs() < f32::from_bits((127 - 76) << 23),
+                    "case {case}: {v:e}"
+                );
+                assert_eq!((v * v).to_bits(), 0);
+                assert_eq!((0.7 * v as f64 * v as f64) as f32, 0.0);
+            }
+        }
     }
 }
 
