@@ -170,15 +170,11 @@ profile input="corpus/beach_bro/snd_neon_nights.mp3":
     echo "recording samply profile (browser will open when encode finishes)..."
     samply record -- "$LWBIN" 44100 stereo < "$PCM" > /dev/null
 
-# Per-chunk diff helper for parity failures.
-# Usage: just parity-diff input.s16le 44100 mono
-parity-diff input rate channels:
-    cargo run --bin parity-diff -- {{input}} {{rate}} {{channels}}
-
-# Regenerate the embedded Q5 setup-header blob by extracting it from a
-# fresh ffmpeg-libvorbis encode of a 1-sample silence file.
-regen-setup-blob:
-    cargo run -p gen-setup-blob
+# Packet/page-level diff of two Ogg files (e.g. lewtoff.ogg vs oracle.ogg
+# from a saved corpus/fuzz failure).
+# Usage: just parity-diff lewtoff.ogg oracle.ogg
+parity-diff a b:
+    cargo run -p parity-diff -- {{a}} {{b}}
 
 # Regenerate src/setup_books.bin (every reachable static codebook, packed
 # by libvorbis's vorbis_staticbook_pack) and src/setup_templates.rs (the
@@ -191,7 +187,8 @@ regen-setup-templates:
 # ffmpeg-libvorbis encode for each supported (rate × channels) combo.
 regen-header-vectors:
     cargo run -p gen-header-vectors
-    cp src/setup_blob.bin tests/vectors/headers/setup.bin
+    # tests/vectors/headers/setup.bin is a frozen libvorbis Q5 setup header;
+    # the generated one is checked against golden hashes in setup_gen tests.
 
 # Regenerate src/tables/quality.rs (libvorbis 44.1/48 kHz mode-template
 # tables for quality-dependent setup) by compiling the vendored headers.
