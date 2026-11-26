@@ -1415,20 +1415,25 @@ fn noise_normalize(
     // force classic behavior
     acc = 0.0;
 
-    for j in 0..start {
-        let skip = if let Some(fl) = flags {
-            fl[j] != 0
-        } else {
-            false
-        };
-        if !skip {
-            let ve = q[j] / f[j];
-            // libvorbis: `out[j] = -rint(sqrt(ve));` — sqrt() is the f64
-            // overload (promotes f32 ve to f64), rint() rounds half-to-even.
-            // Rust's f32::sqrt is single-precision and .round() rounds
-            // half-away-from-zero; both diverge from C.
-            let s = (ve as f64).sqrt().round_ties_even();
-            out[j] = if r[j] < 0.0 { -(s as i32) } else { s as i32 };
+    // Element-wise (vectorizes): flagged entries keep their value, the
+    // others get libvorbis's `out[j] = -rint(sqrt(ve))` (sqrt is the f64
+    // overload, rint rounds half-to-even; Rust's f32::sqrt/round differ).
+    let (r1, q1, f1, o1) = (&r[..start], &q[..start], &f[..start], &mut out[..start]);
+    let quant = |rv: f32, qv: f32, fv: f32| {
+        let s = ((qv / fv) as f64).sqrt().round_ties_even();
+        if rv < 0.0 { -(s as i32) } else { s as i32 }
+    };
+    match flags {
+        None => {
+            for (((o, &rv), &qv), &fv) in o1.iter_mut().zip(r1).zip(q1).zip(f1) {
+                *o = quant(rv, qv, fv);
+            }
+        }
+        Some(fl) => {
+            for ((((o, &rv), &qv), &fv), &fl) in o1.iter_mut().zip(r1).zip(q1).zip(f1).zip(&fl[..start]) {
+                let v = quant(rv, qv, fv);
+                *o = if fl != 0 { *o } else { v };
+            }
         }
     }
 
@@ -1608,63 +1613,63 @@ pub fn vp_couple_quantize_normalize(
                 nz[mi] = 1;
                 nz[ai] = 1;
 
-                for j in 0..jn {
-                    if (j as i32) < sliding_lowpass - i as i32 {
-                        if flag[mi][j] != 0 || flag[ai][j] != 0 {
-                            // lossless coupling
-                            raw[mi][j] = raw[mi][j].abs() + raw[ai][j].abs();
-                            quant[mi][j] = quant[mi][j] + quant[ai][j];
-                            flag[mi][j] = 1;
-                            flag[ai][j] = 1;
+                // Branch-free form of libvorbis's per-line coupling: every
+                // candidate is computed and the line's case selects one, so
+                // the loop vectorizes. Each case does exactly libvorbis's ops.
+                let (raw_m, raw_a) = pair_mut(&mut raw, mi, ai);
+                let (quant_m, quant_a) = pair_mut(&mut quant, mi, ai);
+                let (flag_m, flag_a) = pair_mut(&mut flag, mi, ai);
+                let (floor_m, floor_a) = pair_mut(&mut floor_v, mi, ai);
+                let (iw_m, iw_a) = pair_mut(iwork, mi, ai);
+                let active = (sliding_lowpass - i as i32).clamp(0, jn as i32) as usize;
+                let dipole = (limit - i as i32).clamp(0, jn as i32) as usize;
+                let (raw_m, raw_a) = (&mut raw_m[..active], &mut raw_a[..active]);
+                let (quant_m, quant_a) = (&mut quant_m[..active], &mut quant_a[..active]);
+                let (flag_m, flag_a) = (&mut flag_m[..active], &mut flag_a[..active]);
+                let (iw_m, iw_a) = (&mut iw_m[i..i + active], &mut iw_a[i..i + active]);
+                for j in 0..active {
+                    let (rm, ra) = (raw_m[j], raw_a[j]);
+                    let (qm, qa) = (quant_m[j], quant_a[j]);
+                    let lossless = flag_m[j] != 0 || flag_a[j] != 0;
 
-                            // Wrapping ops: only pathological (huge) input
-                            // overflows, and then like release builds / C.
-                            let a = iwork[mi][i + j];
-                            let b = iwork[ai][i + j];
-                            if a.wrapping_abs() > b.wrapping_abs() {
-                                iwork[ai][i + j] = if a > 0 {
-                                    a.wrapping_sub(b)
-                                } else {
-                                    b.wrapping_sub(a)
-                                };
-                            } else {
-                                iwork[ai][i + j] = if b > 0 {
-                                    a.wrapping_sub(b)
-                                } else {
-                                    b.wrapping_sub(a)
-                                };
-                                iwork[mi][i + j] = b;
-                            }
+                    // lossless coupling (wrapping ops: only pathological,
+                    // huge input overflows, and then like release builds / C)
+                    let (a, b) = (iw_m[j], iw_a[j]);
+                    let m = if a.wrapping_abs() > b.wrapping_abs() { a } else { b };
+                    let an = if m > 0 { a.wrapping_sub(b) } else { b.wrapping_sub(a) };
+                    let flip = an >= m.wrapping_abs().wrapping_mul(2);
+                    let (ll_m, ll_a) = if flip {
+                        (m.wrapping_neg(), an.wrapping_neg())
+                    } else {
+                        (m, an)
+                    };
+                    let ll_raw = rm.abs() + ra.abs();
+                    let ll_quant = qm + qa;
 
-                            if iwork[ai][i + j] >= iwork[mi][i + j].wrapping_abs().wrapping_mul(2) {
-                                iwork[ai][i + j] = iwork[ai][i + j].wrapping_neg();
-                                iwork[mi][i + j] = iwork[mi][i + j].wrapping_neg();
-                            }
-                        } else {
-                            // lossy (point) coupling
-                            if (j as i32) < limit - i as i32 {
-                                // dipole
-                                raw[mi][j] += raw[ai][j];
-                                quant[mi][j] = raw[mi][j].abs();
-                            } else {
-                                // elliptical
-                                let sum = raw[mi][j].abs() + raw[ai][j].abs();
-                                if raw[mi][j] + raw[ai][j] < 0.0 {
-                                    quant[mi][j] = sum;
-                                    raw[mi][j] = -sum;
-                                } else {
-                                    quant[mi][j] = sum;
-                                    raw[mi][j] = sum;
-                                }
-                            }
-                            raw[ai][j] = 0.0;
-                            quant[ai][j] = 0.0;
-                            flag[ai][j] = 1;
-                            iwork[ai][i + j] = 0;
-                        }
-                    }
-                    floor_v[mi][j] = floor_v[ai][j] + floor_v[mi][j];
-                    floor_v[ai][j] = floor_v[mi][j]; // both point to same sum now
+                    // lossy (point) coupling: dipole below `limit`, else
+                    // elliptical
+                    let dip_raw = rm + ra;
+                    let dip_quant = dip_raw.abs();
+                    let sum = rm.abs() + ra.abs();
+                    let ell_raw = if rm + ra < 0.0 { -sum } else { sum };
+                    let (ly_raw, ly_quant) = if j < dipole {
+                        (dip_raw, dip_quant)
+                    } else {
+                        (ell_raw, sum)
+                    };
+
+                    raw_m[j] = if lossless { ll_raw } else { ly_raw };
+                    quant_m[j] = if lossless { ll_quant } else { ly_quant };
+                    raw_a[j] = if lossless { ra } else { 0.0 };
+                    quant_a[j] = if lossless { qa } else { 0.0 };
+                    flag_m[j] = if lossless { 1 } else { flag_m[j] };
+                    flag_a[j] = 1;
+                    iw_m[j] = if lossless { ll_m } else { a };
+                    iw_a[j] = if lossless { ll_a } else { 0 };
+                }
+                for (fm, fa) in floor_m[..jn].iter_mut().zip(&mut floor_a[..jn]) {
+                    *fm = *fa + *fm;
+                    *fa = *fm; // both point to same sum now
                 }
 
                 acc[track] = noise_normalize(
@@ -1691,5 +1696,17 @@ pub fn vp_couple_quantize_normalize(
             nonzero[vi.coupling_mag[i]] = 1;
             nonzero[vi.coupling_ang[i]] = 1;
         }
+    }
+}
+
+/// Two distinct elements of `v`, both mutable (`a != b`).
+fn pair_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
+    assert!(a != b);
+    if a < b {
+        let (lo, hi) = v.split_at_mut(b);
+        (&mut lo[a], &mut hi[0])
+    } else {
+        let (lo, hi) = v.split_at_mut(a);
+        (&mut hi[0], &mut lo[b])
     }
 }
