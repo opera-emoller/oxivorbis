@@ -6,10 +6,7 @@
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::collapsible_if)]
 
-use std::sync::OnceLock;
-
 use crate::bitpack::{BitReader, BitWriter};
-use crate::setup_blob::Q5_SETUP_BLOB;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -420,38 +417,6 @@ impl Codebook {
     }
 }
 
-// ---------------------------------------------------------------------------
-// unpack_q5_codebooks: parse the full setup blob
-// ---------------------------------------------------------------------------
-
-/// Parse the Q5 setup blob and return all codebooks.
-/// The result is cached in a OnceLock so parsing happens only once.
-pub(crate) fn q5_codebooks() -> &'static Vec<Codebook> {
-    static CACHE: OnceLock<Vec<Codebook>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| unpack_q5_codebooks(Q5_SETUP_BLOB).expect("failed to unpack Q5 setup blob"))
-}
-
-/// Parse all codebooks from a raw Vorbis setup-header packet.
-///
-/// The setup header starts with `\x05vorbis` (7 bytes), then per Vorbis I §5.2.1:
-///   - 8 bits: `[codebook_count] - 1`
-///   - Then each codebook sequentially (read via `unpack_codebook`).
-pub(crate) fn unpack_q5_codebooks(blob: &[u8]) -> Result<Vec<Codebook>, CodebookError> {
-    // skip the 7-byte header sync: 0x05 "vorbis"
-    assert_eq!(&blob[0..7], b"\x05vorbis");
-    let mut r = BitReader::new(&blob[7..]);
-
-    // codebook count: [count - 1] in 8 bits
-    let count = r.read(8) as usize + 1;
-
-    let mut books = Vec::with_capacity(count);
-    for _ in 0..count {
-        books.push(unpack_codebook(&mut r)?);
-    }
-    Ok(books)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,30 +514,27 @@ mod tests {
     }
 
     #[test]
-    fn q5_blob_unpacks_all_codebooks() {
-        let books = unpack_q5_codebooks(Q5_SETUP_BLOB).expect("Q5 blob unpack failed");
-        // Q5 setup has 30 codebooks per Vorbis spec (standard Q5 configuration)
+    fn q5_setup_unpacks_all_codebooks() {
+        // The q5 44.1 kHz mono setup header: `\x05vorbis`, then
+        // [codebook_count - 1] in 8 bits, then the codebooks back to back
+        // (Vorbis I §4.2.4).
+        let packet = crate::setup_gen::test_support::q5_mono44_packet();
+        assert_eq!(&packet[0..7], b"\x05vorbis");
+        let mut r = BitReader::new(&packet[7..]);
+        let count = r.read(8) as usize + 1;
+        let books: Vec<Codebook> = (0..count)
+            .map(|i| unpack_codebook(&mut r).unwrap_or_else(|e| panic!("book {i}: {e:?}")))
+            .collect();
         assert!(
             books.len() >= 10,
             "expected >=10 codebooks, got {}",
             books.len()
         );
-        assert!(books.len() <= 256, "too many codebooks: {}", books.len());
         // All books must have at least 1 entry
         for (i, b) in books.iter().enumerate() {
             assert!(b.entries > 0, "codebook {} has 0 entries", i);
             assert!(b.dim > 0, "codebook {} has 0 dim", i);
         }
-    }
-
-    #[test]
-    fn q5_codebooks_cache_returns_same_ptr() {
-        let a = q5_codebooks();
-        let b = q5_codebooks();
-        assert!(
-            std::ptr::eq(a as *const _, b as *const _),
-            "OnceLock must return same allocation"
-        );
     }
 
     #[test]

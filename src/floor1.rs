@@ -105,7 +105,7 @@ use crate::bitpack::ov_ilog;
 // ---------------------------------------------------------------------------
 // unpack_floor1 — port of floor1_unpack (info.c calls this via hook)
 //
-// The caller (unpack_q5_floors) has already consumed codebooks and the
+// The caller (setup::unpack_setup) has already consumed codebooks and the
 // time-domain placeholder section; this function reads one floor-1 record
 // from the bitstream.
 // ---------------------------------------------------------------------------
@@ -1155,51 +1155,13 @@ pub(crate) fn floor1_encode(
 }
 
 // ---------------------------------------------------------------------------
-// unpack_q5_floors — parse the floor1 configs from the setup blob.
-//
-// The setup blob order is: codebooks → time-domain → floors → ...
-// The caller must have already consumed the codebook section (and the 7-byte
-// header).  This function takes a BitReader positioned just after the
-// codebooks, consumes the time-domain placeholder, then reads the floor
-// configs.
-// ---------------------------------------------------------------------------
-
-pub(crate) fn unpack_q5_floors(
-    r: &mut BitReader,
-    books_count: usize,
-) -> Result<Vec<Floor1Setup>, Floor1Error> {
-    // time backend settings (hooks are unused — just consume the bits)
-    // times = oggpack_read(opb,6)+1
-    let times = r.read(6) as usize + 1;
-    for _ in 0..times {
-        // each entry is a 16-bit floor type (always 0 for time-domain)
-        let _test = r.read(16);
-    }
-
-    // floor backend settings
-    let floors = r.read(6) as usize + 1;
-    let mut result = Vec::with_capacity(floors);
-    for _ in 0..floors {
-        let floor_type = r.read(16);
-        if floor_type != 1 {
-            // We only support floor type 1 (the only type used in practice)
-            // For type 0, we'd need a different parser — just return error for now.
-            return Err(Floor1Error::BadPartitionClass);
-        }
-        result.push(unpack_floor1(r, books_count)?);
-    }
-    Ok(result)
-}
-
-// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bitpack::BitReader;
-    use crate::setup_blob::Q5_SETUP_BLOB;
+    use crate::setup_gen::test_support::q5_mono44_setup;
 
     // -----------------------------------------------------------------------
     // render_point tests — hand-computed from spec
@@ -1276,24 +1238,22 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Q5 setup blob floor1 round-trip
+    // q5 setup header floor1 round-trip
     // -----------------------------------------------------------------------
 
+    /// The floor1 configs of the q5 44.1 kHz mono setup header, as
+    /// unpack_floor1 read them (setup::unpack_setup drives the parse).
+    fn q5_floors() -> Vec<Floor1Setup> {
+        q5_mono44_setup()
+            .floor_states
+            .into_iter()
+            .map(|s| s.vi)
+            .collect()
+    }
+
     #[test]
-    fn q5_blob_floor1_unpack_roundtrip() {
-        // Parse codebooks first (they must be consumed before floors)
-        let blob = Q5_SETUP_BLOB;
-        assert_eq!(&blob[0..7], b"\x05vorbis");
-        let mut r = BitReader::new(&blob[7..]);
-
-        // codebooks
-        let count = r.read(8) as usize + 1;
-        for _ in 0..count {
-            crate::codebook::unpack_codebook(&mut r).expect("codebook unpack failed");
-        }
-
-        // floors
-        let floors = unpack_q5_floors(&mut r, count).expect("floor1 unpack failed");
+    fn q5_floor1_unpack_roundtrip() {
+        let floors = q5_floors();
 
         assert!(
             !floors.is_empty(),
@@ -1329,16 +1289,7 @@ mod tests {
 
     #[test]
     fn q5_floor1_look_builds_correctly() {
-        let blob = Q5_SETUP_BLOB;
-        let mut r = BitReader::new(&blob[7..]);
-
-        let count = r.read(8) as usize + 1;
-        for _ in 0..count {
-            crate::codebook::unpack_codebook(&mut r).expect("codebook");
-        }
-
-        let floors = unpack_q5_floors(&mut r, count).expect("floors");
-        let setup = floors.into_iter().next().expect("at least one floor");
+        let setup = q5_floors().into_iter().next().expect("at least one floor");
         let state = floor1_look(setup);
 
         assert!(state.posts > 0);
@@ -1348,15 +1299,7 @@ mod tests {
 
     #[test]
     fn q5_floor1_postlist_print() {
-        let blob = Q5_SETUP_BLOB;
-        let mut r = BitReader::new(&blob[7..]);
-
-        let count = r.read(8) as usize + 1;
-        for _ in 0..count {
-            crate::codebook::unpack_codebook(&mut r).expect("codebook");
-        }
-
-        let floors = unpack_q5_floors(&mut r, count).expect("floors");
+        let floors = q5_floors();
         for (fi, setup) in floors.iter().enumerate() {
             let total_posts: usize = (0..setup.partitions as usize)
                 .map(|i| setup.class_dim[setup.partitionclass[i] as usize] as usize)

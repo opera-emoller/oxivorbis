@@ -783,56 +783,24 @@ pub(crate) fn res2_forward(
 }
 
 // ---------------------------------------------------------------------------
-// unpack_q5_residues — parse residue configs from the setup blob.
-//
-// Called after codebooks + time + floors have been consumed.
-// Reads: (residues-1) in 6 bits, then for each: 16-bit type + res0_unpack body.
-// ---------------------------------------------------------------------------
-
-pub(crate) fn unpack_q5_residues(
-    r: &mut BitReader,
-    books_count: usize,
-) -> Result<Vec<(u16, ResidueSetup)>, ResidueError> {
-    let residues = r.read(6) as usize + 1;
-    let mut result = Vec::with_capacity(residues);
-    for _ in 0..residues {
-        let residue_type = r.read(16) as u16;
-        let setup = unpack_residue(r, books_count)?;
-        result.push((residue_type, setup));
-    }
-    Ok(result)
-}
-
-// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bitpack::BitReader;
-    use crate::codebook::unpack_codebook;
-    use crate::floor1::unpack_q5_floors;
-    use crate::setup_blob::Q5_SETUP_BLOB;
+    use crate::setup_gen::test_support::q5_mono44_setup;
 
-    fn parse_blob_up_to_residues() -> (usize, Vec<(u16, ResidueSetup)>) {
-        let blob = Q5_SETUP_BLOB;
-        assert_eq!(&blob[0..7], b"\x05vorbis");
-        let mut r = BitReader::new(&blob[7..]);
-
-        let count = r.read(8) as usize + 1;
-        for _ in 0..count {
-            unpack_codebook(&mut r).expect("codebook unpack");
-        }
-
-        let _floors = unpack_q5_floors(&mut r, count).expect("floor unpack");
-        let residues = unpack_q5_residues(&mut r, count).expect("residue unpack");
-        (count, residues)
+    /// (type, config) for each residue of the q5 44.1 kHz mono setup header,
+    /// as unpack_residue read them (setup::unpack_setup drives the parse).
+    fn q5_residues() -> Vec<(u16, ResidueSetup)> {
+        let s = q5_mono44_setup();
+        s.residue_types.into_iter().zip(s.residue_setups).collect()
     }
 
     #[test]
-    fn q5_blob_residues_unpack() {
-        let (_count, residues) = parse_blob_up_to_residues();
+    fn q5_residues_unpack() {
+        let residues = q5_residues();
         assert!(!residues.is_empty(), "expected at least 1 residue, got 0");
         for (i, (rtype, setup)) in residues.iter().enumerate() {
             assert!(*rtype <= 2, "residue {i}: unexpected type {rtype}");
@@ -852,9 +820,8 @@ mod tests {
 
     #[test]
     fn q5_residue_count_is_expected() {
-        let (_count, residues) = parse_blob_up_to_residues();
-        // Q5 stereo has 2 residues (one per submap), mono has 1.
-        // The Q5 blob embedded here should have >=1 and <=4.
+        let residues = q5_residues();
+        // libvorbis setups carry one residue per block size (short, long).
         assert!(
             !residues.is_empty() && residues.len() <= 4,
             "unexpected residue count: {}",
@@ -873,18 +840,9 @@ mod tests {
 
     #[test]
     fn residue_look_builds_without_panic() {
-        let blob = Q5_SETUP_BLOB;
-        let mut r = BitReader::new(&blob[7..]);
-        let count = r.read(8) as usize + 1;
-        let mut books = Vec::with_capacity(count);
-        for _ in 0..count {
-            books.push(unpack_codebook(&mut r).expect("codebook"));
-        }
-        let _floors = unpack_q5_floors(&mut r, count).expect("floors");
-        let residues = unpack_q5_residues(&mut r, count).expect("residues");
-
-        for (_rtype, setup) in &residues {
-            let look = residue_look(setup, &books);
+        let s = q5_mono44_setup();
+        for setup in &s.residue_setups {
+            let look = residue_look(setup, &s.books);
             assert!(look.parts > 0, "look.parts must be > 0");
             assert!(look.phrasebook_dim > 0, "phrasebook_dim must be > 0");
         }

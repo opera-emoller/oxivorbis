@@ -598,23 +598,138 @@ pub(crate) fn build_setup(
     }
 }
 
+/// Test-only helpers shared by the unit tests of the setup-header consumers
+/// (codebook, floor1, residue): the q=0.5 (oggenc -q5) setup header and its
+/// parsed form, built exactly the way the encoder builds them.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{GeneratedSetup, build_setup};
+
+    /// The q=0.5 setup header for `rate` Hz, `channels` channels.
+    pub(crate) fn q5_generated(rate: u32, channels: usize) -> GeneratedSetup {
+        let c = crate::quality::quality_config(0.5, rate, channels);
+        build_setup(rate, channels, c.base_setting, c.lowpass_khz)
+    }
+
+    /// The q=0.5, 44.1 kHz mono setup header packet (starts with
+    /// `\x05vorbis`).
+    pub(crate) fn q5_mono44_packet() -> Vec<u8> {
+        q5_generated(44100, 1).packet
+    }
+
+    /// The q=0.5, 44.1 kHz mono setup header, parsed.
+    pub(crate) fn q5_mono44_setup() -> crate::setup::CodecSetup {
+        let g = q5_generated(44100, 1);
+        crate::setup::unpack_setup(&g.packet, 1, &g.params).expect("q5 setup parses")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup_blob::{
-        Q5_SETUP_MONO44, Q5_SETUP_MONO48, Q5_SETUP_STEREO44, Q5_SETUP_STEREO48,
-    };
 
     const COMBOS: [(u32, usize); 4] = [(44100, 1), (48000, 1), (44100, 2), (48000, 2)];
 
-    fn q5_blob(rate: u32, ch: usize) -> &'static [u8] {
+    /// Length and SHA-256 of the q=0.5 setup headers libvorbis 1.3.7 emits
+    /// (formerly committed as src/setup_blob_{mono,stereo}{44,48}.bin).
+    fn q5_golden(rate: u32, ch: usize) -> (usize, &'static str) {
         match (rate, ch) {
-            (44100, 1) => Q5_SETUP_MONO44,
-            (48000, 1) => Q5_SETUP_MONO48,
-            (44100, 2) => Q5_SETUP_STEREO44,
-            (48000, 2) => Q5_SETUP_STEREO48,
+            (44100, 1) => (
+                3771,
+                "00830733c1983d78a0c4310d04ce6d80ec6077c73ff9464a86d10e1e97a49a06",
+            ),
+            (48000, 1) => (
+                3771,
+                "b31b8ab438221970929ce5efe2b1d3e09dd923b23d2c2599573b48fb674f35ca",
+            ),
+            (44100, 2) => (
+                4225,
+                "936eace142731fecb7dff30e8eb7d4f858fa7d1be96675338d65bca0e289effe",
+            ),
+            (48000, 2) => (
+                4225,
+                "e29696dc86b52d72b5611c41a93605302dd96b1e8781ac48ab180fff4cc093fd",
+            ),
             _ => unreachable!(),
         }
+    }
+
+    /// Minimal SHA-256 (FIPS 180-4), test-only, so the golden check needs
+    /// no extra dev-dependency.
+    fn sha256_hex(data: &[u8]) -> String {
+        const K: [u32; 64] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2,
+        ];
+        let mut h: [u32; 8] = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
+        ];
+        let mut msg = data.to_vec();
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+        for chunk in msg.chunks_exact(64) {
+            let mut w = [0u32; 64];
+            for (i, b) in chunk.chunks_exact(4).enumerate() {
+                w[i] = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+            }
+            for i in 16..64 {
+                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+                w[i] = w[i - 16]
+                    .wrapping_add(s0)
+                    .wrapping_add(w[i - 7])
+                    .wrapping_add(s1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+            for i in 0..64 {
+                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+                let ch = (e & f) ^ (!e & g);
+                let t1 = hh
+                    .wrapping_add(s1)
+                    .wrapping_add(ch)
+                    .wrapping_add(K[i])
+                    .wrapping_add(w[i]);
+                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+                let maj = (a & b) ^ (a & c) ^ (b & c);
+                let t2 = s0.wrapping_add(maj);
+                hh = g;
+                g = f;
+                f = e;
+                e = d.wrapping_add(t1);
+                d = c;
+                c = b;
+                b = a;
+                a = t1.wrapping_add(t2);
+            }
+            for (x, y) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
+                *x = x.wrapping_add(y);
+            }
+        }
+        h.iter().map(|x| format!("{x:08x}")).collect()
+    }
+
+    #[test]
+    fn sha256_known_answers() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
     }
 
     fn generate(rate: u32, ch: usize, q: f32) -> GeneratedSetup {
@@ -622,16 +737,16 @@ mod tests {
         build_setup(rate, ch, c.base_setting, c.lowpass_khz)
     }
 
+    /// build_setup at q=0.5 must reproduce libvorbis's q5 setup headers
+    /// byte for byte (the headers the encoder originally shipped as
+    /// committed blobs).
     #[test]
-    fn q5_matches_committed_blobs() {
+    fn q5_matches_libvorbis_golden_hashes() {
         for (rate, ch) in COMBOS {
             let g = generate(rate, ch, 0.5);
-            assert!(
-                g.packet == q5_blob(rate, ch),
-                "setup mismatch for {rate} Hz {ch} ch ({} vs {} bytes)",
-                g.packet.len(),
-                q5_blob(rate, ch).len()
-            );
+            let (len, hash) = q5_golden(rate, ch);
+            assert_eq!(g.packet.len(), len, "setup length, {rate} Hz {ch} ch");
+            assert_eq!(sha256_hex(&g.packet), hash, "setup hash, {rate} Hz {ch} ch");
             assert_eq!(g.blocksizes, [256, 2048]);
         }
     }
@@ -653,8 +768,7 @@ mod tests {
     fn q5_encode_params_match_legacy_inference() {
         for (rate, ch) in COMBOS {
             let g = generate(rate, ch, 0.5);
-            let blob_setup =
-                crate::setup::unpack_setup(q5_blob(rate, ch), ch, &g.params).expect("parse");
+            let blob_setup = crate::setup::unpack_setup(&g.packet, ch, &g.params).expect("parse");
             assert_eq!(g.params.floors.len(), 2);
             for (fs, p) in blob_setup.floor_states.iter().zip(&g.params.floors) {
                 let legacy_twofit = if fs.vi.postlist[1] == 128 { 1.0 } else { 3.0 };
