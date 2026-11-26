@@ -148,8 +148,9 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
 ## Parity contract
 
 - **Audio:** every audio packet, granule position and page boundary is
-  identical to what libvorbis 1.3.7 produces when it is built without
-  FMA contraction, with a stable `qsort`, and fed the same samples in
+  identical to what the unmodified libvorbis 1.3.7 and libogg 1.3.5
+  sources produce when built without FMA contraction, with a stable
+  `qsort`, and fed the same samples in
   64-frame `vorbis_analysis_wrote` chunks. The `qsort` condition matters
   at q0 to q3 only: libvorbis's noise normalization sorts values that
   can tie, and lewtoff breaks ties the stable way. The reference build
@@ -173,12 +174,16 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
   where that makes no difference, such as silence. Packaged libvorbis
   builds may also use FMA.
 
-**Status:** a real-audio corpus of 6653 files is byte-identical to the
-libvorbis 1.3.7 reference build in all four rate/channel configurations
-at q-1, q5 and q10 (79,836 encodes), and at 44.1 kHz stereo also at q0,
-q2, q3 and q8. A differential fuzzer has run more than 100k generated
-cases clean. Parity is verified on macOS arm64 and Linux x86_64 (glibc).
-lewtoff's output is also identical on Windows x86_64 (MSVC).
+**Status:** against a reference build of the unmodified libvorbis 1.3.7
+and libogg 1.3.5 sources (vendored and checksum-verified under `tools/`),
+a real-audio corpus of 6653 files is byte-identical in all four
+rate/channel configurations at q-1, q5 and q10 (79,836 encodes), and at
+44.1 kHz stereo also at q0, q2, q3 and q8. A differential fuzzer has
+run more than 190,000 generated cases clean, with 16-bit and f32 input
+and inputs of up to 30 s, and CI compares 30 to 120 s of non-silent
+audio on every push. Parity is verified on macOS arm64, Linux x86_64
+(glibc) and wasm32 (under wasmtime). lewtoff's output is also identical
+on Windows x86_64 (MSVC).
 
 This works because libvorbis's encoder uses f32 throughout. Without FMA
 contraction, Rust's `f32` arithmetic on every tier-1 target gives the
