@@ -360,7 +360,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // exact for short inputs, and long inputs clamp to n = bs1 anyway.
     let mut eofflag_lpc = center_w + total_samples;
     let mut iterations = 0;
-    let (block_w, env_marks, block_curmarks, post_predicted) = loop {
+    let (block_w, env_marks, block_curmarks, last_block_nw, post_predicted) = loop {
         let post = build_post(eofflag_lpc);
         let env_pcm = build_env_pcm(&post);
         let marks = crate::envelope::compute_marks(&env_pcm, gi);
@@ -381,9 +381,9 @@ pub(crate) fn encode_with_base_quality_and_meta(
             // that's center_w (pre-extrap) + total_samples; post-extrap
             // content extends the marks array but doesn't extend eofflag.
             let n_eof = (center_w + total_samples) as i64;
-            let (pattern, curmarks) =
+            let (pattern, curmarks, last_nw) =
                 crate::envelope::full_w_pattern_with_curmark_bs(bs, &marks, n_eof);
-            break (pattern, marks, curmarks, post);
+            break (pattern, marks, curmarks, last_nw, post);
         }
         eofflag_lpc = eof_candidate;
     };
@@ -573,13 +573,12 @@ pub(crate) fn encode_with_base_quality_and_meta(
         } else {
             block_w[block_idx - 1]
         };
-        // For the very last block, libvorbis still records nW=1 in the block
-        // header (the encoder advances centerW past EOS but emits the same
-        // long-default flag). Mirror that here.
+        // The last block's nW comes from libvorbis's envelope search on the
+        // post-EOS buffer (0 when it hits a mark or runs out of data).
         let next_w = if block_idx + 1 < total_blocks {
             block_w[block_idx + 1]
         } else {
-            1
+            last_block_nw
         };
         let is_short = cur_w == 0;
         let is_last = block_idx == total_blocks - 1;

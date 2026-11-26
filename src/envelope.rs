@@ -494,7 +494,7 @@ mod tests {
         let marks = compute_marks(&pcm, &gi);
         // n_samples here is the audio buffer length (including the LPC
         // pre-stream prefix that envelope detection saw).
-        let (pattern, _) =
+        let (pattern, _, _) =
             full_w_pattern_with_curmark_bs(BlockSizes::BS_256_2048, &marks, pcm[0].len() as i64);
         let n_short = pattern.iter().filter(|&&w| w == 0).count();
         eprintln!(
@@ -664,12 +664,19 @@ pub(crate) fn next_w_bs(
 /// also decided).
 ///
 /// Also returns the per-block `curmark` position (in env-mark space) —
-/// needed for `_ve_envelope_mark` IMPULSE vs PADDING decisions.
+/// needed for `_ve_envelope_mark` IMPULSE vs PADDING decisions — and the
+/// `nW` libvorbis computes for the final block (written into that block's
+/// header if it is long).
+///
+/// `marks` must cover the whole post-EOS buffer (pre-extrap + audio +
+/// post-extrap): with every sample present, a search that runs out of
+/// marks (`next_w_bs` == -1) can only happen after EOS, where
+/// `vorbis_analysis_blockout` sets `nW = 0`.
 pub(crate) fn full_w_pattern_with_curmark_bs(
     bs: BlockSizes,
     marks: &[bool],
     n_samples: i64,
-) -> (Vec<i32>, Vec<i64>) {
+) -> (Vec<i32>, Vec<i64>, i32) {
     let bs0 = bs.short as i64;
     let bs1 = bs.long as i64;
 
@@ -690,19 +697,23 @@ pub(crate) fn full_w_pattern_with_curmark_bs(
     // is >= eofflag. For empty input eofflag == centerW == bs1/2 already, so
     // the very first block is also the last (libvorbis emits exactly one
     // audio packet).
+    // Each blockout call runs the search (deciding this block's nW) before
+    // checking whether this block is the last one.
+    let search = |center_w: i64, w: i32, cursor: &mut i64, curmark: &mut i64| -> i32 {
+        let (next, new_cursor, new_curmark) = next_w_bs(bs, marks, *cursor, *curmark, center_w, w);
+        *cursor = new_cursor;
+        *curmark = new_curmark;
+        // bp == -1 with eofflag set: `v->nW = 0`.
+        if next == -1 { 0 } else { next }
+    };
+
     if center_w >= n_samples {
-        return (pattern, curmarks);
+        let last_nw = search(center_w, w, &mut cursor, &mut curmark);
+        return (pattern, curmarks, last_nw);
     }
 
     loop {
-        // Decide next block's W. If next_w returns -1 (insufficient data /
-        // no upcoming mark), default to long (= what libvorbis settles on
-        // once data accumulates). At true EOS the last block becomes short
-        // via the same default — see how libvorbis sets nW=0 at eofflag.
-        let (next, new_cursor, new_curmark) = next_w_bs(bs, marks, cursor, curmark, center_w, w);
-        cursor = new_cursor;
-        curmark = new_curmark;
-        let nw = if next == -1 { 1 } else { next };
+        let nw = search(center_w, w, &mut cursor, &mut curmark);
 
         // Advance centerW by bs[W]/4 + bs[nW]/4.
         let advance = (if w == 1 { bs1 } else { bs0 }) / 4 + (if nw == 1 { bs1 } else { bs0 }) / 4;
@@ -711,17 +722,17 @@ pub(crate) fn full_w_pattern_with_curmark_bs(
         // Emit the next block (with the new W flag).
         pattern.push(nw);
         curmarks.push(curmark);
-
-        // Stop when centerW has advanced past the audio.
-        if new_center_w >= n_samples {
-            break;
-        }
-
         center_w = new_center_w;
         w = nw;
-    }
 
-    (pattern, curmarks)
+        // Stop when centerW has advanced past the audio.
+        if center_w >= n_samples {
+            break;
+        }
+    }
+    let last_nw = search(center_w, w, &mut cursor, &mut curmark);
+
+    (pattern, curmarks, last_nw)
 }
 
 /// Faithful streaming-blockout simulation.

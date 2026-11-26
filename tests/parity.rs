@@ -792,3 +792,56 @@ mod oracle_parity_short_input {
     sweep!(mono44_q2, SampleRate::Hz44100, Channels::Mono, 0.2);
     sweep!(stereo48_q2, SampleRate::Hz48000, Channels::Stereo, 0.2);
 }
+// --- Minimized parity-fuzz repros ---
+
+/// Replays every `tests/vectors/fuzz/<id>-<rate>-<ch>ch.s16le` (minimized
+/// tools/parity-fuzz failures, all at base_quality 0.5) against the oracle.
+#[test]
+fn oracle_parity_fuzz_repros() {
+    let dir = std::env::current_dir().unwrap().join("tests/vectors/fuzz");
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "s16le"))
+        .collect();
+    paths.sort();
+    assert!(!paths.is_empty(), "no repros in {}", dir.display());
+    let mut failures = Vec::new();
+    for path in &paths {
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        let parts: Vec<&str> = stem.rsplitn(3, '-').collect();
+        let ch: u16 = parts[0].trim_end_matches("ch").parse().unwrap();
+        let rate: u32 = parts[1].parse().unwrap();
+        let samples: Vec<i16> = std::fs::read(path)
+            .unwrap()
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let oracle_bytes = oracle_encode_q(&samples, rate, ch, 0.5);
+        let serial = extract_serial(&oracle_bytes);
+        let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
+        let r = if rate == 48000 {
+            SampleRate::Hz48000
+        } else {
+            SampleRate::Hz44100
+        };
+        let c = if ch == 2 {
+            Channels::Stereo
+        } else {
+            Channels::Mono
+        };
+        let lewtoff_bytes = common::lewtoff_encode_q(
+            &samples,
+            r,
+            c,
+            0.5,
+            serial,
+            Some(&vendor),
+            Some(&encoder_tag),
+        );
+        if lewtoff_bytes != oracle_bytes {
+            failures.push(stem.to_string());
+        }
+    }
+    assert!(failures.is_empty(), "diverged: {failures:?}");
+}
