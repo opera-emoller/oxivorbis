@@ -121,6 +121,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "parity-fuzz"
+version = "0.1.0"
+dependencies = [
+ "lewtoff",
+]
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

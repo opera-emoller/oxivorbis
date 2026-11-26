@@ -1,0 +1,13 @@
+[package]
+name = "parity-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Differential fuzzer: lewtoff vs the in-tree libvorbis oracle-encoder, byte parity."
+
+[[bin]]
+name = "parity-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+lewtoff = { path = "../.." }
