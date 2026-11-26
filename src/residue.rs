@@ -449,11 +449,11 @@ pub(crate) fn _01class(
         let mut max = 0i32;
         let mut ent = 0i32;
         for k in 0..samples_per_partition {
-            let v = in_[0][offset + k].abs();
+            let v = in_[0][offset + k].wrapping_abs();
             if v > max {
                 max = v;
             }
-            ent += v;
+            ent = ent.wrapping_add(v);
         }
         eprintln!(
             "R_PART0: max={} ent_pre={} ent_post={} scale={}",
@@ -474,12 +474,15 @@ pub(crate) fn _01class(
         for j in 0..ch {
             let mut max: i32 = 0;
             let mut ent: i32 = 0;
+            // C's int `abs()` and `ent +=` wrap (in practice) on the
+            // saturated quantized values extreme input produces; wrapping
+            // ops keep that, and the release output, without debug panics.
             for k in 0..samples_per_partition {
-                let v = in_[j][offset + k].abs();
+                let v = in_[j][offset + k].wrapping_abs();
                 if v > max {
                     max = v;
                 }
-                ent += in_[j][offset + k].abs();
+                ent = ent.wrapping_add(v);
             }
             // C: ent *= scale (int *= float → multiplied in f32, truncated to int).
             let ent = (ent as f32 * scale) as i32;
@@ -534,12 +537,12 @@ pub(crate) fn _2class(
         let mut angmax: i32 = 0;
         let mut j = 0;
         while j < samples_per_partition {
-            let v = in_[0][l].abs();
+            let v = in_[0][l].wrapping_abs();
             if v > magmax {
                 magmax = v;
             }
             for k in 1..ch {
-                let v = in_[k][l].abs();
+                let v = in_[k][l].wrapping_abs();
                 if v > angmax {
                     angmax = v;
                 }

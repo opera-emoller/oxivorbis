@@ -7,7 +7,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use lewtoff::{Channels, Encoder, Options, SampleRate};
+use lewtoff::{Channels, Encoder, Options, Quality, SampleRate};
 use rayon::prelude::*;
 
 /// Run `f` on its own thread and fail if it doesn't finish within
@@ -188,4 +188,150 @@ fn encoder_moves_into_pool() {
         out
     });
     assert!(got == want, "encoder moved into a pool differs");
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial f32 input
+// ---------------------------------------------------------------------------
+
+const CONFIGS: [(SampleRate, Channels); 4] = [
+    (SampleRate::Hz44100, Channels::Stereo),
+    (SampleRate::Hz44100, Channels::Mono),
+    (SampleRate::Hz48000, Channels::Stereo),
+    (SampleRate::Hz48000, Channels::Mono),
+];
+
+/// Decode `ogg` with lewton; panics if it isn't a valid stream. Returns
+/// the stream length in frames (the final granule position; lewton itself
+/// doesn't trim the last packet to it).
+fn decode(ogg: &[u8]) -> usize {
+    let mut rdr = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(ogg))
+        .expect("lewton rejects the headers");
+    let mut decoded = 0;
+    while let Some(pcm) = rdr.read_dec_packet().expect("lewton rejects a packet") {
+        decoded += pcm[0].len();
+    }
+    let len = rdr.get_last_absgp().unwrap_or(0) as usize;
+    assert!(decoded >= len, "decoded {decoded} frames < granule {len}");
+    len
+}
+
+/// Named adversarial signals, `frames` frames of `ch` channels each.
+fn adversarial(frames: usize, ch: usize) -> Vec<(&'static str, Vec<f32>)> {
+    let n = frames * ch;
+    let mut rng = Rng(0xADD);
+    let sign = |i: usize| if i % 2 == 0 { 1.0f32 } else { -1.0 };
+    let mut v = vec![
+        ("const +1e30", vec![1e30; n]),
+        ("const -f32::MAX", vec![-f32::MAX; n]),
+        (
+            "alternating ±f32::MAX per frame",
+            (0..n).map(|i| sign(i / ch) * f32::MAX).collect(),
+        ),
+        (
+            "alternating ±1e30 per sample",
+            (0..n).map(|i| sign(i) * 1e30).collect(),
+        ),
+        (
+            "impulses ±f32::MAX in silence",
+            (0..n)
+                .map(|i| {
+                    if (i / ch) % 1500 == 0 {
+                        sign(i / 1500) * f32::MAX
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+        ),
+        (
+            "sweep 1 to f32::MAX",
+            (0..n)
+                .map(|i| sign(i / 3) * 2f32.powf(128.0 * (i / ch) as f32 / frames as f32))
+                .map(|x| x.clamp(f32::MIN, f32::MAX))
+                .collect(),
+        ),
+    ];
+    v.push((
+        "impulses ±3.3e7 in quiet noise",
+        (0..n)
+            .map(|i| {
+                if (i / ch) % 777 == 0 {
+                    sign(i / 777) * 3.3e7
+                } else {
+                    rng.unit() * 1e-3
+                }
+            })
+            .collect(),
+    ));
+    v.push((
+        "random sign and exponent",
+        (0..n)
+            .map(|_| {
+                let bits = rng.next();
+                let exp = (bits % 254) as u32 + 1; // any normal exponent
+                f32::from_bits(((bits >> 32) as u32 & 0x8000_0000) | (exp << 23))
+            })
+            .collect(),
+    ));
+    v.push((
+        "random magnitude up to 1e38",
+        (0..n)
+            .map(|_| rng.unit() * 10f32.powf(rng.unit().abs() * 38.0))
+            .collect(),
+    ));
+    v
+}
+
+/// Extreme finite f32 at q-1/0/5/10 in every config: no panic (debug
+/// builds check integer overflow) and a stream lewton decodes to the
+/// right length.
+#[test]
+fn adversarial_f32_decodes() {
+    // Shorter in debug builds, which are slow.
+    let frames = if cfg!(debug_assertions) {
+        9_000
+    } else {
+        30_000
+    };
+    for (rate, channels) in CONFIGS {
+        let ch = channels.count() as usize;
+        for (name, pcm) in adversarial(frames, ch) {
+            for q in [-1.0f32, 0.0, 5.0, 10.0] {
+                let opts = Options::default().with_quality(Quality::new(q).unwrap());
+                let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+                let got = decode(&ogg);
+                assert_eq!(
+                    got, frames,
+                    "{name} q{q} {rate:?} {channels:?}: decoded {got} frames"
+                );
+            }
+        }
+    }
+}
+
+/// A single huge sample, alone and in tiny inputs.
+#[test]
+fn adversarial_f32_tiny_inputs() {
+    for (rate, channels) in CONFIGS {
+        let ch = channels.count() as usize;
+        for v in [
+            3.3e7f32,
+            -3.3e7,
+            1e30,
+            f32::MAX,
+            f32::MIN,
+            f32::MIN_POSITIVE,
+        ] {
+            for frames in [1usize, 2, 64, 300] {
+                let pcm = vec![v; frames * ch];
+                for q in [-1.0f32, 0.0, 5.0, 10.0] {
+                    let opts = Options::default().with_quality(Quality::new(q).unwrap());
+                    let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+                    let got = decode(&ogg);
+                    assert_eq!(got, frames, "{v} x{frames} q{q} {rate:?} {channels:?}");
+                }
+            }
+        }
+    }
 }
