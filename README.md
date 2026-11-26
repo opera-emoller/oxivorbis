@@ -250,24 +250,31 @@ own test suite and are not part of the API.
 
 ## Performance
 
-Measured on a 10-core Apple M4 with Rust 1.95, encoding 60 s of 44.1 kHz
-stereo at Q5 (s16le from stdin, Ogg to `/dev/null`, hyperfine via
-`just bench`). The reference is `oggenc` 1.4.3 / libvorbis 1.3.7 from
-Homebrew, an optimized build.
+Encoding a 261 s real stereo track (44.1 kHz s16le from stdin, Ogg to
+`/dev/null`, hyperfine, mean of 6–8 runs). The reference is `oggenc`
+1.4.3 / libvorbis 1.3.7 as packaged: Homebrew on macOS, Ubuntu on
+Linux. libvorbis's build defaults to `-O3 -ffast-math`, which lets the
+compiler fuse and reorder float operations. lewtoff can't do that and
+stay bit-exact, so its speed comes from doing less work rather than
+looser arithmetic.
 
-| Encoder              | Wall time | CPU time | Peak RSS, 10 min streamed |
-|----------------------|-----------|----------|---------------------------|
-| lewtoff (serial)     | ~305 ms   | ~300 ms  | ~3.5 MB                   |
-| lewtoff (`parallel`) | ~73 ms    | ~520 ms  | ~19 MB                    |
-| oggenc               | ~268 ms   | ~265 ms  | ~3 MB                     |
+| Machine | Quality | oggenc | lewtoff serial | lewtoff `parallel` |
+|---|---|---|---|---|
+| Apple M4 (10 cores) | q-1 | 1.66 s | **1.19 s** | **0.27 s** |
+| | q5 | 1.29 s | **1.09 s** | **0.26 s** |
+| | q10 | 1.46 s | **1.25 s** | **0.30 s** |
+| Intel Core Ultra 7 356H (16 cores, serial pinned to a P-core) | q-1 | 2.16 s | **1.56 s** | **0.26 s** |
+| | q5 | 1.79 s | **1.53 s** | **0.25 s** |
+| | q10 | 2.06 s | **1.79 s** | **0.29 s** |
 
-The input was a synthesized tone-plus-pink-noise signal. On real music
-the serial build takes around 335 ms for the same length. Serial
-lewtoff runs at roughly 0.8 to 0.9× the speed of optimized libvorbis.
-The parallel build is about 3.5 to 4× faster than oggenc on long
-inputs, and the speedup grows with input length. The RSS column uses
-`Encoder` streaming a 10-minute input; memory does not grow with input
-length.
+Serial lewtoff is 13–30% faster than oggenc. With `parallel`, it is 5–8×
+faster on long inputs, at about 1.8× the total CPU time of serial.
+
+Memory: streaming through `Encoder` peaks at about 3–4 MB serial and
+about 17–19 MB with `parallel` (M4/x86), whatever the input length.
+One-shot `encode` also holds the whole input and output. A new
+`Encoder` costs about 20 µs once the setup for its rate, channels and
+quality is cached, and under about 1 ms the first time in a process.
 
 ## License
 
