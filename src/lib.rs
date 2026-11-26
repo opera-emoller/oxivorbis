@@ -52,7 +52,6 @@ mod setup_templates;
 // The Q5-era BLOCK_SIZE / HALF_BLOCK aliases in window.rs are unused now
 // that block sizes come from QualityConfig; window.rs is being made
 // block-size generic separately, so silence that here rather than edit it.
-#[allow(dead_code)]
 mod window;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
