@@ -1,273 +1,236 @@
 # lewtoff
 
-A pure-Rust Ogg Vorbis **encoder** whose audio packets are bit-identical
-to libvorbis 1.3.7 (VBR mode, oggenc qualities -1–10, fractional
-included) for a constrained input space.
-Named after [lewton](https://github.com/RustAudio/lewton) — the pure-Rust
-Vorbis decoder. lewtoff is its encoder counterpart.
+[![crates.io](https://img.shields.io/crates/v/lewtoff.svg)](https://crates.io/crates/lewtoff)
+[![docs.rs](https://docs.rs/lewtoff/badge.svg)](https://docs.rs/lewtoff)
 
-The crate forbids `unsafe` and pulls in a single runtime dependency
-(the `ogg` crate, for page framing and CRC). An optional `parallel`
-feature adds Rayon-based block-level fan-out — see
-[Parallel encoding](#parallel-encoding) below.
+A pure-Rust Ogg Vorbis **encoder** that produces the same bytes as
+libvorbis 1.3.7. It supports VBR mode at oggenc qualities -1 to 10,
+including fractional ones.
 
-## Parity contract
+- No `unsafe`, no C, no build script. The only runtime dependency is
+  [`ogg`](https://crates.io/crates/ogg), used for page framing and CRC.
+- Works on `wasm32-unknown-unknown`.
+- Has a one-shot API and a streaming API, and takes `i16` or `f32`
+  input. Streaming memory stays bounded however long the input is.
+- No `Result`s and no panics. Rates, channel layouts and qualities are
+  typed, and every input encodes.
+- An optional `parallel` feature encodes long inputs several times
+  faster. Its output is byte-identical to the serial path.
 
-- **Audio:** every audio packet, granule position and page boundary is
-  identical to libvorbis 1.3.7 (built without FMA contraction) fed the
-  same samples through `vorbis_analysis_buffer` in 64-frame
-  `vorbis_analysis_wrote` chunks — what `tools/oracle-encoder` does. The
-  chunking lewtoff's caller uses does not matter.
-- **Headers:** identical given the same stream serial, vendor string and
-  comments. lewtoff's defaults are its own (serial
-  `lewtoff::DEFAULT_SERIAL`, vendor `"lewtoff <version>"`, no comments),
-  so a default encode is *not* byte-identical to `oggenc -q X`, whose
-  serial is random and whose vendor/comments differ. Set
-  `Options::{serial, vendor, comments}` to reproduce another encoder's
-  headers.
-- oggenc itself feeds 1024-frame chunks, which changes libvorbis's start-
-  of-stream LPC pre-extrapolation, so oggenc's audio matches lewtoff only
-  for inputs where that does not matter (e.g. silence).
+The name comes from [lewton](https://github.com/RustAudio/lewton), the
+pure-Rust Vorbis decoder. lewtoff is the encoder to go with it.
 
-## Status
+## Install
 
-All synthetic parity tests (silence, sine 440, ramps, noise+tones,
-transients; mono+stereo at 44.1k and 48k; base qualities -0.1–1.0, i.e.
-oggenc `-q -1` … `-q 10`; input lengths from 0 frames up; i16 and f32
-input) match the libvorbis 1.3.7 oracle byte-for-byte. A real-audio
-corpus sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
-`<repo_root>/corpus/` directory the contributor has symlinked in and
-asserts the same parity for every file recursively; the most recent
-Q5 sweep over a 5954-file corpus passed 100% byte-identical, and the 14
-macOS system sounds pass at q-1 … q10 in all four rate/channel configs.
-`tools/parity-fuzz` (a differential fuzzer against the oracle, streaming
-each case through `Encoder` in random chunk sizes) runs clean over tens
-of thousands of generated signals per quality; its minimized failures are
-kept as regression vectors in `tests/vectors/fuzz/`
-(`oracle_parity_fuzz_repros`).
+```toml
+[dependencies]
+lewtoff = "0.1"
+# or, for multi-core encoding of long inputs:
+# lewtoff = { version = "0.1", features = ["parallel"] }
+```
 
-The encoder is a literal port of libvorbis's streaming analysis state
-machine (`vorbis_analysis_wrote` / `vorbis_analysis_blockout` /
-`_ve_envelope_search`), driven internally in the same 64-frame chunks as
-the oracle, so block sizes, end-of-stream handling and the LPC pre/post-
-extrapolation fall out without whole-input passes. See
-`docs/streaming-design.md`.
+The minimum supported Rust version is 1.85 (edition 2024).
 
-## Use
+## Quick start
 
-One-shot:
+Encode a whole buffer in one call:
+
+```rust
+use lewtoff::{Channels, Options, SampleRate};
+
+// One second of interleaved 16-bit stereo PCM (silence, for brevity).
+let pcm = vec![0i16; 44_100 * 2];
+
+// Quality 5, deterministic default serial, vendor "lewtoff <version>".
+let ogg: Vec<u8> = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+assert_eq!(&ogg[..4], b"OggS");
+```
+
+Stream chunks of any size, including odd sample counts that split a
+stereo frame. Each call returns the Ogg pages it completed:
+
+```rust,no_run
+use lewtoff::{Channels, Encoder, Options, SampleRate};
+use std::io::Write;
+
+fn main() -> std::io::Result<()> {
+    let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+    let mut out = std::fs::File::create("out.ogg")?;
+    for chunk in vec![0i16; 10 * 44_100 * 2].chunks(4096) {
+        // e.g. blocks coming from a decoder
+        out.write_all(enc.write(chunk))?; // pages completed so far (may be empty)
+    }
+    out.write_all(&enc.finish())?; // the rest of the stream
+    Ok(())
+}
+```
+
+`f32` input works the same way. Samples are nominally in -1.0..=1.0 and
+are passed to the encoder unscaled:
+
+```rust
+use lewtoff::{Channels, Encoder, Options, SampleRate};
+
+let floats: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.0576).sin() * 0.5).collect();
+
+let ogg = lewtoff::encode_f32(&floats, SampleRate::Hz48000, Channels::Mono, &Options::default());
+
+// Encoder::write_f32 is the streaming form; it can be mixed with write().
+let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
+let mut streamed = enc.write_f32(&floats).to_vec();
+streamed.extend_from_slice(&enc.finish());
+assert_eq!(streamed, ogg);
+```
+
+Set the quality, stream serial, vendor and comments:
 
 ```rust
 use lewtoff::{Channels, Options, Quality, SampleRate};
 
-let pcm: &[i16] = /* interleaved 16-bit PCM */;
-
-// Quality 5, deterministic default serial, vendor "lewtoff <version>".
-let ogg = lewtoff::encode(pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
-
-// Any quality on oggenc's -q scale (fractional allowed), plus tags.
 let opts = Options::default()
-    .with_quality(Quality::new(7.5).expect("-1..=10"))
+    .with_quality(Quality::new(7.5).expect("in -1..=10")) // oggenc -q 7.5
     .with_serial(0x1234_5678)
+    .with_vendor("my-app 2.0")
     .with_comment("TITLE", "Example")
     .with_comment("ARTIST", "Someone");
-let ogg = lewtoff::encode(pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
 
-// f32 input, nominally -1.0..=1.0.
-let floats: &[f32] = /* interleaved f32 PCM */;
-let ogg = lewtoff::encode_f32(floats, SampleRate::Hz48000, Channels::Mono, &opts);
+// Rates and channel counts from a file header convert with TryFrom.
+let rate = SampleRate::try_from(44_100u32).expect("44100 or 48000");
+let channels = Channels::try_from(2u16).expect("1 or 2");
+
+let pcm = vec![0i16; 44_100 * 2];
+let ogg = lewtoff::encode(&pcm, rate, channels, &opts);
+assert_eq!(&ogg[..4], b"OggS");
 ```
 
-Streaming, in chunks of any size (including odd sample counts that split
-stereo frames), with memory bounded independent of input length:
+[`examples/`](examples/) has two runnable programs. `encode_wav`
+converts a 16-bit WAV file to `.ogg`. `stream` reads s16le from stdin
+and writes Ogg to stdout:
 
-```rust
-use lewtoff::{Channels, Encoder, Options, SampleRate};
-use std::io::Write;
-
-let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
-let mut out = std::fs::File::create("out.ogg")?;
-for chunk in pcm_source() {          // e.g. &[i16] blocks from a decoder
-    out.write_all(enc.write(chunk))?; // the Ogg pages completed so far
-}
-// enc.write_f32(&floats) works the same way, and the two can be mixed.
-out.write_all(&enc.finish())?;
+```sh
+cargo run --release --example encode_wav -- input.wav output.ogg 6
+ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example stream -- 44100 2 > song.ogg
 ```
-
-The concatenated output of `write`/`write_f32` and `finish` is exactly
-the bytes the one-shot functions return for the same samples and
-options. Each `write` returns a slice of an internal buffer (no
-allocation per call), valid until the next call.
-
-There is no `Result` anywhere: rates, channel layouts and qualities are
-typed (`SampleRate`, `Channels`, `Quality::new` returns `None` outside
--1..=10 or for NaN) and no input makes the encoder panic.
-
-`Quality` is converted to libvorbis's `base_quality` exactly as oggenc
-1.4.3 does — `(float)((double)(float)q * 0.1)` — so e.g. `9.344` picks
-the same float (and the same ID-header nominal bitrate) as
-`oggenc -q 9.344`, not the nearest float to 0.9344.
 
 ## Supported input
 
 | | |
 |---|---|
 | Sample format | Interleaved `i16` (scaled by 1/32768) or `f32` (passed through unscaled) |
-| Sample rate   | 44100 Hz **or** 48000 Hz |
-| Channels      | Mono **or** Stereo |
-| Quality       | -1.0 – 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
+| Sample rate   | 44100 Hz **or** 48000 Hz (`SampleRate`) |
+| Channels      | Mono **or** stereo (`Channels`) |
+| Quality       | -1.0 to 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
 
-- **f32:** values outside ±1.0, subnormals and `-0.0` are encoded as
-  libvorbis would (parity is tested up to ±10⁴; at absurd magnitudes
-  libvorbis's own float-to-int conversions are undefined, but lewtoff
-  still produces a valid stream). NaN and ±infinity, which make libvorbis
-  emit a corrupt stream, are encoded as `0.0`.
-- **Odd sample counts in stereo:** `Encoder::write` carries an unpaired
-  trailing sample over to the next call; `finish` and the one-shot
+- **Quality** follows oggenc's `-q` scale. `Quality::new(q)` returns
+  `None` for NaN or for values outside -1..=10. The value is converted
+  to libvorbis's `base_quality` exactly as oggenc 1.4.3 does it, with
+  `(float)((double)(float)q * 0.1)`. So `Quality::new(9.344)` picks the
+  same setup, and the same nominal bitrate in the ID header, as
+  `oggenc -q 9.344`. Qualities below 0 select libvorbis's q-1 template
+  (512/4096-sample blocks) and match byte for byte as well.
+- **f32 edge cases:** values outside ±1.0, subnormals and `-0.0` are
+  encoded the way libvorbis encodes them. Parity is tested up to ±10⁴.
+  At extreme magnitudes libvorbis's own float-to-int conversions are
+  undefined, but lewtoff still produces a valid stream. NaN and
+  ±infinity make libvorbis emit a corrupt stream, so lewtoff encodes
+  them as `0.0`.
+- **Odd sample counts in stereo:** `Encoder::write` holds an unpaired
+  trailing sample until the next call. `finish` and the one-shot
   functions drop a final unpaired sample.
+- Other rates and more than two channels are not supported.
+  `SampleRate` and `Channels` are `#[non_exhaustive]`, so support can
+  be added later without breaking changes.
 
-Qualities -1 … <0 select libvorbis's q-1 template (512/4096-sample
-blocks instead of 256/2048) and are byte-identical too.
+## Parity contract
 
-## Parallel encoding
+- **Audio:** every audio packet, granule position and page boundary is
+  identical to what libvorbis 1.3.7 produces when it is built without
+  FMA contraction and fed the same samples in 64-frame
+  `vorbis_analysis_wrote` chunks. How you split the input across
+  `write` calls does not affect the output. The concatenated output of
+  `write`/`write_f32` and `finish` is exactly what `encode`/`encode_f32`
+  return.
+- **Headers:** identical, given the same stream serial, vendor string
+  and comments. lewtoff's defaults are its own. The serial is
+  `lewtoff::DEFAULT_SERIAL`, the vendor is `lewtoff::DEFAULT_VENDOR`
+  (`"lewtoff <version>"`), and there are no comments. Default output is
+  therefore fully deterministic. It is *not* byte-identical to
+  `oggenc -q X`, which picks a random serial and writes a different
+  vendor and comments. To reproduce another encoder's headers, set
+  `Options::{serial, vendor, comments}`.
+- **oggenc's own audio** is not a byte-for-byte reference. oggenc feeds
+  libvorbis 1024-frame chunks, which changes the LPC pre-extrapolation
+  at the start of the stream. Its audio therefore matches lewtoff only
+  where that makes no difference, such as silence. Packaged libvorbis
+  builds may also use FMA.
 
-For long inputs (minutes of audio), enable the `parallel` feature to fan
-per-block analysis (MDCT, FFT, psy, floor, residue) across the global
-Rayon thread pool. Envelope analysis, bit-packing and Ogg page emission
-stay serial; the output is byte-identical to the serial path. Blocks are
-analyzed in bounded, pipelined batches (32 × the Rayon thread count; the
-pool analyzes earlier batches while the calling thread windows the next),
-so streaming memory stays bounded — a few MB — and `write` returns pages
-a few batches (several seconds of audio) later than the serial build.
+**Status:** a real-audio corpus of 6653 files is byte-identical to the
+libvorbis 1.3.7 reference build in all four rate/channel configurations
+at q-1, q5 and q10 (79,836 encodes), and at 44.1 kHz stereo also at q0,
+q2, q3 and q8. A differential fuzzer has run more than 100k generated
+cases clean. Parity is verified on macOS arm64 and Linux x86_64 (glibc).
+lewtoff's output is also identical on Windows x86_64 (MSVC).
 
-```toml
-[dependencies]
-lewtoff = { version = "0.1", features = ["parallel"] }
-```
+This works because libvorbis's encoder uses f32 throughout. Without FMA
+contraction, Rust's `f32` arithmetic on every tier-1 target gives the
+same IEEE 754 results as that C build. Transcendentals
+(`sin`/`cos`/`log`/`exp`) are precomputed into tables taken from
+libvorbis, so at runtime the encoder only does table lookups and
+arithmetic, and platform libm differences don't matter. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
-The API is the same. The feature is off by default to keep the
-default build lean (single `ogg` runtime dep) and WASM-friendly — Rayon
-needs `SharedArrayBuffer` and special host headers in browsers, so
-WASM consumers should leave it off.
+## Features
 
-Speedup scales with audio length. On an 8-core M-series Mac, encoding
-a 261s MP3:
+| Feature    | Default | Effect |
+|------------|---------|--------|
+| `parallel` | off     | Analyzes blocks on the global Rayon pool. Adds `rayon` as a dependency. |
 
-| Path     | Wall  | User CPU | vs oggenc |
-|----------|-------|----------|-----------|
-| serial   | 1.45s | 1.42s    | ~0.83×    |
-| parallel | 0.30s | 1.97s    | ~4.0×     |
+The `parallel` feature spreads per-block analysis (MDCT, FFT,
+psychoacoustics, floor, residue) across the global
+[Rayon](https://crates.io/crates/rayon) thread pool. Envelope analysis,
+bit-packing and Ogg page emission stay serial. The API is unchanged and
+the output bytes are identical to the serial build. Blocks are
+processed in bounded, pipelined batches of 32 × the thread count, so
+streaming memory stays bounded. In exchange, `write` hands back pages a
+few seconds of audio later than the serial build.
 
-Sub-second inputs see no speedup (too few blocks to feed all cores) but
-no overhead penalty either. If you're already doing outer parallelism
-across many files (e.g. a game-asset pipeline), leave `parallel` off
-— Rayon would compose without oversubscribing, but the per-batch
-job bookkeeping adds a little overhead you don't need.
+Leave `parallel` off in these cases:
 
-## How parity is enforced
+- **WASM:** Rayon in browsers needs `SharedArrayBuffer` and
+  cross-origin isolation headers. The default build has no such
+  requirements and compiles for `wasm32-unknown-unknown` as is.
+- **You already parallelize across files**, for example in an asset
+  pipeline. Rayon would not oversubscribe the CPU, but the per-batch
+  bookkeeping is overhead you don't need.
+- **Short clips:** sub-second inputs have too few blocks to keep all
+  cores busy.
 
-`tests/parity.rs` (behind the `oracle` feature) byte-diffs lewtoff's
-output against two reference encoders:
+The crate's other features (`oracle`, `__internal`) exist only for its
+own test suite and are not part of the API.
 
-- **`oracle_parity_*`** — the authoritative tests. They shell out to
-  `tools/oracle-encoder/oracle-encoder`, a small C program that
-  statically links the libvorbis 1.3.7 sources vendored at
-  `tools/debug-libvorbis-dump/vendored-libvorbis/`, compiled with
-  `-O0 -ffp-contract=off -std=gnu99` so the bytes are deterministic
-  across hosts. Covers silence, a 440 Hz sine, and a full-range ramp.
-- **`parity_*`** — the same comparison against the system `oggenc`
-  (vorbis-tools), i.e. whatever libvorbis your package manager ships.
-  Only the silence cases are enabled: packaged libvorbis builds are
-  optimized and may use FMA, so tone-rich input (sine, ramp) can drift
-  from the `-O0` reference. Those cases are `#[ignore]`d with a pointer
-  to their `oracle_parity_*` counterparts.
+## Performance
 
-Install the prerequisites and build the oracle once after cloning:
+Measured on a 10-core Apple M4 with Rust 1.95, encoding 60 s of 44.1 kHz
+stereo at Q5 (s16le from stdin, Ogg to `/dev/null`, hyperfine via
+`just bench`). The reference is `oggenc` 1.4.3 / libvorbis 1.3.7 from
+Homebrew, an optimized build.
 
-```sh
-sudo apt install libogg-dev vorbis-tools    # or: brew install libogg vorbis-tools
-./tools/oracle-encoder/build.sh
-```
+| Encoder              | Wall time | CPU time | Peak RSS, 10 min streamed |
+|----------------------|-----------|----------|---------------------------|
+| lewtoff (serial)     | ~305 ms   | ~300 ms  | ~3.5 MB                   |
+| lewtoff (`parallel`) | ~73 ms    | ~520 ms  | ~22 MB                    |
+| oggenc               | ~268 ms   | ~265 ms  | ~3 MB                     |
 
-Then:
-
-```sh
-cargo nextest run --features oracle parity_    # matches both parity_* and oracle_parity_*
-just parity                                    # same, for serial AND parallel paths
-```
-
-For the `corpus_parity_sweep` test, symlink your audio corpus at
-`<repo_root>/corpus/` and run
-
-```sh
-cargo nextest run --features oracle --no-tests=warn corpus_parity_sweep -- --include-ignored
-```
-
-The directory is gitignored; the sweep walks it recursively and accepts
-`.wav`, `.mp3`, `.ogg`, `.flac`, `.m4a`, `.aif`, and `.aiff`. Files are
-decoded via `ffmpeg` (so it must be on `PATH`) to s16le 44.1kHz stereo,
-then encoded by both lewtoff and the in-tree oracle-encoder and compared
-byte-for-byte. Set
-`CORPUS_LIMIT=N` to test only the first N files for a quick smoke run.
-
-## Tests
-
-```sh
-cargo nextest run                              # unit + integration
-cargo nextest run --features oracle parity_    # parity vs oracle-encoder + oggenc
-just parity                                    # parity for serial AND parallel paths
-```
-
-Quality-parameterized parity lives in `tests/parity.rs` as the
-`oracle_parity_q::<quality>::<config>::<signal>` matrix: one
-base_quality per libvorbis template interval (0.05 … 0.95, plus 0.0,
-0.5 and 1.0), the q-1 range (-0.1, -0.08, -0.05, -0.01, -0.0000001) ×
-44.1/48 kHz × mono/stereo × silence / sine / ramp / noise+tone / 10 s
-transients. `oracle_parity_short_input` sweeps input lengths 0..2100
-frames (around the 2048-sample long block) at two qualities.
-`parity_oggenc_quality_conversion` pins the oggenc `-q` → base_quality
-float conversion against the system `oggenc`. The corpus sweep takes a
-libvorbis base_quality via `CORPUS_QUALITY` (default 0.5), e.g.
-`just corpus 100 "" 0.3`.
-
-`tests/parity_f32.rs` checks `f32` input against the oracle's f32 mode
-(`oracle-encoder <rate> <ch> <base_quality> f32`, which reads f32 LE and
-passes the floats to `vorbis_analysis_buffer` unchanged): several
-qualities and configs, values beyond ±1.0, subnormals, `-0.0`, NaN/inf
-(encoded as 0.0) and odd-sized chunked writes. `tests/streaming.rs`
-checks that any chunking of `write` / `write_f32` gives the one-shot
-bytes, that pages are emitted before `finish`, that the analysis buffer
-stays bounded over 10 minutes, and (with `parallel`) that the batch size
-never changes the output. Its long-input tests are `#[ignore]`d in debug
-builds; run them with `--release`.
-
-The integration tests reach a few unstable internals (header writers,
-exact-`base_quality` entry points) through the undocumented `__internal`
-cargo feature, which the crate enables for its own tests via a
-self dev-dependency, so no extra flags are needed.
-
-CI (`.github/workflows/ci.yml`) installs `vorbis-tools`, builds the
-oracle from the vendored sources, and runs both passes on Ubuntu, plus a `wasm32-unknown-unknown`
-build to lock in target portability.
-
-## Why this works
-
-libvorbis's encoder is f32-throughout and does not use FMA when built
-with `-ffp-contract=off`. Rust's `f32` arithmetic on every tier-1
-target produces the same IEEE 754 results as that C build, provided no
-operation is contracted into FMA. Transcendentals (`sin`/`cos`/`log`/
-`exp`) are precomputed at build time — at runtime the encoder only
-does table lookups and arithmetic, so libm differences across platforms
-don't matter.
-
-The detailed precision pitfalls hit during the port — f32-vs-f64
-promotion, `rint` vs `.round()`, the IEEE_FLOAT32 `todB` inline, and so
-on — live in the commit log.
+The input was a synthesized tone-plus-pink-noise signal. On real music
+the serial build takes around 335 ms for the same length. Serial
+lewtoff runs at roughly 0.8 to 0.9× the speed of optimized libvorbis.
+The parallel build is about 3.5 to 4× faster than oggenc on long
+inputs, and the speedup grows with input length. The RSS column uses
+`Encoder` streaming a 10-minute input; memory does not grow with input
+length.
 
 ## License
 
-Apache-2.0 (see `LICENSE`). lewtoff is a clean-room port of portions of
-libvorbis 1.3.7, which is BSD-3-Clause from the Xiph.Org Foundation; the
-upstream attribution is in `NOTICE`. The vendored libvorbis source under
-`tools/debug-libvorbis-dump/vendored-libvorbis/` retains its own
-`COPYING`.
+Apache-2.0 (see [`LICENSE`](LICENSE)). lewtoff is a port of portions of
+libvorbis 1.3.7, which is BSD-3-Clause and copyright the Xiph.Org
+Foundation. The upstream attribution is in [`NOTICE`](NOTICE).

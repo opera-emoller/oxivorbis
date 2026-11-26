@@ -42,10 +42,31 @@
 //! chunks. The header packets are identical given the same stream serial,
 //! vendor string and comments, which are set through [`Options`].
 //!
-//! See `README.md` for scope, design and how parity is tested.
+//! The default vendor string is [`DEFAULT_VENDOR`] (`"lewtoff <version>"`)
+//! and the default serial is [`DEFAULT_SERIAL`], so default output is fully
+//! deterministic.
+//!
+//! # Cargo features
+//!
+//! - **`parallel`** (off by default): analyze blocks (MDCT, psychoacoustics,
+//!   floor, residue) on the global Rayon thread pool. The API and the output
+//!   bytes are unchanged; long inputs encode several times faster. Leave it
+//!   off for `wasm32` targets and when you already parallelize across files.
+//!
+//! The crate has no other public features; `oracle` and `__internal` exist
+//! only for this crate's own test suite and are not part of the API.
+//!
+//! See the [README](https://github.com/opera-emoller/lewtoff#readme) for
+//! performance numbers, and `CONTRIBUTING.md` for how parity is tested.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+// Compile the README's code blocks as doctests so they cannot go stale.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 #[allow(dead_code)]
 mod tables;
