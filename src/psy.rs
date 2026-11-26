@@ -33,6 +33,9 @@ const NEGINF: f32 = -9999.0_f32;
 /// long block (n=2048) reaches 841 at 44.1kHz, so 1024 still has headroom.
 /// (n-sized scratch uses `window::MAX_LONG_HALF` instead.)
 const MAX_OCTAVE_LINES: usize = 1024;
+/// Upper bound on `eighth_octave_lines` (8 in every libvorbis setup);
+/// padding for the phase-major seed scratch in `vp_tonemask`.
+const MAX_LINESPER: usize = 64;
 
 /// Q5 normal_partition is 32; older 16-partition layouts also fit. Used for
 /// stack-allocated scratch in `vp_couple_quantize_normalize`.
@@ -694,6 +697,7 @@ fn seed_curve(
     n: i64,
     linesper: i32,
     db_offset: f32,
+    qlen: usize,
 ) {
     let choice = (((amp + db_offset - P_LEVEL_0) * 0.1) as i32)
         .max(0)
@@ -728,20 +732,18 @@ fn seed_curve(
     if hi <= lo {
         return;
     }
-    // Re-slice seed[] to the strided window we will actually touch
-    // ([sp_lo ..= sp_max]) — checks the upper bound once. chunks_mut(lp)
-    // then yields non-empty subslices whose [0] is the next stored cell,
-    // letting the compiler elide per-iter bounds checks on `seed`.
+    // `seed` is stored phase-major (see `vp_tonemask`): line `s` lives at
+    // `(s % lp) * qlen + s / lp`. The strided cells this call touches,
+    // `sp_lo + k*lp`, are therefore contiguous, so the max below is a plain
+    // element-wise loop the compiler vectorizes (each lane does the scalar
+    // add and compare-select).
     let lp_us = lp as usize;
     let sp_lo = (seedptr0 + lp * (lo as i64 - post0 as i64)) as usize;
-    let sp_max = sp_lo + (hi - lo - 1) * lp_us;
-    let win = &mut seed[sp_lo..=sp_max];
-    for (chunk, &c) in win.chunks_mut(lp_us).zip(&curve[lo..hi]) {
+    let start = (sp_lo % lp_us) * qlen + sp_lo / lp_us;
+    let dst = &mut seed[start..start + (hi - lo)];
+    for (d, &c) in dst.iter_mut().zip(&curve[lo..hi]) {
         let lin = amp + c;
-        let dst = &mut chunk[0];
-        if *dst < lin {
-            *dst = lin;
-        }
+        *d = if *d < lin { lin } else { *d };
     }
 }
 
@@ -756,6 +758,7 @@ fn seed_loop(
     flr: &[f32],
     seed: &mut [f32],
     specmax: f32,
+    qlen: usize,
 ) {
     let n = p.n;
     let db_offset = p.vi.max_curve_dB - specmax;
@@ -787,6 +790,7 @@ fn seed_loop(
                 p.total_octave_lines as i64,
                 p.eighth_octave_lines,
                 db_offset,
+                qlen,
             );
         }
         i += 1;
@@ -1242,7 +1246,20 @@ pub fn vp_tonemask(
         logmask[i] = p.ath[i] + att;
     }
 
-    seed_loop(p, &p.tonecurves, logfft, logmask, seed, global_specmax);
+    // seed_loop works on a phase-major copy of the seed lines (line `s` at
+    // `(s % lp) * qlen + s / lp`), turning seed_curve's stride-lp scatter
+    // into contiguous runs. Transposed back before max_seeds.
+    let total = p.total_octave_lines as usize;
+    let lp = p.eighth_octave_lines as usize;
+    let qlen = total.div_ceil(lp);
+    let mut phase_arr = [NEGINF; MAX_OCTAVE_LINES + MAX_LINESPER];
+    let phase = &mut phase_arr[..qlen * lp];
+    seed_loop(p, &p.tonecurves, logfft, logmask, phase, global_specmax, qlen);
+    for (q, chunk) in seed.chunks_mut(lp).enumerate() {
+        for (r, s) in chunk.iter_mut().enumerate() {
+            *s = phase[r * qlen + q];
+        }
+    }
     if crate::debug_dump::dump_enabled() {
         use std::sync::atomic::{AtomicBool, Ordering};
         static FIRED: AtomicBool = AtomicBool::new(false);
