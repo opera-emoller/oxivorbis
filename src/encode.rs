@@ -538,11 +538,12 @@ impl EncoderCore {
     }
 
     /// Frames currently held in the analysis buffer (diagnostic).
+    #[cfg(any(test, feature = "__internal"))]
     pub(crate) fn buffered_frames(&self) -> usize {
         self.pcm[0].len()
     }
 
-    #[cfg(feature = "parallel")]
+    #[cfg(all(feature = "parallel", feature = "__internal"))]
     pub(crate) fn set_batch(&mut self, blocks: usize) {
         self.batch = blocks.max(1);
     }

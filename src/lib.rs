@@ -474,6 +474,7 @@ impl Encoder {
 
     /// Frames currently held in the analysis buffer. Diagnostic for the
     /// bounded-memory tests.
+    #[cfg(feature = "__internal")]
     #[doc(hidden)]
     pub fn buffered_frames(&self) -> usize {
         self.core.buffered_frames()
@@ -483,7 +484,7 @@ impl Encoder {
     /// at most 256 long blocks of 2048 or 128 of 4096). Output does not
     /// depend on it; exposed for tests.
     #[doc(hidden)]
-    #[cfg(feature = "parallel")]
+    #[cfg(all(feature = "parallel", feature = "__internal"))]
     pub fn set_parallel_batch(&mut self, blocks: usize) {
         self.core.set_batch(blocks);
     }
