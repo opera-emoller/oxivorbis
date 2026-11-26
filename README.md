@@ -20,7 +20,12 @@ oggenc `-q -1` … `-q 10`; input lengths from 0 frames up) match libvorbis
 sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
 `<repo_root>/corpus/` directory the contributor has symlinked in and
 asserts the same parity for every file recursively; the most recent
-Q5 sweep over a 5954-file corpus passed 100% byte-identical. The EOS
+Q5 sweep over a 5954-file corpus passed 100% byte-identical, and the 14
+macOS system sounds pass at q-1 … q10 in all four rate/channel configs.
+`tools/parity-fuzz` (a differential fuzzer against the oracle) runs clean
+over tens of thousands of generated signals per quality; its minimized
+failures are kept as regression vectors in `tests/vectors/fuzz/`
+(`oracle_parity_fuzz_repros`). The EOS
 `eofflag` / post-extrap `n_train` derivation runs a faithful chunk-by-
 chunk streaming simulation of libvorbis's `vorbis_analysis_blockout`
 (see `envelope::simulate_eofflag_bs`) so no per-input hardcodes are needed.
