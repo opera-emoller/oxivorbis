@@ -1,7 +1,7 @@
 # lewtoff
 
-A pure-Rust Ogg Vorbis **encoder** that produces byte-for-byte identical
-output to libvorbis 1.3.7 (VBR mode, oggenc qualities -1–10, fractional
+A pure-Rust Ogg Vorbis **encoder** whose audio packets are bit-identical
+to libvorbis 1.3.7 (VBR mode, oggenc qualities -1–10, fractional
 included) for a constrained input space.
 Named after [lewton](https://github.com/RustAudio/lewton) — the pure-Rust
 Vorbis decoder. lewtoff is its encoder counterpart.
@@ -11,81 +11,139 @@ The crate forbids `unsafe` and pulls in a single runtime dependency
 feature adds Rayon-based block-level fan-out — see
 [Parallel encoding](#parallel-encoding) below.
 
+## Parity contract
+
+- **Audio:** every audio packet, granule position and page boundary is
+  identical to libvorbis 1.3.7 (built without FMA contraction) fed the
+  same samples through `vorbis_analysis_buffer` in 64-frame
+  `vorbis_analysis_wrote` chunks — what `tools/oracle-encoder` does. The
+  chunking lewtoff's caller uses does not matter.
+- **Headers:** identical given the same stream serial, vendor string and
+  comments. lewtoff's defaults are its own (serial
+  `lewtoff::DEFAULT_SERIAL`, vendor `"lewtoff <version>"`, no comments),
+  so a default encode is *not* byte-identical to `oggenc -q X`, whose
+  serial is random and whose vendor/comments differ. Set
+  `Options::{serial, vendor, comments}` to reproduce another encoder's
+  headers.
+- oggenc itself feeds 1024-frame chunks, which changes libvorbis's start-
+  of-stream LPC pre-extrapolation, so oggenc's audio matches lewtoff only
+  for inputs where that does not matter (e.g. silence).
+
 ## Status
 
 All synthetic parity tests (silence, sine 440, ramps, noise+tones,
 transients; mono+stereo at 44.1k and 48k; base qualities -0.1–1.0, i.e.
-oggenc `-q -1` … `-q 10`; input lengths from 0 frames up) match libvorbis
-1.3.7 byte-for-byte. A real-audio corpus
-sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
+oggenc `-q -1` … `-q 10`; input lengths from 0 frames up; i16 and f32
+input) match the libvorbis 1.3.7 oracle byte-for-byte. A real-audio
+corpus sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
 `<repo_root>/corpus/` directory the contributor has symlinked in and
 asserts the same parity for every file recursively; the most recent
 Q5 sweep over a 5954-file corpus passed 100% byte-identical, and the 14
 macOS system sounds pass at q-1 … q10 in all four rate/channel configs.
-`tools/parity-fuzz` (a differential fuzzer against the oracle) runs clean
-over tens of thousands of generated signals per quality; its minimized
-failures are kept as regression vectors in `tests/vectors/fuzz/`
-(`oracle_parity_fuzz_repros`). The EOS
-`eofflag` / post-extrap `n_train` derivation runs a faithful chunk-by-
-chunk streaming simulation of libvorbis's `vorbis_analysis_blockout`
-(see `envelope::simulate_eofflag_bs`) so no per-input hardcodes are needed.
+`tools/parity-fuzz` (a differential fuzzer against the oracle, streaming
+each case through `Encoder` in random chunk sizes) runs clean over tens
+of thousands of generated signals per quality; its minimized failures are
+kept as regression vectors in `tests/vectors/fuzz/`
+(`oracle_parity_fuzz_repros`).
+
+The encoder is a literal port of libvorbis's streaming analysis state
+machine (`vorbis_analysis_wrote` / `vorbis_analysis_blockout` /
+`_ve_envelope_search`), driven internally in the same 64-frame chunks as
+the oracle, so block sizes, end-of-stream handling and the LPC pre/post-
+extrapolation fall out without whole-input passes. See
+`docs/streaming-design.md`.
 
 ## Use
 
+One-shot:
+
 ```rust
+use lewtoff::{Channels, Options, Quality, SampleRate};
+
 let pcm: &[i16] = /* interleaved 16-bit PCM */;
 
-// Quality 5 (same as `oggenc -q 5`).
-let ogg = lewtoff::encode(
-    pcm,
-    lewtoff::SampleRate::Hz44100,
-    lewtoff::Channels::Stereo,
-);
+// Quality 5, deterministic default serial, vendor "lewtoff <version>".
+let ogg = lewtoff::encode(pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
 
-// Any quality on oggenc's -q scale, fractional allowed (same bytes as
-// `oggenc -q 7.5`).
-let ogg = lewtoff::encode_with_quality(
-    pcm,
-    lewtoff::SampleRate::Hz44100,
-    lewtoff::Channels::Stereo,
-    7.5,
-);
+// Any quality on oggenc's -q scale (fractional allowed), plus tags.
+let opts = Options::default()
+    .with_quality(Quality::new(7.5).expect("-1..=10"))
+    .with_serial(0x1234_5678)
+    .with_comment("TITLE", "Example")
+    .with_comment("ARTIST", "Someone");
+let ogg = lewtoff::encode(pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+
+// f32 input, nominally -1.0..=1.0.
+let floats: &[f32] = /* interleaved f32 PCM */;
+let ogg = lewtoff::encode_f32(floats, SampleRate::Hz48000, Channels::Mono, &opts);
 ```
 
-Public surface is two functions plus two enums. No `Result` (the input
-space is closed by construction), no streaming, no `Write` trait.
+Streaming, in chunks of any size (including odd sample counts that split
+stereo frames), with memory bounded independent of input length:
 
-`quality` is converted to libvorbis's `base_quality` exactly as oggenc
-1.4.3 does — `(float)((double)(float)q * 0.1)`, values above 10 clamped
-to 10 — so e.g. `-q 9.344` picks the same float (and the same ID-header
-nominal bitrate) as oggenc, not the nearest float to 0.9344.
+```rust
+use lewtoff::{Channels, Encoder, Options, SampleRate};
+use std::io::Write;
+
+let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+let mut out = std::fs::File::create("out.ogg")?;
+for chunk in pcm_source() {          // e.g. &[i16] blocks from a decoder
+    out.write_all(enc.write(chunk))?; // the Ogg pages completed so far
+}
+// enc.write_f32(&floats) works the same way, and the two can be mixed.
+out.write_all(&enc.finish())?;
+```
+
+The concatenated output of `write`/`write_f32` and `finish` is exactly
+the bytes the one-shot functions return for the same samples and
+options. Each `write` returns a slice of an internal buffer (no
+allocation per call), valid until the next call.
+
+There is no `Result` anywhere: rates, channel layouts and qualities are
+typed (`SampleRate`, `Channels`, `Quality::new` returns `None` outside
+-1..=10 or for NaN) and no input makes the encoder panic.
+
+`Quality` is converted to libvorbis's `base_quality` exactly as oggenc
+1.4.3 does — `(float)((double)(float)q * 0.1)` — so e.g. `9.344` picks
+the same float (and the same ID-header nominal bitrate) as
+`oggenc -q 9.344`, not the nearest float to 0.9344.
 
 ## Supported input
 
 | | |
 |---|---|
-| Sample format | Interleaved `i16` PCM |
+| Sample format | Interleaved `i16` (scaled by 1/32768) or `f32` (passed through unscaled) |
 | Sample rate   | 44100 Hz **or** 48000 Hz |
 | Channels      | Mono **or** Stereo |
-| Quality       | -1.0 – 10.0 on oggenc's `-q` scale (fractional ok); `encode()` is 5 |
+| Quality       | -1.0 – 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
+
+- **f32:** values outside ±1.0, subnormals and `-0.0` are encoded as
+  libvorbis would (parity is tested up to ±10⁴; at absurd magnitudes
+  libvorbis's own float-to-int conversions are undefined, but lewtoff
+  still produces a valid stream). NaN and ±infinity, which make libvorbis
+  emit a corrupt stream, are encoded as `0.0`.
+- **Odd sample counts in stereo:** `Encoder::write` carries an unpaired
+  trailing sample over to the next call; `finish` and the one-shot
+  functions drop a final unpaired sample.
 
 Qualities -1 … <0 select libvorbis's q-1 template (512/4096-sample
-blocks instead of 256/2048) and are byte-identical too. Outside this
-space, behavior is undefined.
+blocks instead of 256/2048) and are byte-identical too.
 
 ## Parallel encoding
 
 For long inputs (minutes of audio), enable the `parallel` feature to fan
 per-block analysis (MDCT, FFT, psy, floor, residue) across the global
-Rayon thread pool. Bit-packing and Ogg page emission stay serial; the
-output is byte-identical to the serial path.
+Rayon thread pool. Envelope analysis, bit-packing and Ogg page emission
+stay serial; the output is byte-identical to the serial path. Blocks are
+analyzed in bounded batches (8 × the Rayon thread count), so streaming
+memory stays bounded and `write` returns pages at most one batch late.
 
 ```toml
 [dependencies]
 lewtoff = { version = "0.1", features = ["parallel"] }
 ```
 
-Public API is unchanged. The feature is off by default to keep the
+The API is the same. The feature is off by default to keep the
 default build lean (single `ogg` runtime dep) and WASM-friendly — Rayon
 needs `SharedArrayBuffer` and special host headers in browsers, so
 WASM consumers should leave it off.
@@ -101,8 +159,8 @@ a 261s MP3:
 Sub-second inputs see no speedup (too few blocks to feed all cores) but
 no overhead penalty either. If you're already doing outer parallelism
 across many files (e.g. a game-asset pipeline), leave `parallel` off
-— Rayon would compose without oversubscribing, but the inner
-job-collection vec adds a few microseconds per call you don't need.
+— Rayon would compose without oversubscribing, but the per-batch
+job bookkeeping adds a little overhead you don't need.
 
 ## How parity is enforced
 
@@ -169,6 +227,22 @@ frames (around the 2048-sample long block) at two qualities.
 float conversion against the system `oggenc`. The corpus sweep takes a
 libvorbis base_quality via `CORPUS_QUALITY` (default 0.5), e.g.
 `just corpus 100 "" 0.3`.
+
+`tests/parity_f32.rs` checks `f32` input against the oracle's f32 mode
+(`oracle-encoder <rate> <ch> <base_quality> f32`, which reads f32 LE and
+passes the floats to `vorbis_analysis_buffer` unchanged): several
+qualities and configs, values beyond ±1.0, subnormals, `-0.0`, NaN/inf
+(encoded as 0.0) and odd-sized chunked writes. `tests/streaming.rs`
+checks that any chunking of `write` / `write_f32` gives the one-shot
+bytes, that pages are emitted before `finish`, that the analysis buffer
+stays bounded over 10 minutes, and (with `parallel`) that the batch size
+never changes the output. Its long-input tests are `#[ignore]`d in debug
+builds; run them with `--release`.
+
+The integration tests reach a few unstable internals (header writers,
+exact-`base_quality` entry points) through the undocumented `__internal`
+cargo feature, which the crate enables for its own tests via a
+self dev-dependency, so no extra flags are needed.
 
 CI (`.github/workflows/ci.yml`) installs `vorbis-tools`, builds the
 oracle from the vendored sources, and runs both passes on Ubuntu, plus a `wasm32-unknown-unknown`
