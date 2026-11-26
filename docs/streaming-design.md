@@ -1,7 +1,19 @@
 # Streaming `Encoder` design
 
-Status: design only, written 2026-11-26 from an audit of `encode.rs` against vendored libvorbis.
-Implement it after quality wiring lands. All block-size constants must come from `QualityConfig.blocksizes`.
+**Status: implemented.** This file is kept as the design record. It was written before
+the code, from an audit of the old whole-input `encode.rs` against the vendored libvorbis.
+The implementation lives in:
+
+- `src/encode.rs`: `EncoderCore`, the streaming state machine. It covers priming,
+  `wrote`, `blockout`, the envelope search and mark, compaction, finish-time
+  post-extrapolation and the parallel pipeline.
+- `src/envelope.rs`: `EnvelopeLookup::step`, the incremental `_ve_amp`.
+- `src/lib.rs`: the public `Encoder` (`new` / `write` / `write_f32` / `finish`). The one-shot
+  `encode` / `encode_f32` are thin wrappers over the same core.
+- `tests/streaming.rs`, `tests/parity.rs` (`oracle_parity_short_input`) and `tests/parity_f32.rs`.
+
+Where the shipped code differs from the plan below, a **Now:** note says so. Block-size
+constants come from the quality setup (256/2048 for q0 and up, 512/4096 for q-1).
 
 ## Parity contract
 
@@ -19,6 +31,9 @@ match for *any* chunking the user passes to `write`.
 
 ## Known one-shot bug to fix first
 
+**Now:** fixed. `oracle_parity_short_input` checks every length from 0 to 130 frames, every
+7th length up to 2100, and 2047/2048/2049, all byte-identical. That includes empty input.
+
 Inputs shorter than 2048 frames diverge from libvorbis. libvorbis trains the post-extrapolation LPC
 on `pcm[eofflag-n .. eofflag]` with `n = min(eofflag, bs1)`. That is its own buffer, which for short
 streams still contains the 1024 pre-extrapolated samples. `postextrapolate_channel_with_n` is given
@@ -27,7 +42,10 @@ audio only and clamps `n` to the audio length.
 - Fix: prepend the pre-extrapolated samples. This was verified for every length from 1 to 8000.
 - Empty input is still 2 bytes off and is unexplained.
 
-## Whole-input dependencies in today's `encode_with_serial_and_meta`
+## Whole-input dependencies in the old `encode_with_serial_and_meta`
+
+**Now:** every row in the table below has been replaced by its streaming state. The
+fixed-point loop, `compute_marks`, `simulate_eofflag` and the global W pattern were deleted.
 
 | Today | What libvorbis actually needs | Streaming state |
 |---|---|---|
@@ -46,6 +64,15 @@ Worst-case lookahead at Q5 is about 2432 frames past `centerW`. It doubles at q-
 
 ## Struct sketch
 
+**Now:** the real struct is `EncoderCore` in `src/encode.rs`. It is close to this sketch,
+with these differences:
+
+- The split stereo frame is held as `partial: Option<f32>`, after conversion, so i16 and f32
+  writes can be mixed.
+- Frames are passed to `wrote` in 64-frame chunks, with an `unwritten` remainder.
+- The buffers are compacted once 4096 frames below the live window have built up.
+- The Ogg writer's output buffer is lent to the caller from `write`.
+
 ```rust
 pub struct Encoder {
     cfg: Box<EncoderSetup>,      // setup, psy looks, gi, bs, rate, ch
@@ -61,7 +88,7 @@ pub struct Encoder {
 ```
 
 - `write` loop:
-  1. Deinterleave and scale by 1/32768, in slices of at most 4096 frames.
+  1. Deinterleave and scale by 1/32768 (`write`), or pass the floats through (`write_f32`).
   2. Priming leads to Running.
   3. Drain: marks for every `j < end/64 - 4`; a literal `_ve_envelope_search` cursor walk;
      the `blockbound` check; emit block W from slices of `env[C - bs[W]/2 .. C + bs[W]/2)`
@@ -75,7 +102,9 @@ pub struct Encoder {
 - One-shot `encode` becomes a wrapper: `new`, then `write(all)`, then `finish`. Delete the fixed-point
   loop and the global passes, keeping them only as test cross-checks.
 - Parallel: only `ampmax` is order-dependent in `mapping0_forward`.
-  - Batch roughly 8 × threads blocks.
+  - Batch roughly 8 × threads blocks. **Now:** 32 × threads. The batches are pipelined:
+    the Rayon pool runs pass C of the previous batch and pass A of the current one while the
+    calling thread windows the next batch. About four batches are alive at once.
   - Pass A (parallel): local ampmax per block.
   - Pass B (sequential): chain ampmax.
   - Pass C (parallel): analysis.
@@ -96,6 +125,12 @@ impl Encoder {
 - WASM: `random_serial()` uses `SystemTime::now()`, which panics on wasm32-unknown-unknown.
   It needs a fallback plus a public `with_serial`.
 
+**Now:** the API is `Encoder::new(rate, channels, &Options)`, plus `write`, `write_f32` and
+`finish`. `Options` holds the quality (a typed `Quality` on oggenc's `-q` scale), the serial,
+the vendor and the comments, with `with_*` setters. There is no random serial: the default is
+the constant `DEFAULT_SERIAL`, so default output is deterministic and wasm32 needs no clock.
+There is no `Write` adapter yet.
+
 ## Tests
 
 - **Chunking invariance:** seeded random chunkings, including 1-frame chunks, 2111 + rest, and odd
@@ -109,6 +144,9 @@ impl Encoder {
   `simulate_eofflag` across the corpus, then delete the check.
 
 ## Plan (about 5-6 days)
+
+**Now:** done, and the old global scheduler code has been deleted. Parity is guarded by the
+oracle test suite, the corpus sweep and `tools/parity-fuzz` (see `CONTRIBUTING.md`).
 
 0. Short-input fix plus oracle probe for lengths 1..2047 (0.5 d).
 1. Streaming `EnvelopeLookup::step` (0.5 d).
