@@ -1,17 +1,20 @@
 /*
- * oracle-encoder — own-built libvorbis Q5 encoder, pinned compile flags.
+ * oracle-encoder — own-built libvorbis encoder, pinned compile flags.
  *
  * Reads interleaved PCM from stdin, writes Ogg Vorbis to stdout.
- * Args: <rate> <channels> [base_quality [format]]   e.g. ./oracle-encoder 44100 1
+ * Args: <rate> <channels> [base_quality [format [comment]]]
+ *       e.g. ./oracle-encoder 44100 1
  *       base_quality: libvorbis -0.1..1.0 scale (q-1..q10), default 0.5.
  *       format: s16 (default; i16 LE, fed as sample/32768.0f) or f32
  *               (f32 LE, fed to vorbis_analysis_buffer unchanged).
+ *       comment: optional "KEY=value" user comment (vorbis_comment_add);
+ *               none by default. Used by tools/gen-header-vectors.
  *
- * Static-linked against ~/Documents/src/libvorbis/lib (all .c files) with:
- *     -O0 -ffp-contract=off -std=c99
+ * Compiled from the pristine libvorbis 1.3.7 and libogg 1.3.5 sources in
+ * tools/libvorbis-1.3.7 and tools/libogg-1.3.5 by build.sh with
+ *     -O0 -ffp-contract=off
  * so its byte output is fully deterministic and matches lewtoff's no-FMA
- * arithmetic. Use this as the parity oracle in tests/parity.rs instead of
- * system ffmpeg.
+ * arithmetic. It is the parity oracle for tests/parity.rs and the fuzzer.
  */
 
 #include <stdio.h>
@@ -35,8 +38,8 @@ static void die(const char *msg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3 || argc > 5)
-        die("usage: oracle-encoder <rate> <channels> [base_quality [s16|f32]]");
+    if (argc < 3 || argc > 6)
+        die("usage: oracle-encoder <rate> <channels> [base_quality [s16|f32 [comment]]]");
     long rate = atol(argv[1]);
     int channels = atoi(argv[2]);
     if (rate <= 0 || channels < 1 || channels > 2) die("invalid rate/channels");
@@ -51,7 +54,7 @@ int main(int argc, char **argv) {
 
     /* Optional input format; default s16 keeps the original usage. */
     int is_f32 = 0;
-    if (argc == 5) {
+    if (argc >= 5) {
         if (strcmp(argv[4], "f32") == 0) is_f32 = 1;
         else if (strcmp(argv[4], "s16") != 0) die("invalid format (expected s16 or f32)");
     }
@@ -96,6 +99,7 @@ int main(int argc, char **argv) {
 
     vorbis_comment vc;
     vorbis_comment_init(&vc);
+    if (argc == 6) vorbis_comment_add(&vc, argv[5]);
 
     vorbis_dsp_state vd;
     vorbis_block vb;

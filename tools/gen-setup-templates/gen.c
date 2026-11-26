@@ -17,6 +17,8 @@
  * Usage: gen <out_dir>          (normally invoked via run.sh)
  */
 
+#include <stdio.h>
+
 #include "vorbisenc.c"
 
 #include <assert.h>

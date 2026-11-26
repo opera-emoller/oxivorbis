@@ -17,9 +17,8 @@
  *   end
  * Lines mirror QualityConfig::oracle_text() in src/quality.rs.
  *
- * Linked against the vendored libvorbis with the same flags as the oracle
- * encoder; see build_quality_dumpers.sh. libvorbis' vendored debug prints go
- * to stderr and are ignored.
+ * Linked against the pristine vendored libvorbis with the same flags as the
+ * oracle encoder; see build_quality_dumpers.sh.
  */
 #include <stdio.h>
 #include <stdlib.h>

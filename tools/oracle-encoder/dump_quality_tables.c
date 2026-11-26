@@ -17,6 +17,8 @@
  * exactly through Rust's correctly-rounded literal parser; the oracle-gated
  * test `quality_oracle_grid` confirms the end-to-end bits.
  */
+#include <stdio.h>
+
 #include "vorbisenc.c"
 
 static void pf32(float v) {

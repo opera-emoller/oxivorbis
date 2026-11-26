@@ -1,90 +1,30 @@
 #!/usr/bin/env bash
-# Builds tools/oracle-encoder/oracle-encoder from main.c plus the vendored
-# libvorbis source in tools/debug-libvorbis-dump/vendored-libvorbis/, with
-# the same pinned compile flags the parity tests assume:
+# Builds tools/oracle-encoder/oracle-encoder, the parity oracle, from
+# main.c plus the pristine libvorbis 1.3.7 and libogg 1.3.5 sources
+# vendored under tools/libvorbis-1.3.7/ and tools/libogg-1.3.5/ (checked
+# against their SHA256SUMS first; see common.sh). Pinned flags:
 #
-#     -O0 -ffp-contract=off -std=c99
+#     -O0 -ffp-contract=off -std=gnu99
 #
-# This makes the produced binary's output bit-deterministic across hosts:
-# no FMA contraction, no aggressive inlining that might reorder f32 ops.
+# so the output is bit-deterministic across hosts: no FMA contraction and
+# no reordering of f32 ops.
 #
-# Every translation unit is also compiled with `-include stable_qsort.h`,
-# which redirects qsort() to a stable merge sort (stable_qsort.c).
-# libvorbis's noise normalization (psy.c, q0..q3) sorts with ties, and
-# libc qsort tie order differs between hosts (glibc: stable merge sort;
-# macOS: not). The vendored .c files are left untouched.
+# Every translation unit is compiled with `-include stable_qsort.h`, which
+# redirects qsort() to a stable merge sort (stable_qsort.c). libvorbis's
+# noise normalization (psy.c, q0..q3) sorts with ties, and libc qsort tie
+# order differs between hosts (glibc: stable merge sort; macOS: not). The
+# vendored .c files are not modified.
 #
-# Run from anywhere (the script resolves relative paths). Requires:
-#   - clang or gcc
-#   - libogg headers + library (homebrew on macOS, libogg-dev on Debian/Ubuntu)
-#
-# CI uses this script; locally you can re-run it after pulling new commits.
+# Requires only a C compiler (clang or gcc); no system libogg/libvorbis.
+# Extra flags can be appended with LW_EXTRA_CFLAGS, e.g. an ASan build:
+#     LW_EXTRA_CFLAGS="-g -fsanitize=address" ./tools/oracle-encoder/build.sh
+# OUT=<path> overrides the output path.
 
 set -euo pipefail
+# shellcheck source=common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VEND="$SCRIPT_DIR/../debug-libvorbis-dump/vendored-libvorbis"
-
-if [ ! -d "$VEND" ]; then
-    echo "build.sh: cannot find vendored libvorbis at $VEND" >&2
-    exit 1
-fi
-
-CC="${CC:-cc}"
-# Use gnu99 (not strict c99) so the libvorbis sources can call alloca()
-# without an explicit <alloca.h> include — strict c99 + glibc otherwise
-# emits an unresolved external-function reference at link time.
-CFLAGS="${CFLAGS:--O0 -ffp-contract=off -std=gnu99 -Wno-implicit-function-declaration}"
-
-# Find libogg. On macOS with homebrew it lives in /opt/homebrew/opt/libogg
-# (Apple Silicon) or /usr/local/opt/libogg (Intel). On Linux distros it's
-# in the default include/library path once libogg-dev is installed.
-OGG_INC=""
-OGG_LIB=""
-for prefix in /opt/homebrew/opt/libogg /usr/local/opt/libogg; do
-    if [ -d "$prefix/include/ogg" ]; then
-        OGG_INC="-I$prefix/include"
-        OGG_LIB="-L$prefix/lib"
-        break
-    fi
-done
-
-SRCS=(
-    "$SCRIPT_DIR/main.c"
-    "$SCRIPT_DIR/stable_qsort.c"
-    "$VEND/analysis.c"
-    "$VEND/bitrate.c"
-    "$VEND/block.c"
-    "$VEND/codebook.c"
-    "$VEND/debug_dump.c"
-    "$VEND/envelope.c"
-    "$VEND/floor0.c"
-    "$VEND/floor1.c"
-    "$VEND/info.c"
-    "$VEND/lookup.c"
-    "$VEND/lpc.c"
-    "$VEND/lsp.c"
-    "$VEND/mapping0.c"
-    "$VEND/mdct.c"
-    "$VEND/psy.c"
-    "$VEND/registry.c"
-    "$VEND/res0.c"
-    "$VEND/sharedbook.c"
-    "$VEND/smallft.c"
-    "$VEND/synthesis.c"
-    "$VEND/vorbisenc.c"
-    "$VEND/window.c"
-)
-
-OUT="$SCRIPT_DIR/oracle-encoder"
-echo "build.sh: $CC $CFLAGS -> $OUT"
-$CC $CFLAGS \
-    -include "$SCRIPT_DIR/stable_qsort.h" \
-    -I"$VEND/include" \
-    -I"$VEND" \
-    $OGG_INC \
-    -o "$OUT" \
-    "${SRCS[@]}" \
-    $OGG_LIB -logg -lm
-
+OUT="${OUT:-$ORACLE_DIR/oracle-encoder}"
+lw_cc "$OUT" "$ORACLE_DIR/main.c" "${LW_SHIM_SRCS[@]}" \
+    "${LW_VORBIS_SRCS[@]}" "$VEND/vorbisenc.c" "${LW_OGG_SRCS[@]}"
 echo "build.sh: built $OUT"

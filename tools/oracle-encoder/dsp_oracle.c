@@ -1,7 +1,7 @@
 /*
  * dsp_oracle — ground truth for lewtoff's DSP layer (MDCT, real FFT,
- * window tables / window application), straight from the vendored
- * libvorbis 1.3.7 sources.
+ * window tables / window application), straight from the pristine
+ * vendored libvorbis 1.3.7 sources (tools/libvorbis-1.3.7).
  *
  * Two modes:
  *
@@ -39,13 +39,6 @@
 #include "mdct.h"
 #include "smallft.h"
 #include "window.h"
-
-/* The vendored smallft.c carries a debug hook (implemented in debug_dump.c
- * for the full oracle build); stub it so only the three DSP sources link. */
-void debug_dump_drftf1_in(int n, float *c) {
-    (void)n;
-    (void)c;
-}
 
 /* ---------- hashing / io ---------- */
 

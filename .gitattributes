@@ -1,0 +1,4 @@
+# Vendored upstream sources are checked against SHA256SUMS by
+# tools/oracle-encoder/common.sh; never convert their line endings.
+/tools/libvorbis-1.3.7/** -text
+/tools/libogg-1.3.5/** -text
