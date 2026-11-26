@@ -5,25 +5,40 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # parity-fuzz smoke: fixed seed so a red run reproduces locally with
+  #   cargo run -p parity-fuzz --release -- --iters 300 --seed 1 --quality <q>
+  FUZZ_ITERS: "300"
+  FUZZ_SEED: "1"
+  FUZZ_QUALITIES: "-0.1 0.2 0.5 0.8 1.0"
+
 jobs:
   test:
+    name: test (ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
+          # Swatinem/rust-cache below handles caching (keyed per job).
+          cache: false
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
       - name: Install ffmpeg + vorbis-tools + libogg-dev
-        # ffmpeg: corpus_sweep decodes audio inputs to s16le PCM.
-        # vorbis-tools: provides `oggenc`, the parity oracle for
-        #   tests/parity.rs (replaces ffmpeg's libvorbis encoder, which
-        #   newer ffmpeg builds may omit).
-        # libogg-dev: linker dep for tools/oracle-encoder/build.sh, which
-        #   statically compiles our vendored libvorbis 1.3.7 sources.
+        # ffmpeg: corpus_sweep decodes audio inputs to s16le PCM; the
+        #   codebook test regenerates headers with it when present.
+        # vorbis-tools: provides `oggenc`, the parity oracle for the
+        #   `parity_*` tests in tests/parity.rs.
+        # libogg-dev: linker dep for the tools/oracle-encoder/*.sh builds,
+        #   which statically compile our vendored libvorbis 1.3.7 sources.
         run: sudo apt-get update && sudo apt-get install -y ffmpeg vorbis-tools libogg-dev
       - name: Verify libvorbis version
         run: |
@@ -35,17 +50,135 @@ jobs:
           # the source-of-truth oracle and always 1.3.7.
           dpkg-query -W -f='${Version}\n' libvorbis0a 2>/dev/null | grep -E "^1\.3" \
             || { echo "Wrong libvorbis version — parity tests pin to 1.3.x"; exit 1; }
-      - name: Build oracle-encoder from vendored libvorbis sources
-        run: ./tools/oracle-encoder/build.sh
+      - name: Build C oracles from vendored libvorbis sources
+        # oracle-encoder: parity tests, setup-header sweep, fuzz repros.
+        # dump_params / dump_quality_tables: quality_oracle_grid + tables.
+        # dsp_oracle: DSP table / manifest regeneration (checked below).
+        run: |
+          ./tools/oracle-encoder/build.sh
+          ./tools/oracle-encoder/build_quality_dumpers.sh
+          ./tools/oracle-encoder/build_dsp_oracle.sh
+      - name: Oracle-derived committed files are up to date
+        # Regenerates everything the C oracles produce on this host and
+        # fails on any diff, so a Linux/gcc build of libvorbis must agree
+        # bit-for-bit with what was committed (from macOS/clang).
+        run: |
+          ./tools/oracle-encoder/dsp_oracle manifest > tools/oracle-encoder/dsp_manifest.txt
+          ./tools/oracle-encoder/dump_quality_tables > src/tables/quality.rs
+          mkdir -p "$RUNNER_TEMP/dsp-tables"
+          ./tools/oracle-encoder/dsp_oracle tables "$RUNNER_TEMP/dsp-tables"
+          cargo run -q -p gen-tables -- "$RUNNER_TEMP/dsp-tables"
+          cargo fmt --all
+          git diff --exit-code -- tools/oracle-encoder/dsp_manifest.txt src/tables/
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --all-targets --features parallel -- -D warnings
-      - run: cargo nextest run --status-level=fail --no-tests=warn
-      - run: cargo nextest run --status-level=fail --no-tests=warn --features parallel
-      - name: Oracle parity, serial path (Linux glibc libm)
-        run: cargo nextest run --features oracle --no-tests=fail parity_
-      - name: Oracle parity, parallel path
-        run: cargo nextest run --features oracle,parallel --no-tests=fail parity_
+      - run: cargo clippy --all-targets --features oracle,parallel -- -D warnings
+      - name: Guard against silently skipped oracle tests
+        # The oracle runs below use no name filter (they run the whole
+        # suite with the feature on). This guard makes sure the
+        # oracle-gated groups still exist and compile in, so a cfg or
+        # rename slip can't drop them unnoticed.
+        run: |
+          cargo nextest list --features oracle --message-format oneline > "$RUNNER_TEMP/tests.txt"
+          fail=0
+          for pat in \
+              'quality::tests::quality_oracle_grid' \
+              'setup_gen::tests::oracle::oracle_setup_header_sweep' \
+              'parity oracle_parity_fuzz_repros' \
+              'parity oracle_parity_q::' \
+              'parity oracle_parity_short_input' \
+              'parity parity_oggenc_quality_conversion' \
+              'parity parity_silence_' \
+              'dsp_manifest_'; do
+            n=$(grep -cF -- "$pat" "$RUNNER_TEMP/tests.txt" || true)
+            echo "$pat: $n"
+            [ "$n" -gt 0 ] || { echo "::error::no tests match '$pat'"; fail=1; }
+          done
+          echo "total: $(wc -l < "$RUNNER_TEMP/tests.txt") tests with --features oracle"
+          exit $fail
+      - name: Unit + integration tests (no oracle)
+        run: cargo nextest run --status-level=fail --no-tests=fail
+      - name: Unit + integration tests (no oracle, parallel)
+        run: cargo nextest run --status-level=fail --no-tests=fail --features parallel
+      - name: Full suite with oracle, serial path (Linux glibc libm)
+        # Every non-ignored test with the oracle feature on: the parity
+        # matrix, quality_oracle_grid, setup header sweep, fuzz-repro
+        # replay, DSP manifest tests and parity_oggenc_quality_conversion.
+        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle
+      - name: Full suite with oracle, parallel path
+        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle,parallel
+      - name: parity-fuzz smoke
+        run: |
+          cargo build -q --release -p parity-fuzz
+          for q in $FUZZ_QUALITIES; do
+            ./target/release/parity-fuzz --iters "$FUZZ_ITERS" --seed "$FUZZ_SEED" \
+              --quality "$q" --minimize-per-sig 1
+          done
+      - name: Upload parity-fuzz failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-fuzz-ubuntu
+          path: target/parity-fuzz/
+          if-no-files-found: ignore
+
+  macos:
+    # Determinism across platforms is a core claim: same parity set on
+    # Apple silicon / clang / macOS libm as on Linux / gcc / glibc.
+    name: test (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install libogg + vorbis-tools
+        # ffmpeg is skipped (large); the only non-ignored test using it
+        # skips itself when ffmpeg is absent.
+        run: brew install libogg vorbis-tools
+      - name: Verify libvorbis version
+        run: |
+          v=$(brew list --versions libvorbis)
+          echo "$v"
+          echo "$v" | grep -E " 1\.3" \
+            || { echo "Wrong libvorbis version — parity tests pin to 1.3.x"; exit 1; }
+      - name: Build C oracles from vendored libvorbis sources
+        run: |
+          ./tools/oracle-encoder/build.sh
+          ./tools/oracle-encoder/build_quality_dumpers.sh
+          ./tools/oracle-encoder/build_dsp_oracle.sh
+      - name: Oracle-derived committed files are up to date
+        run: |
+          ./tools/oracle-encoder/dsp_oracle manifest > tools/oracle-encoder/dsp_manifest.txt
+          ./tools/oracle-encoder/dump_quality_tables > src/tables/quality.rs
+          mkdir -p "$RUNNER_TEMP/dsp-tables"
+          ./tools/oracle-encoder/dsp_oracle tables "$RUNNER_TEMP/dsp-tables"
+          cargo run -q -p gen-tables -- "$RUNNER_TEMP/dsp-tables"
+          cargo fmt --all
+          git diff --exit-code -- tools/oracle-encoder/dsp_manifest.txt src/tables/
+      - name: Full suite with oracle, serial path (macOS libm)
+        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle
+      - name: Full suite with oracle, parallel path
+        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle,parallel
+      - name: parity-fuzz smoke
+        run: |
+          cargo build -q --release -p parity-fuzz
+          for q in $FUZZ_QUALITIES; do
+            ./target/release/parity-fuzz --iters "$FUZZ_ITERS" --seed "$FUZZ_SEED" \
+              --quality "$q" --minimize-per-sig 1
+          done
+      - name: Upload parity-fuzz failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-fuzz-macos
+          path: target/parity-fuzz/
+          if-no-files-found: ignore
 
   wasm:
     runs-on: ubuntu-latest
@@ -54,6 +187,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: wasm32-unknown-unknown
+          cache: false
       - uses: Swatinem/rust-cache@v2
       - name: Build for wasm32-unknown-unknown
         run: cargo build --target wasm32-unknown-unknown --release
