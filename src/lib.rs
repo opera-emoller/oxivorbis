@@ -416,7 +416,7 @@ impl Encoder {
         self.core.buffered_frames()
     }
 
-    /// Blocks analyzed per parallel batch (default 8 x Rayon threads).
+    /// Blocks analyzed per parallel batch (default 32 x Rayon threads).
     /// Output does not depend on it; exposed for tests.
     #[doc(hidden)]
     #[cfg(feature = "parallel")]

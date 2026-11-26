@@ -135,8 +135,10 @@ For long inputs (minutes of audio), enable the `parallel` feature to fan
 per-block analysis (MDCT, FFT, psy, floor, residue) across the global
 Rayon thread pool. Envelope analysis, bit-packing and Ogg page emission
 stay serial; the output is byte-identical to the serial path. Blocks are
-analyzed in bounded batches (8 × the Rayon thread count), so streaming
-memory stays bounded and `write` returns pages at most one batch late.
+analyzed in bounded, pipelined batches (32 × the Rayon thread count; the
+pool analyzes earlier batches while the calling thread windows the next),
+so streaming memory stays bounded — a few MB — and `write` returns pages
+a few batches (several seconds of audio) later than the serial build.
 
 ```toml
 [dependencies]

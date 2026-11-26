@@ -255,7 +255,7 @@ fn headers_first_and_trailing_half_frame() {
 }
 
 /// A 60 s input produces almost all of its pages before `finish` (the
-/// parallel build holds back at most one batch of blocks), and the
+/// parallel build holds back a few batches of blocks), and the
 /// first audio pages appear long before the end of the input.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
@@ -264,6 +264,9 @@ fn streaming_emits_pages_before_finish() {
     let pcm = signal_i16(Sig::Noise, 60 * 44100, 2, 44100, 9);
     let o = Options::default();
     let mut enc = Encoder::new(rate, Channels::Stereo, &o);
+    // The parallel build holds back a few batches; use small ones here.
+    #[cfg(feature = "parallel")]
+    enc.set_parallel_batch(16);
     let mut out = Vec::new();
     let mut first_audio_page_at = None;
     let chunk = 4410 * 2; // 100 ms

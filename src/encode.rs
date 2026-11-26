@@ -138,17 +138,27 @@ struct BlockJob {
     eos: bool,
 }
 
-/// Default parallel batch: enough blocks to keep every worker busy while
-/// holding only a few hundred KB of windowed PCM.
+/// Default parallel batch. Large enough that per-batch synchronisation
+/// and the producing thread competing with the workers for a core stay
+/// cheap (smaller batches measurably lose throughput on a loaded
+/// machine), small enough to bound memory: at most about four batches
+/// (a few MB of windowed PCM) are alive at once.
 #[cfg(feature = "parallel")]
 fn default_batch() -> usize {
-    8 * rayon::current_num_threads().max(1)
+    32 * rayon::current_num_threads().max(1)
 }
+
+/// Batch in pass A (local ampmax): the jobs come back with their peaks.
+#[cfg(feature = "parallel")]
+type PassA = std::sync::mpsc::Receiver<(Vec<BlockJob>, Vec<f32>)>;
+/// Batch in pass C (analysis): `(granulepos, eos)` per block, packets.
+#[cfg(feature = "parallel")]
+type PassC = (Vec<(u64, bool)>, std::sync::mpsc::Receiver<Vec<Vec<u8>>>);
 
 pub(crate) struct EncoderCore {
     setup: Arc<EncoderSetup>,
     /// `psy_look[blocktype]`: impulse, padding, transition, long.
-    psy_looks: [VorbisLookPsy; 4],
+    psy_looks: Arc<[VorbisLookPsy; 4]>,
     bs: BlockSizes,
     ch: usize,
     short_mode: usize,
@@ -197,11 +207,16 @@ pub(crate) struct EncoderCore {
     #[cfg(not(feature = "parallel"))]
     win: [Vec<Vec<f32>>; 2],
     #[cfg(feature = "parallel")]
-    floor_seed: Vec<Floor1State>,
+    floor_seed: Arc<Vec<Floor1State>>,
+    /// Batch being filled.
     #[cfg(feature = "parallel")]
     jobs: Vec<BlockJob>,
     #[cfg(feature = "parallel")]
     batch: usize,
+    #[cfg(feature = "parallel")]
+    pass_a: Option<PassA>,
+    #[cfg(feature = "parallel")]
+    pass_c: std::collections::VecDeque<PassC>,
     first_block_done: bool,
     /// W of every emitted block (unit tests).
     #[cfg(test)]
@@ -261,12 +276,12 @@ impl EncoderCore {
         // long (n2 = bs1/2).
         let gi = &cfg.psy_global;
         let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
-        let psy_looks = [
+        let psy_looks = Arc::new([
             vp_psy_init(vi_impulse, gi, bs.short_half(), rate_hz),
             vp_psy_init(vi_padding, gi, bs.short_half(), rate_hz),
             vp_psy_init(vi_transition, gi, bs.long_half(), rate_hz),
             vp_psy_init(vi_long, gi, bs.long_half(), rate_hz),
-        ];
+        ]);
 
         let mut ogg = OggStreamWriter::new(serial);
         {
@@ -334,11 +349,15 @@ impl EncoderCore {
             #[cfg(not(feature = "parallel"))]
             win: [vec![vec![0.0; bs.short]; ch], vec![vec![0.0; bs.long]; ch]],
             #[cfg(feature = "parallel")]
-            floor_seed: floor_states,
+            floor_seed: Arc::new(floor_states),
             #[cfg(feature = "parallel")]
             jobs: Vec::new(),
             #[cfg(feature = "parallel")]
             batch: default_batch(),
+            #[cfg(feature = "parallel")]
+            pass_a: None,
+            #[cfg(feature = "parallel")]
+            pass_c: std::collections::VecDeque::new(),
             first_block_done: false,
             #[cfg(test)]
             w_log: Vec::new(),
@@ -477,7 +496,9 @@ impl EncoderCore {
         self.drain();
         debug_assert_eq!(self.eofflag, -1, "EOS drain must emit the last block");
         #[cfg(feature = "parallel")]
-        self.flush_jobs();
+        while self.pass_a.is_some() || !self.jobs.is_empty() || !self.pass_c.is_empty() {
+            self.pipeline(true);
+        }
         self.ogg.into_bytes()
     }
 
@@ -793,53 +814,127 @@ impl EncoderCore {
             eos: block.eos,
         });
         if self.jobs.len() >= self.batch {
-            self.flush_jobs();
+            self.pipeline(false);
         }
     }
 
-    /// Analyze the pending batch in parallel. Only `ampmax` carries state
-    /// from block to block in `mapping0_forward`; it is recovered exactly by
-    /// a cheap sequential chain over each block's local spectral peak, so
-    /// batch boundaries cannot change the bytes.
+    /// Advance the parallel pipeline by one batch.
+    ///
+    /// Only `ampmax` carries state from block to block in
+    /// `mapping0_forward`, and it is recovered exactly by a cheap
+    /// sequential chain over each block's local spectral peak, so batch
+    /// boundaries cannot change the bytes. Per batch:
+    ///
+    /// - pass A (parallel, async): each block's clamped local ampmax;
+    /// - pass B (here, sequential): chain the ampmax each block starts from;
+    /// - pass C (parallel, async): full analysis into packets.
+    ///
+    /// The Rayon pool runs pass C of the previous batch and pass A of the
+    /// one just filled while this thread windows the next batch; packets
+    /// are written in order, at most two batches behind (none once
+    /// `finishing`).
     #[cfg(feature = "parallel")]
-    fn flush_jobs(&mut self) {
+    fn pipeline(&mut self, finishing: bool) {
         use rayon::prelude::*;
-        if self.jobs.is_empty() {
-            return;
+        use std::sync::mpsc::channel;
+        const WORKER: &str = "parallel analysis worker panicked";
+
+        // Pass B for the batch whose pass A was launched last time, then
+        // launch its pass C.
+        if let Some(rx) = self.pass_a.take() {
+            let (jobs, local_max) = rx.recv().expect(WORKER);
+            let gi = &self.setup.cfg.psy_global;
+            let rate = self.psy_looks[0].rate;
+            let mut input_ampmax = Vec::with_capacity(jobs.len());
+            let mut prev = self.ampmax;
+            for (job, &m) in jobs.iter().zip(&local_max) {
+                input_ampmax.push(prev);
+                let n2 = job.pcm[0].len() / 2;
+                prev = crate::psy::vp_ampmax_decay(prev, gi, n2, rate).max(m);
+            }
+            self.ampmax = prev;
+            let meta = jobs.iter().map(|j| (j.granulepos, j.eos)).collect();
+            let (tx, rx) = channel();
+            let setup = Arc::clone(&self.setup);
+            let psy_looks = Arc::clone(&self.psy_looks);
+            let floor_seed = Arc::clone(&self.floor_seed);
+            let ch = self.ch;
+            rayon::spawn(move || {
+                let packets =
+                    analyze_batch(&setup, &psy_looks, &floor_seed, ch, &jobs, &input_ampmax);
+                let _ = tx.send(packets);
+            });
+            self.pass_c.push_back((meta, rx));
         }
-        let jobs = std::mem::take(&mut self.jobs);
-        let gi = &self.setup.cfg.psy_global;
-        let rate = self.psy_looks[0].rate;
-        // Pass A (parallel): max over channels of each block's clamped
-        // local ampmax.
-        let local_max: Vec<f32> = jobs
-            .par_iter()
-            .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
-            .collect();
-        // Pass B (sequential): the ampmax each block starts from in serial
-        // order (decay with this block's n2, then max with its local peak).
-        let mut input_ampmax = Vec::with_capacity(jobs.len());
-        let mut prev = self.ampmax;
-        for (job, &m) in jobs.iter().zip(&local_max) {
-            input_ampmax.push(prev);
-            let n2 = job.pcm[0].len() / 2;
-            prev = crate::psy::vp_ampmax_decay(prev, gi, n2, rate).max(m);
+        // Pass A for the batch just filled.
+        if !self.jobs.is_empty() {
+            let jobs = std::mem::take(&mut self.jobs);
+            let (tx, rx) = channel();
+            rayon::spawn(move || {
+                let local_max: Vec<f32> = jobs
+                    .par_iter()
+                    .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
+                    .collect();
+                let _ = tx.send((jobs, local_max));
+            });
+            self.pass_a = Some(rx);
         }
-        self.ampmax = prev;
-        // Pass C (parallel): full analysis per block.
-        let setup = &self.setup.setup;
-        let psy_looks = &self.psy_looks;
-        let floor_seed = &self.floor_seed;
-        let ch = self.ch;
-        let packets: Vec<Vec<u8>> = jobs
-            .par_iter()
-            .zip(input_ampmax.par_iter())
-            .map_init(
-                || (MappingScratch::new(ch), floor_seed.clone()),
-                |(scratch, floors), (job, &amp)| {
-                    let mapping = &setup.mappings[setup.modes[job.mode.mode_number].mapping];
-                    let mut ampmax = amp;
-                    let mut w = BitWriter::new();
+        // Write finished packets in order.
+        let keep = if finishing { 0 } else { 1 };
+        while self.pass_c.len() > keep {
+            let (meta, rx) = self.pass_c.pop_front().expect("non-empty");
+            let packets = rx.recv().expect(WORKER);
+            for ((granulepos, eos), packet) in meta.into_iter().zip(&packets) {
+                self.ogg.write_packet(packet, granulepos, eos, false);
+            }
+        }
+    }
+}
+
+/// Run `f` with this worker thread's `MappingScratch` (allocated once per
+/// thread and channel count, instead of once per Rayon split per batch).
+#[cfg(feature = "parallel")]
+fn with_scratch<R>(ch: usize, f: impl FnOnce(&mut MappingScratch) -> R) -> R {
+    use std::cell::RefCell;
+    thread_local! {
+        static SCRATCH: RefCell<Vec<MappingScratch>> = const { RefCell::new(Vec::new()) };
+    }
+    SCRATCH.with(|cell| {
+        let mut pool = cell.borrow_mut();
+        let i = match pool.iter().position(|s| s.nonzero.len() == ch) {
+            Some(i) => i,
+            None => {
+                pool.push(MappingScratch::new(ch));
+                pool.len() - 1
+            }
+        };
+        f(&mut pool[i])
+    })
+}
+
+/// Pass C of the parallel pipeline: `mapping0_forward` for every block of
+/// a batch, each starting from its chained `ampmax`.
+#[cfg(feature = "parallel")]
+fn analyze_batch(
+    setup: &EncoderSetup,
+    psy_looks: &[VorbisLookPsy; 4],
+    floor_seed: &[Floor1State],
+    ch: usize,
+    jobs: &[BlockJob],
+    input_ampmax: &[f32],
+) -> Vec<Vec<u8>> {
+    use rayon::prelude::*;
+    let gi = &setup.cfg.psy_global;
+    let setup = &setup.setup;
+    jobs.par_iter()
+        .zip(input_ampmax.par_iter())
+        .map_init(
+            || floor_seed.to_vec(),
+            |floors, (job, &amp)| {
+                let mapping = &setup.mappings[setup.modes[job.mode.mode_number].mapping];
+                let mut ampmax = amp;
+                let mut w = BitWriter::new();
+                with_scratch(ch, |scratch| {
                     mapping0_forward(
                         &job.pcm,
                         &psy_looks[job.blocktype as usize],
@@ -854,16 +949,12 @@ impl EncoderCore {
                         &setup.books,
                         scratch,
                         &mut w,
-                    );
-                    w.into_bytes()
-                },
-            )
-            .collect();
-        for (job, packet) in jobs.iter().zip(&packets) {
-            self.ogg
-                .write_packet(packet, job.granulepos, job.eos, false);
-        }
-    }
+                    )
+                });
+                w.into_bytes()
+            },
+        )
+        .collect()
 }
 
 /// libvorbis-driver i16 scaling: `sample / 32768.0f`.
