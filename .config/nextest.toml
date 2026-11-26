@@ -9,3 +9,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'test(corpus_parity_sweep)'
 slow-timeout = { period = "60s" }
+
+# The streaming chunking-invariance tests re-encode each signal under many
+# chunkings (incl. 1-frame writes). ~3 s each in release on an M4, but up
+# to ~75 s on slower/loaded hosts and much longer in debug builds; don't
+# kill them, keep the slow-warning ping.
+[[profile.default.overrides]]
+filter = 'test(chunking_invariance)'
+slow-timeout = { period = "60s" }
