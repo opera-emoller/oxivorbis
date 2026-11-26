@@ -330,7 +330,7 @@ fn unpack_mapping(
 
 use std::sync::{Arc, Mutex};
 
-use crate::psy::{VorbisLookPsy, vp_psy_init};
+use crate::psy::{VorbisLookPsy, vp_psy_init_reusing};
 use crate::quality::{QualityConfig, quality_config};
 
 /// Everything quality-dependent the encoder needs that does not depend on
@@ -377,12 +377,23 @@ fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> Encoder
     };
     let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
     let rate = rate as i64;
-    let psy_looks = [
-        vp_psy_init(vi_impulse, gi, bs.short_half(), rate),
-        vp_psy_init(vi_padding, gi, bs.short_half(), rate),
-        vp_psy_init(vi_transition, gi, bs.long_half(), rate),
-        vp_psy_init(vi_long, gi, bs.long_half(), rate),
-    ];
+    let impulse = vp_psy_init_reusing(vi_impulse, gi, bs.short_half(), rate, &[]);
+    let padding = vp_psy_init_reusing(
+        vi_padding,
+        gi,
+        bs.short_half(),
+        rate,
+        std::slice::from_ref(&impulse),
+    );
+    let transition = vp_psy_init_reusing(vi_transition, gi, bs.long_half(), rate, &[]);
+    let long = vp_psy_init_reusing(
+        vi_long,
+        gi,
+        bs.long_half(),
+        rate,
+        std::slice::from_ref(&transition),
+    );
+    let psy_looks = [impulse, padding, transition, long];
     EncoderSetup {
         cfg,
         packet: generated.packet,

@@ -249,7 +249,7 @@ fn setup_tone_curves(
     let mut workc = [[[0.0_f32; EHMER_MAX]; P_LEVELS]; P_BANDS];
     let mut athc = [[0.0_f32; EHMER_MAX]; P_LEVELS];
     let mut ath = [0.0_f32; EHMER_MAX];
-    let mut brute_buffer = vec![0.0_f32; n];
+    let mut brute = vec![[0.0_f32; P_LEVELS]; n];
 
     // build return buffer
     let mut ret = Box::new([[[0.0_f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]);
@@ -354,11 +354,39 @@ fn setup_tone_curves(
         }
     }
 
+    // The spreading loops below map curve index j of half-octave band k to
+    // the bin range [lo, hi): `fromOC(j*.125+k*.5-2.0625)/binHz` and
+    // `fromOC(j*.125+k*.5-1.9375)/binHz+1`, clamped to [0, n]. libvorbis
+    // recomputes them (two exp() each) for every band, level and k; they
+    // depend only on (k, j), so they are computed once here, with the same
+    // expressions.
+    // workc transposed to [band][j][level] for the all-levels spreading.
+    let mut workt = [[[0.0_f32; P_LEVELS]; EHMER_MAX]; P_BANDS];
+    for (wt, wc) in workt.iter_mut().zip(&workc) {
+        for (j, col) in wt.iter_mut().enumerate() {
+            for (m, v) in col.iter_mut().enumerate() {
+                *v = wc[m][j];
+            }
+        }
+    }
+
+    let bin_hz_d = bin_hz as f64;
+    let mut spread = [[(0usize, 0usize); EHMER_MAX]; P_BANDS];
+    for (k, row) in spread.iter_mut().enumerate() {
+        for (j, e) in row.iter_mut().enumerate() {
+            let lo_bin = (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
+            let hi_bin = (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
+            *e = (
+                lo_bin.max(0).min(n as i64) as usize,
+                hi_bin.max(0).min(n as i64) as usize,
+            );
+        }
+    }
+
     for i in 0..P_BANDS {
         // C: `bin=floor(fromOC(i*.5)/binHz);` — double throughout.
         // `toOC(bin*binHz+1)` / `toOC((bin+1)*binHz)`: int*float is float,
         // so those arguments are float; the toOC results stay double.
-        let bin_hz_d = bin_hz as f64;
         let bin = (from_oc(i as f64 * 0.5) / bin_hz_d).floor() as i64;
         let lo_curve_f = to_oc((bin as f32 * bin_hz + 1.0) as f64) * 2.0;
         let hi_curve_f = to_oc(((bin + 1) as f32 * bin_hz) as f64) * 2.0;
@@ -374,77 +402,51 @@ fn setup_tone_curves(
             hi_curve = P_BANDS as i64 - 1;
         }
 
+        // `fromOC(j*.125+i*.5-2.)/binHz`: the bin each curve point is read
+        // back from, the same for every level.
+        let mut pull = [0i64; EHMER_MAX];
+        for (j, b) in pull.iter_mut().enumerate() {
+            *b = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
+        }
+
+        // The spreading walk visits the same bins for every level m, so all
+        // P_LEVELS levels go through it together (`brute[l][m]`); each
+        // level's cell sees exactly libvorbis's sequence of min updates.
+        brute.fill([999.0; P_LEVELS]);
+        let mut spread_band = |row: &[(usize, usize); EHMER_MAX], w: &[[f32; P_LEVELS]; EHMER_MAX]| {
+            let mut l: usize = 0;
+            for j in 0..EHMER_MAX {
+                let (lo_bin, hi_bin) = row[j];
+                if lo_bin < l {
+                    l = lo_bin;
+                } // match C: if(lo_bin<l) l=lo_bin
+                while l < hi_bin && l < n {
+                    min_levels(&mut brute[l], &w[j]);
+                    l += 1;
+                }
+            }
+            for b in brute[l.min(n)..].iter_mut() {
+                min_levels(b, &w[EHMER_MAX - 1]);
+            }
+        };
+        for k in lo_curve..=hi_curve {
+            spread_band(&spread[k as usize], &workt[k as usize]);
+        }
+        // next half-octave
+        if i + 1 < P_BANDS {
+            spread_band(&spread[i], &workt[i + 1]);
+        }
+
         for m in 0..P_LEVELS {
-            for j in 0..n {
-                brute_buffer[j] = 999.0;
-            }
-
-            for k in lo_curve..=hi_curve {
-                let mut l: usize = 0;
-                for j in 0..EHMER_MAX {
-                    let lo_bin =
-                        (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
-                    let hi_bin =
-                        (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
-                    let lo_bin = lo_bin.max(0).min(n as i64) as usize;
-                    let hi_bin = hi_bin.max(0).min(n as i64) as usize;
-                    if lo_bin < l {
-                        l = lo_bin;
-                    } // match C: if(lo_bin<l) l=lo_bin
-                    while l < hi_bin && l < n {
-                        if brute_buffer[l] > workc[k as usize][m][j] {
-                            brute_buffer[l] = workc[k as usize][m][j];
-                        }
-                        l += 1;
-                    }
-                }
-                while l < n {
-                    if brute_buffer[l] > workc[k as usize][m][EHMER_MAX - 1] {
-                        brute_buffer[l] = workc[k as usize][m][EHMER_MAX - 1];
-                    }
-                    l += 1;
-                }
-            }
-
-            // next half-octave
-            if i + 1 < P_BANDS {
-                let mut l: usize = 0;
-                let k = i + 1;
-                for j in 0..EHMER_MAX {
-                    let lo_bin =
-                        (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
-                    let hi_bin =
-                        (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
-                    let lo_bin = lo_bin.max(0).min(n as i64) as usize;
-                    let hi_bin = hi_bin.max(0).min(n as i64) as usize;
-                    if lo_bin < l {
-                        l = lo_bin;
-                    }
-                    while l < hi_bin && l < n {
-                        if brute_buffer[l] > workc[k][m][j] {
-                            brute_buffer[l] = workc[k][m][j];
-                        }
-                        l += 1;
-                    }
-                }
-                while l < n {
-                    if brute_buffer[l] > workc[k][m][EHMER_MAX - 1] {
-                        brute_buffer[l] = workc[k][m][EHMER_MAX - 1];
-                    }
-                    l += 1;
-                }
-            }
-
             // pull values back into curve
             for j in 0..EHMER_MAX {
-                let bin = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
+                let bin = pull[j];
                 if bin < 0 || bin >= n as i64 {
                     ret[i][m][j + 2] = -999.0;
                 } else {
-                    ret[i][m][j + 2] = brute_buffer[bin as usize];
+                    ret[i][m][j + 2] = brute[bin as usize][m];
                 }
             }
-
             // fenceposts
             let mut j = 0;
             while j < EHMER_OFFSET {
@@ -469,6 +471,14 @@ fn setup_tone_curves(
     ret
 }
 
+/// `if (b > w) b = w` for every tone-curve level.
+#[inline(always)]
+fn min_levels(b: &mut [f32; P_LEVELS], w: &[f32; P_LEVELS]) {
+    for (b, &w) in b.iter_mut().zip(w) {
+        *b = if *b > w { w } else { *b };
+    }
+}
+
 // ---------------------------------------------------------------------------
 // _vp_psy_init
 // ---------------------------------------------------------------------------
@@ -478,6 +488,20 @@ pub fn vp_psy_init(
     gi: &VorbisInfoPsyGlobal,
     n: usize,
     rate: i64,
+) -> VorbisLookPsy {
+    vp_psy_init_reusing(vi, gi, n, rate, &[])
+}
+
+/// [`vp_psy_init`], taking the tone curves from an `earlier` look built from
+/// the same inputs (n, rate, toneatt, tone_centerboost, tone_decay) instead
+/// of recomputing them; setup_tone_curves is a pure function of those, and
+/// the short (and long) block types usually share them.
+pub(crate) fn vp_psy_init_reusing(
+    vi: VorbisInfoPsy,
+    gi: &VorbisInfoPsyGlobal,
+    n: usize,
+    rate: i64,
+    earlier: &[VorbisLookPsy],
 ) -> VorbisLookPsy {
     let mut p = VorbisLookPsy {
         n,
@@ -610,14 +634,27 @@ pub fn vp_psy_init(
             // We dump after setup_tone_curves. Mark for later.
         }
     }
-    p.tonecurves = setup_tone_curves(
-        &vi.toneatt,
-        // C passes `rate*.5/n` (double) to a float parameter.
-        (rate as f64 * 0.5 / n as f64) as f32,
-        n,
-        vi.tone_centerboost,
-        vi.tone_decay,
-    );
+    let bits = |v: &VorbisInfoPsy| {
+        (
+            v.toneatt.map(f32::to_bits),
+            v.tone_centerboost.to_bits(),
+            v.tone_decay.to_bits(),
+        )
+    };
+    let same = earlier
+        .iter()
+        .find(|e| e.n == n && e.rate == rate && bits(&e.vi) == bits(&vi));
+    p.tonecurves = match same {
+        Some(e) => e.tonecurves.clone(),
+        None => setup_tone_curves(
+            &vi.toneatt,
+            // C passes `rate*.5/n` (double) to a float parameter.
+            (rate as f64 * 0.5 / n as f64) as f32,
+            n,
+            vi.tone_centerboost,
+            vi.tone_decay,
+        ),
+    };
     if crate::debug_dump::dump_enabled() {
         use std::sync::atomic::{AtomicBool, Ordering};
         static FIRED: AtomicBool = AtomicBool::new(false);
