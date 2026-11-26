@@ -1325,32 +1325,48 @@ pub fn vp_offset_and_mix(
     let n = p.n;
     let cx = p.m_val;
     let toneatt = p.vi.tone_masteratt[offset_select];
+    let noisemaxsupp = p.vi.noisemaxsupp;
+    let noise = &noise[..n];
+    let tone = &tone[..n];
+    let offset = &p.noiseoffset[offset_select][..n];
+    let logmask = &mut logmask[..n];
 
-    for i in 0..n {
-        let mut val = noise[i] + p.noiseoffset[offset_select][i];
-        if val > p.vi.noisemaxsupp {
-            val = p.vi.noisemaxsupp;
+    let mix = |i: usize| {
+        let mut val = noise[i] + offset[i];
+        if val > noisemaxsupp {
+            val = noisemaxsupp;
         }
+        val
+    };
+    if offset_select != 1 {
+        for i in 0..n {
+            logmask[i] = mix(i).max(tone[i] + toneatt);
+        }
+        return;
+    }
+    let mdct = &mut mdct[..n];
+    let logmdct = &logmdct[..n];
+    for i in 0..n {
+        let val = mix(i);
         logmask[i] = val.max(tone[i] + toneatt);
 
-        if offset_select == 1 {
-            // C: `float de, coeffi, cx; coeffi = -17.2;` — coeffi is float
-            // (= -17.20000076f, NOT the f64 literal -17.2 = -17.19999999...).
-            // Then `val = val - logmdct[i]` and `if(val > coeffi)` are both
-            // f32 operations. The math `1.0 - (val-coeffi)*0.005*cx` promotes
-            // to f64 only because 0.005/0.0003/1.0 are double literals; the
-            // final assignment to `float de` truncates back to f32.
-            let coeffi: f32 = -17.2;
-            let val_diff = val - logmdct[i];
-            let de: f32 = if val_diff > coeffi {
-                let d = 1.0_f64 - (val_diff - coeffi) as f64 * 0.005_f64 * cx as f64;
-                if d < 0.0 { 0.0001_f32 } else { d as f32 }
-            } else {
-                (1.0_f64 - (val_diff - coeffi) as f64 * 0.0003_f64 * cx as f64) as f32
-            };
+        // C: `float de, coeffi, cx; coeffi = -17.2;` — coeffi is float
+        // (= -17.20000076f, NOT the f64 literal -17.2 = -17.19999999...).
+        // Then `val = val - logmdct[i]` and `if(val > coeffi)` are both
+        // f32 operations. The math `1.0 - (val-coeffi)*0.005*cx` promotes
+        // to f64 only because 0.005/0.0003/1.0 are double literals; the
+        // final assignment to `float de` truncates back to f32.
+        //
+        // Both arms are computed and selected (no data-dependent branch, so
+        // the loop vectorizes); each is exactly libvorbis's expression.
+        let coeffi: f32 = -17.2;
+        let val_diff = val - logmdct[i];
+        let d_hi = 1.0_f64 - (val_diff - coeffi) as f64 * 0.005_f64 * cx as f64;
+        let de_hi = if d_hi < 0.0 { 0.0001_f32 } else { d_hi as f32 };
+        let de_lo = (1.0_f64 - (val_diff - coeffi) as f64 * 0.0003_f64 * cx as f64) as f32;
+        let de: f32 = if val_diff > coeffi { de_hi } else { de_lo };
 
-            mdct[i] *= de;
-        }
+        mdct[i] *= de;
     }
 }
 
