@@ -1,7 +1,8 @@
 //! debug-diff: compare C and Rust debug dumps to find the first diverging layer.
 //!
-//! Usage: cargo run --bin debug-diff
-//! Expects /tmp/lewtoff-debug/c_* and r_* to already exist.
+//! Usage: cargo run -p debug-diff (or `just debug-diff`)
+//! Expects /tmp/lewtoff-debug/c_* (`just debug-dump-c`) and r_*
+//! (`just debug-dump-rust`) to already exist.
 
 use std::fs;
 
@@ -65,7 +66,10 @@ fn compare_f32(name: &str, c: &[f32], r: &[f32]) -> bool {
             return false;
         }
     }
-    if c.len() != r.len() {
+    // Some Rust dumps write a whole scratch buffer (e.g. logfft is sized
+    // for the long block, 2048 floats) while libvorbis dumps exactly the
+    // n/2(+1) values of the block; only that prefix is meaningful.
+    if c.len() > r.len() {
         println!(
             "{name} length mismatch: c={} r={} (max_abs={:.2e} max_ulp={})",
             c.len(),
@@ -75,9 +79,14 @@ fn compare_f32(name: &str, c: &[f32], r: &[f32]) -> bool {
         );
         return false;
     }
+    let note = if r.len() > c.len() {
+        format!(" of rust's {}", r.len())
+    } else {
+        String::new()
+    };
     println!(
-        "{name} matches ({} elements, max_abs={:.2e}, max_ulp={})",
-        len, max_abs, max_ulp
+        "{name} matches ({len} elements{note}, max_abs={:.2e}, max_ulp={})",
+        max_abs, max_ulp
     );
     true
 }
@@ -165,10 +174,12 @@ fn main() {
     }
 
     let c_floor_bits_str = read_txt(&format!("{base}/c_floor_bits.txt"));
+    // Format: one "<value> <bits>" line per entry, then
+    // "# total_floor_bits=<n>".
     let c_floor_bits: usize = c_floor_bits_str
-        .split_whitespace()
-        .find_map(|tok| tok.parse::<usize>().ok())
-        .expect("parse c_floor_bits.txt");
+        .split_once("total_floor_bits=")
+        .and_then(|(_, n)| n.trim().parse().ok())
+        .expect("parse total_floor_bits= in c_floor_bits.txt");
     let r_floor_bits_str = read_txt(&format!("{base}/r_floor_bits.txt"));
     let r_floor_bits: usize = r_floor_bits_str
         .trim()
@@ -185,6 +196,6 @@ fn main() {
     println!("floor_bits matches ({c_floor_bits} bits)");
 
     println!(
-        "\nAll layers match through floor_bits — divergence must be downstream (residue or coupling)."
+        "\nAll dumped layers match through floor_bits. If the streams still differ, look downstream (residue or coupling)."
     );
 }

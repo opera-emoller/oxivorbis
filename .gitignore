@@ -11,9 +11,11 @@
 # `corpus_parity_sweep` from tests/corpus_sweep.rs).
 /corpus
 
-# Ad-hoc debug binaries built from tools/debug-libvorbis-dump and
-# tools/oracle-encoder. Only `harness` (and its .dSYM) is intentionally
-# tracked because it's the canonical sine-440 dumper.
+# Debug binaries built from tools/debug-libvorbis-dump
+# (./tools/debug-libvorbis-dump/build.sh, `just debug-dump-c`) and the
+# oracle tools. Never commit host binaries.
+/tools/debug-libvorbis-dump/harness
+/tools/debug-libvorbis-dump/harness.dSYM/
 /tools/debug-libvorbis-dump/corpus_harness
 /tools/debug-libvorbis-dump/corpus_harness.dSYM/
 /tools/debug-libvorbis-dump/ramp_harness
@@ -22,7 +24,7 @@
 /tools/oracle-encoder/dump_params
 
 # oracle-encoder is the parity oracle used by tests/parity.rs. It must be
-# rebuilt locally from the vendored libvorbis sources (run
+# rebuilt locally from the pristine vendored libvorbis sources (run
 # ./tools/oracle-encoder/build.sh after pulling). CI rebuilds it from the
 # checked-out tree, so the host's macOS arm64 binary should not be
 # committed alongside the Linux x86_64 version CI produces.

@@ -120,7 +120,8 @@ int main(void) {
                 write_f32("c_windowed.bin", g_windowed_pcm, g_windowed_n);
                 write_f32("c_drft.bin",     g_drft_output,  g_windowed_n);
 
-                int half = g_windowed_n / 2 + 1;
+                /* mapping0.c copies exactly n/2 values into these. */
+                int half = g_windowed_n / 2;
                 write_f32("c_logfft.bin",   g_logfft,  half);
                 write_f32("c_logmdct.bin",  g_logmdct, half);
                 write_f32("c_mask.bin",     g_logmask, half);
