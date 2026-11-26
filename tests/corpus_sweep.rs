@@ -376,6 +376,21 @@ struct ComboResult {
 /// See the module docs for the `CORPUS_*` environment variables. Failures
 /// are reported per (config, quality) and per category, and the test panics
 /// at the end with a summary if any case diverged.
+/// The sweep has nothing to run. Say so loudly (the test still passes, so a
+/// plain `--run-ignored all` works without a corpus), or fail when
+/// `CORPUS_REQUIRE=1`.
+fn not_run(why: &str) {
+    let bar = "=".repeat(72);
+    eprintln!(
+        "\n{bar}\nWARNING: corpus_parity_sweep did NOT run: {why}.\n\
+         NOTHING WAS TESTED. Symlink an audio corpus at <repo_root>/{CORPUS_DIR}\n\
+         (see CONTRIBUTING.md). Set CORPUS_REQUIRE=1 to make this an error.\n{bar}\n"
+    );
+    if std::env::var_os("CORPUS_REQUIRE").is_some_and(|v| v != "0") {
+        panic!("corpus_parity_sweep: {why} (CORPUS_REQUIRE is set)");
+    }
+}
+
 #[test]
 #[ignore = "manual sweep over <repo_root>/corpus/ (gitignored, large)"]
 fn corpus_parity_sweep() {
@@ -385,7 +400,7 @@ fn corpus_parity_sweep() {
 
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);
     if !root.exists() {
-        eprintln!("no {} directory; skipping", root.display());
+        not_run(&format!("no {} directory", root.display()));
         return;
     }
 
@@ -400,7 +415,7 @@ fn corpus_parity_sweep() {
     }
 
     if files.is_empty() {
-        eprintln!("no audio files under {}; skipping", root.display());
+        not_run(&format!("no audio files under {}", root.display()));
         return;
     }
 

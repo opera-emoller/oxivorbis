@@ -671,6 +671,162 @@ fn oracle_parity_long_silence_stereo48() {
     assert_parity_oracle(&stereo, SampleRate::Hz48000, Channels::Stereo);
 }
 
+// --- Long non-silent signals ---
+//
+// Everything above is at most 10 s of non-silent audio, so a bug that only
+// shows up after many blocks (state carried across blocks, page/granule
+// accounting, envelope history, bitrate tracking) could slip through. These
+// run 30..120 s of busy, never-silent material end to end.
+
+/// Long seeded signal generators (`secs` of audio, never silent).
+#[derive(Clone, Copy)]
+enum LongSignal {
+    /// White noise + two tones, with a slow (0.1 Hz) level swell so the
+    /// psychoacoustics see changing loudness.
+    NoiseTone,
+    /// Tone bed with noise bursts every ~0.15..0.5 s (short blocks
+    /// throughout).
+    Transients,
+    /// 20 Hz .. 20 kHz logarithmic sweep, back down again, over a quiet
+    /// noise floor; the right channel lags by a varying amount.
+    Chirp,
+}
+
+fn long_signal(sig: LongSignal, secs: f32, rate: u32, channels: u16) -> Vec<i16> {
+    let ch = channels as usize;
+    let sr = rate as f64;
+    let n = (sr * secs as f64) as usize;
+    let tau = std::f64::consts::TAU;
+    let clip = |v: f64| v.clamp(-32768.0, 32767.0) as i16;
+    let mut rng = XorShift32(match sig {
+        LongSignal::NoiseTone => 0x0BAD_5EED,
+        LongSignal::Transients => 0x7A57_0001,
+        LongSignal::Chirp => 0xC41B_0002,
+    });
+    let mut out = Vec::with_capacity(n * ch);
+    match sig {
+        LongSignal::NoiseTone => {
+            for i in 0..n {
+                let t = i as f64 / sr;
+                let swell = 0.55 + 0.45 * (tau * 0.1 * t).sin();
+                for c in 0..ch {
+                    let tone = (tau * (330.0 + 7.0 * c as f64) * t).sin() * 7000.0
+                        + (tau * (2500.0 + 500.0 * c as f64) * t).sin() * 2500.0;
+                    let noise = rng.next_f32() as f64 * 5000.0;
+                    out.push(clip((tone + noise) * swell + 60.0));
+                }
+            }
+        }
+        LongSignal::Transients => {
+            let mut next_onset = (0.1 * sr) as usize;
+            let mut since = usize::MAX;
+            let decay = 1.0 / (sr * 0.025);
+            for i in 0..n {
+                if i == next_onset {
+                    since = 0;
+                    next_onset +=
+                        (0.15 * sr) as usize + rng.next_u32() as usize % (0.35 * sr) as usize;
+                }
+                let env = if since == usize::MAX {
+                    0.0
+                } else {
+                    (-(since as f64) * decay).exp()
+                };
+                since = since.saturating_add(1);
+                let t = i as f64 / sr;
+                for c in 0..ch {
+                    let bed = (tau * (220.0 + 110.0 * c as f64) * t).sin() * 900.0;
+                    out.push(clip(bed + rng.next_f32() as f64 * 30000.0 * env));
+                }
+            }
+        }
+        LongSignal::Chirp => {
+            let (f0, f1) = (20.0f64, 20000.0f64.min(sr * 0.45));
+            let half = n / 2;
+            let mut phase = [0.0f64; 2];
+            for i in 0..n {
+                // Up for the first half, down for the second.
+                let u = if i < half {
+                    i as f64 / half as f64
+                } else {
+                    (n - i) as f64 / (n - half) as f64
+                };
+                for (c, ph) in phase.iter_mut().enumerate().take(ch) {
+                    let lag = 0.002 * c as f64 * (1.0 + (i as f64 / sr * 0.05).sin());
+                    let f = f0 * (f1 / f0).powf((u - lag).clamp(0.0, 1.0));
+                    *ph = (*ph + tau * f / sr) % tau;
+                    let floor = rng.next_f32() as f64 * 150.0;
+                    out.push(clip(ph.sin() * 12000.0 + floor));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn run_long_case(
+    sig: LongSignal,
+    secs: f32,
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+) {
+    let samples = long_signal(sig, secs, rate_hz(rate), channel_count(channels));
+    // Never silent: every second must carry signal on every channel.
+    let ch = channel_count(channels) as usize;
+    let sr = rate_hz(rate) as usize;
+    for (k, second) in samples.chunks(sr * ch).enumerate() {
+        for c in 0..ch {
+            let peak = second
+                .iter()
+                .skip(c)
+                .step_by(ch)
+                .map(|s| s.unsigned_abs())
+                .max();
+            assert!(
+                peak.unwrap_or(0) > 100,
+                "second {k} ch {c} is (near-)silent"
+            );
+        }
+    }
+    assert_parity_oracle_q(&samples, rate, channels, base_quality);
+}
+
+/// `oracle_parity_long::cases::<signal>_<secs>s_<config>_<quality>`.
+mod oracle_parity_long {
+    use super::*;
+
+    macro_rules! long {
+        ($name:ident, $sig:ident, $secs:expr, $rate:ident, $ch:ident, $q:expr) => {
+            #[test]
+            fn $name() {
+                run_long_case(
+                    LongSignal::$sig,
+                    $secs,
+                    SampleRate::$rate,
+                    Channels::$ch,
+                    $q,
+                );
+            }
+        };
+    }
+
+    #[rustfmt::skip]
+    mod cases {
+        use super::*;
+        long!(noise_tone_60s_stereo44_qm1, NoiseTone, 60.0, Hz44100, Stereo, -0.1);
+        long!(noise_tone_60s_mono48_q10, NoiseTone, 60.0, Hz48000, Mono, 1.0);
+        long!(noise_tone_45s_stereo48_q5, NoiseTone, 45.0, Hz48000, Stereo, 0.5);
+        long!(noise_tone_30s_mono44_q0, NoiseTone, 30.0, Hz44100, Mono, 0.0);
+        long!(transients_30s_mono44_q10, Transients, 30.0, Hz44100, Mono, 1.0);
+        long!(transients_40s_stereo48_qm1, Transients, 40.0, Hz48000, Stereo, -0.1);
+        long!(transients_30s_stereo44_q2, Transients, 30.0, Hz44100, Stereo, 0.2);
+        long!(chirp_120s_mono44_q5, Chirp, 120.0, Hz44100, Mono, 0.5);
+        long!(chirp_60s_mono48_qm1, Chirp, 60.0, Hz48000, Mono, -0.1);
+        long!(chirp_45s_stereo48_q10, Chirp, 45.0, Hz48000, Stereo, 1.0);
+    }
+}
+
 // --- Short-input sweep ---
 
 /// Frame counts for the short-input sweep: every length 0..=130 (0 = empty
@@ -680,6 +836,23 @@ fn short_input_lengths() -> Vec<usize> {
     let mut v: Vec<usize> = (0..=130).collect();
     v.extend((137..=2100).step_by(7));
     v.extend([2047, 2048, 2049]);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// q-1 uses 512/4096 blocks, so its short-stream regime reaches twice as
+/// far: every length 0..=64, every 37th up to 8400, and +-1 around the
+/// short/long block sizes, the 64-frame chunk after them, and their
+/// multiples (4095..4097, 4159..4161, 8191..8193, ...).
+fn short_input_lengths_q_minus_1() -> Vec<usize> {
+    let mut v: Vec<usize> = (0..=64).collect();
+    v.extend((65..=8400).step_by(37));
+    for edge in [
+        256, 512, 576, 1024, 2048, 2112, 3072, 4096, 4160, 6144, 8192, 8256,
+    ] {
+        v.extend([edge - 1, edge, edge + 1]);
+    }
     v.sort_unstable();
     v.dedup();
     v
@@ -710,11 +883,15 @@ fn run_short_input_sweep(
     base_quality: f32,
     range: std::ops::RangeInclusive<usize>,
 ) {
+    let lengths = if base_quality < 0.0 {
+        short_input_lengths_q_minus_1()
+    } else {
+        short_input_lengths()
+    };
+    let lengths: Vec<usize> = lengths.into_iter().filter(|f| range.contains(f)).collect();
+    assert!(!lengths.is_empty(), "empty sweep range {range:?}");
     let mut failures = Vec::new();
-    for frames in short_input_lengths()
-        .into_iter()
-        .filter(|f| range.contains(f))
-    {
+    for frames in lengths {
         let samples = short_input_signal(frames, rate_hz(rate), channel_count(channels));
         let oracle_bytes = oracle_encode_q(
             &samples,
@@ -773,53 +950,226 @@ mod oracle_parity_short_input {
     sweep!(stereo48_q5, SampleRate::Hz48000, Channels::Stereo, 0.5);
     sweep!(mono44_q2, SampleRate::Hz44100, Channels::Mono, 0.2);
     sweep!(stereo48_q2, SampleRate::Hz48000, Channels::Stereo, 0.2);
+
+    /// q-1 (512/4096 blocks): lengths up to 8400 frames, see
+    /// [`short_input_lengths_q_minus_1`].
+    macro_rules! sweep_q_minus_1 {
+        ($name:ident, $rate:expr, $ch:expr, $q:expr) => {
+            mod $name {
+                use super::*;
+                #[test]
+                fn upto_130() {
+                    run_short_input_sweep($rate, $ch, $q, 0..=130);
+                }
+                #[test]
+                fn upto_2200() {
+                    run_short_input_sweep($rate, $ch, $q, 131..=2200);
+                }
+                #[test]
+                fn upto_4200() {
+                    run_short_input_sweep($rate, $ch, $q, 2201..=4200);
+                }
+                #[test]
+                fn upto_6200() {
+                    run_short_input_sweep($rate, $ch, $q, 4201..=6200);
+                }
+                #[test]
+                fn upto_8400() {
+                    run_short_input_sweep($rate, $ch, $q, 6201..=8400);
+                }
+            }
+        };
+    }
+
+    sweep_q_minus_1!(mono44_qm1, SampleRate::Hz44100, Channels::Mono, -0.1);
+    sweep_q_minus_1!(stereo48_qm005, SampleRate::Hz48000, Channels::Stereo, -0.05);
 }
+
 // --- Minimized parity-fuzz repros ---
 
-/// Replays every `tests/vectors/fuzz/<id>[-q<base_quality>]-<rate>-<ch>ch.s16le`
-/// (minimized tools/parity-fuzz failures; base_quality 0.5 unless tagged)
-/// against the oracle.
+/// Repros saved before tools/parity-fuzz put the quality in case ids. They
+/// were all found at the fuzzer's default base_quality, 0.5. New repros
+/// must carry a `-q<quality>` tag.
+const LEGACY_UNTAGGED_REPROS: &[&str] = &[
+    "s2002-i676-44100-1ch",
+    "s3003-i302-48000-1ch",
+    "s3003-i4379-48000-2ch",
+];
+
+/// A parsed repro file name: `<id>-q<quality>[-f32]-<rate>-<ch>ch.<s16le|f32le>`
+/// (the parity-fuzz case id plus the input format's extension).
+#[derive(Debug, PartialEq)]
+struct ReproName {
+    quality: f32,
+    f32_input: bool,
+    rate: u32,
+    channels: u16,
+}
+
+fn parse_repro_name(file_name: &str) -> Result<ReproName, String> {
+    let (stem, ext) = file_name
+        .rsplit_once('.')
+        .ok_or_else(|| format!("{file_name}: no extension"))?;
+    let ext_f32 = match ext {
+        "s16le" => false,
+        "f32le" => true,
+        _ => return Err(format!("{file_name}: extension must be .s16le or .f32le")),
+    };
+    let (rest, ch) = stem
+        .rsplit_once('-')
+        .ok_or_else(|| format!("{file_name}: missing -<ch>ch"))?;
+    let channels: u16 = ch
+        .strip_suffix("ch")
+        .and_then(|c| c.parse().ok())
+        .ok_or_else(|| format!("{file_name}: bad channel tag {ch:?}"))?;
+    let (rest, rate) = rest
+        .rsplit_once('-')
+        .ok_or_else(|| format!("{file_name}: missing -<rate>"))?;
+    let rate: u32 = rate
+        .parse()
+        .map_err(|_| format!("{file_name}: bad rate {rate:?}"))?;
+    let (rest, tag_f32) = match rest.strip_suffix("-f32") {
+        Some(r) => (r, true),
+        None => (rest, false),
+    };
+    if tag_f32 != ext_f32 {
+        return Err(format!(
+            "{file_name}: -f32 tag and .{ext} extension disagree"
+        ));
+    }
+    let quality = match rest.rsplit_once("-q") {
+        Some((_, q)) => q
+            .parse()
+            .map_err(|_| format!("{file_name}: bad quality tag {q:?}"))?,
+        None if LEGACY_UNTAGGED_REPROS.contains(&stem) => 0.5,
+        None => {
+            return Err(format!(
+                "{file_name}: no -q<quality> tag (name repros like parity-fuzz case ids, \
+                 e.g. s1-i42-q0.5-44100-2ch.s16le)"
+            ));
+        }
+    };
+    if !(-0.1..=1.0).contains(&quality)
+        || ![44100, 48000].contains(&rate)
+        || !(1..=2).contains(&channels)
+    {
+        return Err(format!("{file_name}: unsupported quality/rate/channels"));
+    }
+    Ok(ReproName {
+        quality,
+        f32_input: ext_f32,
+        rate,
+        channels,
+    })
+}
+
+#[test]
+fn oracle_parity_fuzz_repro_names() {
+    let p = |s: &str| parse_repro_name(s);
+    assert_eq!(
+        p("s5151-i81-q-0.01-44100-2ch.s16le"),
+        Ok(ReproName {
+            quality: -0.01,
+            f32_input: false,
+            rate: 44100,
+            channels: 2
+        })
+    );
+    assert_eq!(
+        p("s1-i7-q1-48000-1ch.s16le"),
+        Ok(ReproName {
+            quality: 1.0,
+            f32_input: false,
+            rate: 48000,
+            channels: 1
+        })
+    );
+    assert_eq!(
+        p("replay-x-q0.2-f32-48000-2ch.f32le"),
+        Ok(ReproName {
+            quality: 0.2,
+            f32_input: true,
+            rate: 48000,
+            channels: 2
+        })
+    );
+    assert_eq!(p("s2002-i676-44100-1ch.s16le").unwrap().quality, 0.5);
+    assert!(p("s9-i9-44100-1ch.s16le").is_err(), "untagged, not legacy");
+    assert!(
+        p("s9-i9-q0.5-44100-1ch.f32le").is_err(),
+        "f32 ext without tag"
+    );
+    assert!(p("s9-i9-q0.5-22050-1ch.s16le").is_err());
+}
+
+/// Replays every minimized tools/parity-fuzz failure kept in
+/// `tests/vectors/fuzz/` against the oracle. File names are parity-fuzz
+/// case ids (`<id>-q<quality>[-f32]-<rate>-<ch>ch`) plus `.s16le` or
+/// `.f32le`; see [`parse_repro_name`]. Any other file fails the test.
 #[test]
 fn oracle_parity_fuzz_repros() {
     let dir = std::env::current_dir().unwrap().join("tests/vectors/fuzz");
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "s16le"))
         .collect();
     paths.sort();
     assert!(!paths.is_empty(), "no repros in {}", dir.display());
     let mut failures = Vec::new();
     for path in &paths {
-        let stem = path.file_stem().unwrap().to_str().unwrap();
-        let parts: Vec<&str> = stem.rsplitn(3, '-').collect();
-        let ch: u16 = parts[0].trim_end_matches("ch").parse().unwrap();
-        let rate: u32 = parts[1].parse().unwrap();
-        let q: f32 = parts[2]
-            .split_once("-q")
-            .map_or(0.5, |(_, q)| q.parse().unwrap());
-        let samples: Vec<i16> = std::fs::read(path)
-            .unwrap()
-            .chunks_exact(2)
-            .map(|c| i16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        let oracle_bytes = oracle_encode_q(&samples, rate, ch, q);
-        let serial = extract_serial(&oracle_bytes);
-        let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-        let r = if rate == 48000 {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let repro = parse_repro_name(name).unwrap_or_else(|e| panic!("{e}"));
+        let raw = std::fs::read(path).unwrap();
+        let rate = if repro.rate == 48000 {
             SampleRate::Hz48000
         } else {
             SampleRate::Hz44100
         };
-        let c = if ch == 2 {
+        let channels = if repro.channels == 2 {
             Channels::Stereo
         } else {
             Channels::Mono
         };
-        let lewtoff_bytes =
-            common::lewtoff_encode_q(&samples, r, c, q, serial, Some(&vendor), Some(&encoder_tag));
+        let (oracle_bytes, lewtoff_bytes) = if repro.f32_input {
+            let samples: Vec<f32> = raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let oracle =
+                common::oracle_encode_raw(&raw, repro.rate, repro.channels, repro.quality, "f32");
+            let serial = extract_serial(&oracle);
+            let (vendor, tag) = extract_comment_strings(&oracle);
+            let lw = lewtoff::encode_f32_with_base_quality_and_meta(
+                &samples,
+                rate,
+                channels,
+                repro.quality,
+                serial,
+                Some(&vendor),
+                Some(&tag),
+            );
+            (oracle, lw)
+        } else {
+            let samples: Vec<i16> = raw
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let oracle = oracle_encode_q(&samples, repro.rate, repro.channels, repro.quality);
+            let serial = extract_serial(&oracle);
+            let (vendor, tag) = extract_comment_strings(&oracle);
+            let lw = common::lewtoff_encode_q(
+                &samples,
+                rate,
+                channels,
+                repro.quality,
+                serial,
+                Some(&vendor),
+                Some(&tag),
+            );
+            (oracle, lw)
+        };
         if lewtoff_bytes != oracle_bytes {
-            failures.push(stem.to_string());
+            failures.push(name.to_string());
         }
     }
     assert!(failures.is_empty(), "diverged: {failures:?}");

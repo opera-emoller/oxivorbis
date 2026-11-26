@@ -3,17 +3,26 @@ status-level = "fail"
 final-status-level = "flaky"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# corpus_parity_sweep walks thousands of files sequentially; the default
-# 60s kill-after-2-slow-periods timer fires long before it finishes. Keep
-# the slow-warning ping but don't terminate.
+# corpus_parity_sweep walks thousands of files (manual, --run-ignored only);
+# the default 60s kill-after-2-slow-periods timer fires long before it
+# finishes. Keep the slow-warning ping but don't terminate.
 [[profile.default.overrides]]
 filter = 'test(corpus_parity_sweep)'
 slow-timeout = { period = "60s" }
 
+# Long oracle parity cases: oracle_parity_long_silence_* (100-120 s of
+# silence, ~20 s each in a debug build on an M4), oracle_parity_long::*
+# (30-120 s of noise/transients/chirps) and the short-input sweeps (a few
+# hundred oracle round trips each). On a loaded 2-4 core CI runner these
+# take several times longer, so allow up to 4 min each.
+[[profile.default.overrides]]
+filter = 'test(oracle_parity_long) | test(oracle_parity_short_input::)'
+slow-timeout = { period = "60s", terminate-after = 4 }
+
 # The streaming chunking-invariance tests re-encode each signal under many
-# chunkings (incl. 1-frame writes). ~3 s each in release on an M4, but up
-# to ~75 s on slower/loaded hosts and much longer in debug builds; don't
-# kill them, keep the slow-warning ping.
+# chunkings (incl. 1-frame writes). ~3 s each in release on an M4, ~2-3 min
+# in a debug build, and over 10 min in debug on a heavily loaded host.
+# Keep a finite cap (20 min) so a hang still fails the run.
 [[profile.default.overrides]]
 filter = 'test(chunking_invariance)'
-slow-timeout = { period = "60s" }
+slow-timeout = { period = "60s", terminate-after = 20 }
