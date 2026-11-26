@@ -794,8 +794,9 @@ mod oracle_parity_short_input {
 }
 // --- Minimized parity-fuzz repros ---
 
-/// Replays every `tests/vectors/fuzz/<id>-<rate>-<ch>ch.s16le` (minimized
-/// tools/parity-fuzz failures, all at base_quality 0.5) against the oracle.
+/// Replays every `tests/vectors/fuzz/<id>[-q<base_quality>]-<rate>-<ch>ch.s16le`
+/// (minimized tools/parity-fuzz failures; base_quality 0.5 unless tagged)
+/// against the oracle.
 #[test]
 fn oracle_parity_fuzz_repros() {
     let dir = std::env::current_dir().unwrap().join("tests/vectors/fuzz");
@@ -812,12 +813,15 @@ fn oracle_parity_fuzz_repros() {
         let parts: Vec<&str> = stem.rsplitn(3, '-').collect();
         let ch: u16 = parts[0].trim_end_matches("ch").parse().unwrap();
         let rate: u32 = parts[1].parse().unwrap();
+        let q: f32 = parts[2]
+            .split_once("-q")
+            .map_or(0.5, |(_, q)| q.parse().unwrap());
         let samples: Vec<i16> = std::fs::read(path)
             .unwrap()
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]))
             .collect();
-        let oracle_bytes = oracle_encode_q(&samples, rate, ch, 0.5);
+        let oracle_bytes = oracle_encode_q(&samples, rate, ch, q);
         let serial = extract_serial(&oracle_bytes);
         let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
         let r = if rate == 48000 {
@@ -830,15 +834,8 @@ fn oracle_parity_fuzz_repros() {
         } else {
             Channels::Mono
         };
-        let lewtoff_bytes = common::lewtoff_encode_q(
-            &samples,
-            r,
-            c,
-            0.5,
-            serial,
-            Some(&vendor),
-            Some(&encoder_tag),
-        );
+        let lewtoff_bytes =
+            common::lewtoff_encode_q(&samples, r, c, q, serial, Some(&vendor), Some(&encoder_tag));
         if lewtoff_bytes != oracle_bytes {
             failures.push(stem.to_string());
         }

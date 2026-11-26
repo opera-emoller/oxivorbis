@@ -79,27 +79,20 @@ fn to_bark(n: i64) -> f64 {
     13.1_f32 as f64 * a.atan() + 2.24_f32 as f64 * b.atan() + c
 }
 
-/// toOC (scales.h): `log(n)*1.442695f-5.965784f`. C constants are f32, promoted
-/// to f64 in the math.
-fn to_oc(n: f32) -> f32 {
-    let c1 = 1.442695_f32 as f64;
-    let c2 = 5.965784_f32 as f64;
-    ((n as f64).ln() * c1 - c2) as f32
+/// toOC (scales.h): `log(n)*1.442695f-5.965784f`. `log` is double, so the
+/// result is double whatever the argument type; the f32 constants are
+/// promoted. These are textual macros in C: each call site must form its
+/// argument in the C expression's own type (pass it here as f64 — exact
+/// for float arguments) and round the double result only where C assigns
+/// it to a float/int.
+fn to_oc(n: f64) -> f64 {
+    n.ln() * 1.442695_f32 as f64 - 5.965784_f32 as f64
 }
 
-/// fromOC (scales.h): `exp((o+5.965784f)*.693147f)`. f32 constants promoted to f64.
-fn from_oc(o: f32) -> f32 {
-    let c1 = 5.965784_f32 as f64;
-    let c2 = 0.693147_f32 as f64;
-    (((o as f64 + c1) * c2).exp()) as f32
-}
-
-/// rint: round to nearest integer per C standard (half-to-even).
-/// Rust's `.round()` rounds half-away-from-zero, which diverges at
-/// half-integers (0.5 → 1 vs C's 0).
-#[inline(always)]
-fn rint(x: f32) -> f32 {
-    x.round_ties_even()
+/// fromOC (scales.h): `exp(((o)+5.965784f)*.693147f)`; double result, see
+/// [`to_oc`].
+fn from_oc(o: f64) -> f64 {
+    ((o + 5.965784_f32 as f64) * 0.693147_f32 as f64).exp()
 }
 
 /// todB: bit-manipulation fast dB (scales.h, VORBIS_IEEE_FLOAT32 path).
@@ -359,11 +352,13 @@ fn setup_tone_curves(
     }
 
     for i in 0..P_BANDS {
-        // C does these arg computations in f64 (literals are double), casts to
-        // float only at the fromOC()/toOC() call boundary. Mirror that.
-        let bin = (from_oc((i as f64 * 0.5) as f32) / bin_hz).floor() as i64;
-        let lo_curve_f = to_oc((bin as f64 * bin_hz as f64 + 1.0) as f32) * 2.0;
-        let hi_curve_f = to_oc(((bin + 1) as f64 * bin_hz as f64) as f32) * 2.0;
+        // C: `bin=floor(fromOC(i*.5)/binHz);` — double throughout.
+        // `toOC(bin*binHz+1)` / `toOC((bin+1)*binHz)`: int*float is float,
+        // so those arguments are float; the toOC results stay double.
+        let bin_hz_d = bin_hz as f64;
+        let bin = (from_oc(i as f64 * 0.5) / bin_hz_d).floor() as i64;
+        let lo_curve_f = to_oc((bin as f32 * bin_hz + 1.0) as f64) * 2.0;
+        let hi_curve_f = to_oc(((bin + 1) as f32 * bin_hz) as f64) * 2.0;
         let mut lo_curve = lo_curve_f.ceil() as i64;
         let mut hi_curve = hi_curve_f.floor() as i64;
         if lo_curve > i as i64 {
@@ -384,11 +379,10 @@ fn setup_tone_curves(
             for k in lo_curve..=hi_curve {
                 let mut l: usize = 0;
                 for j in 0..EHMER_MAX {
-                    let lo_bin = (from_oc((j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) as f32)
-                        / bin_hz) as i64;
-                    let hi_bin = (from_oc((j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) as f32)
-                        / bin_hz) as i64
-                        + 1;
+                    let lo_bin =
+                        (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
+                    let hi_bin =
+                        (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
                     let lo_bin = lo_bin.max(0).min(n as i64) as usize;
                     let hi_bin = hi_bin.max(0).min(n as i64) as usize;
                     if lo_bin < l {
@@ -414,11 +408,10 @@ fn setup_tone_curves(
                 let mut l: usize = 0;
                 let k = i + 1;
                 for j in 0..EHMER_MAX {
-                    let lo_bin = (from_oc((j as f64 * 0.125 + i as f64 * 0.5 - 2.0625) as f32)
-                        / bin_hz) as i64;
-                    let hi_bin = (from_oc((j as f64 * 0.125 + i as f64 * 0.5 - 1.9375) as f32)
-                        / bin_hz) as i64
-                        + 1;
+                    let lo_bin =
+                        (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
+                    let hi_bin =
+                        (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
                     let lo_bin = lo_bin.max(0).min(n as i64) as usize;
                     let hi_bin = hi_bin.max(0).min(n as i64) as usize;
                     if lo_bin < l {
@@ -441,8 +434,7 @@ fn setup_tone_curves(
 
             // pull values back into curve
             for j in 0..EHMER_MAX {
-                let bin =
-                    (from_oc((j as f64 * 0.125 + i as f64 * 0.5 - 2.0) as f32) / bin_hz) as i64;
+                let bin = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
                 if bin < 0 || bin >= n as i64 {
                     ret[i][m][j + 2] = -999.0;
                 } else {
@@ -507,10 +499,13 @@ pub fn vp_psy_init(
     let two = 2.0_f32 as f64;
     p.shiftoc = (arg.ln() / two.ln()).round_ties_even() as i32 - 1;
 
-    p.firstoc = (to_oc(0.25_f32 * rate as f32 * 0.5 / n as f32) as f64
+    // C: `toOC(.25f*rate*.5/n)` — `.25f*rate` is float, then double.
+    p.firstoc = (to_oc((0.25_f32 * rate as f32) as f64 * 0.5 / n as f64)
         * (1i64 << (p.shiftoc + 1)) as f64
         - gi.eighth_octave_lines as f64) as i64;
-    let maxoc = (to_oc((n as f32 + 0.25) * rate as f32 * 0.5 / n as f32) as f64
+    // C: `toOC((n+.25f)*rate*.5/n)*(1<<(shiftoc+1))+.5f` — `(n+.25f)*rate`
+    // is float, the rest double.
+    let maxoc = (to_oc(((n as f32 + 0.25) * rate as f32) as f64 * 0.5 / n as f64)
         * (1i64 << (p.shiftoc + 1)) as f64
         + 0.5) as i64;
     p.total_octave_lines = (maxoc - p.firstoc + 1) as i32;
@@ -534,9 +529,9 @@ pub fn vp_psy_init(
     {
         let mut j: usize = 0;
         for i in 0..(MAX_ATH - 1) {
-            let endpos =
-                rint(from_oc((i as f32 + 1.0) * 0.125 - 2.0) * 2.0 * n as f32 / rate as f32)
-                    as usize;
+            // C: `rint(fromOC((i+1)*.125-2.)*2*n/rate)` — all double.
+            let endpos = (from_oc((i + 1) as f64 * 0.125 - 2.0) * 2.0 * n as f64 / rate as f64)
+                .round_ties_even() as usize;
             let base = ATH[i];
             if j < endpos {
                 let delta = if endpos > j {
@@ -597,8 +592,10 @@ pub fn vp_psy_init(
 
     // octave array
     for i in 0..n {
-        p.octave[i] = (to_oc((i as f32 + 0.25) * 0.5 * rate as f32 / n as f32)
-            * (1i32 << (p.shiftoc + 1)) as f32
+        // C: `toOC((i+.25f)*.5*rate/n)*(1<<(shiftoc+1))+.5f` — `(i+.25f)`
+        // is float, everything after it double; truncated into a long.
+        p.octave[i] = (to_oc((i as f32 + 0.25) as f64 * 0.5 * rate as f64 / n as f64)
+            * (1i32 << (p.shiftoc + 1)) as f64
             + 0.5) as i32;
     }
 
@@ -612,7 +609,8 @@ pub fn vp_psy_init(
     }
     p.tonecurves = setup_tone_curves(
         &vi.toneatt,
-        rate as f32 * 0.5 / n as f32,
+        // C passes `rate*.5/n` (double) to a float parameter.
+        (rate as f64 * 0.5 / n as f64) as f32,
         n,
         vi.tone_centerboost,
         vi.tone_decay,
@@ -636,9 +634,9 @@ pub fn vp_psy_init(
     // noise offsets
     let mut halfoc_dump = Vec::with_capacity(n);
     for i in 0..n {
-        // C: float halfoc=toOC((i+.5)*rate/(2.*n))*2.;
-        // The argument to toOC is f64 (literals .5, 2. are double); cast at fn boundary.
-        let mut halfoc = to_oc(((i as f64 + 0.5) * rate as f64 / (2.0 * n as f64)) as f32) * 2.0;
+        // C: `float halfoc=toOC((i+.5)*rate/(2.*n))*2.;` — double argument
+        // and double result, rounded to float once on assignment.
+        let mut halfoc = (to_oc((i as f64 + 0.5) * rate as f64 / (2.0 * n as f64)) * 2.0) as f32;
         halfoc_dump.push(halfoc);
         if halfoc < 0.0 {
             halfoc = 0.0;
