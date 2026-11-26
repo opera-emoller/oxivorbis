@@ -11,6 +11,26 @@ description = "Pure-Rust Ogg Vorbis encoder, byte-identical to libvorbis (VBR q-
 repository = "https://github.com/opera-emoller/lewtoff"
 categories = ["multimedia::audio", "encoding"]
 keywords = ["vorbis", "ogg", "audio", "encoder", "lossy"]
+readme = "README.md"
+documentation = "https://docs.rs/lewtoff"
+# Ship only what the library needs to build (plus the small DSP manifest
+# its unit tests include_str!). The vendored libvorbis, C oracles, test
+# vectors and dev tooling under tools/ and tests/ stay in the repository.
+include = [
+    "/src/**",
+    "/examples/**",
+    "/tools/oracle-encoder/dsp_manifest.txt",
+    "/README.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/NOTICE",
+]
+
+[package.metadata.docs.rs]
+# Not all-features: that would also turn on the test-only `oracle` and
+# `__internal` features.
+features = ["parallel"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
