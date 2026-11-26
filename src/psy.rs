@@ -803,42 +803,32 @@ fn seed_loop(
 
 fn seed_chase(seeds: &mut [f32], linesper: i32, n: usize) {
     // Stack-allocated stacks. n <= MAX_OCTAVE_LINES (1024 worst case Q5).
-    let mut posstack_arr = [0usize; MAX_OCTAVE_LINES];
-    let mut ampstack_arr = [0.0f32; MAX_OCTAVE_LINES];
+    let mut posstack = [0usize; MAX_OCTAVE_LINES];
+    let mut ampstack = [0.0f32; MAX_OCTAVE_LINES];
+    let lp = linesper as usize;
+    let seeds = &mut seeds[..n];
     let mut sp = 0usize;
-    let posstack = &mut posstack_arr[..];
-    let ampstack = &mut ampstack_arr[..];
 
+    // libvorbis pushes every line; before pushing line i (once the stack
+    // holds two entries) it pops the top while
+    //   !(seeds[i] < amp[top]) && i < pos[top] + lp
+    //     && amp[top] <= amp[top-1] && i < pos[top-1] + lp.
+    // Positions on the stack strictly increase, so `i < pos[top-1] + lp`
+    // implies `i < pos[top] + lp`; that test is dropped here. The `stack < 2`
+    // case pushes unconditionally, as does the loop once a pop leaves one.
     for i in 0..n {
-        if sp < 2 {
-            posstack[sp] = i;
-            ampstack[sp] = seeds[i];
-            sp += 1;
-        } else {
-            loop {
-                let top = sp - 1;
-                if seeds[i] < ampstack[top] {
-                    posstack[sp] = i;
-                    ampstack[sp] = seeds[i];
-                    sp += 1;
-                    break;
-                } else {
-                    if i < posstack[top] + linesper as usize {
-                        if sp > 1
-                            && ampstack[top] <= ampstack[top - 1]
-                            && i < posstack[top - 1] + linesper as usize
-                        {
-                            sp -= 1;
-                            continue;
-                        }
-                    }
-                    posstack[sp] = i;
-                    ampstack[sp] = seeds[i];
-                    sp += 1;
-                    break;
-                }
+        let v = seeds[i];
+        while sp >= 2 {
+            let top = sp - 1;
+            let at = ampstack[top];
+            if v < at || !(at <= ampstack[top - 1] && i < posstack[top - 1] + lp) {
+                break;
             }
+            sp -= 1;
         }
+        posstack[sp] = i;
+        ampstack[sp] = v;
+        sp += 1;
     }
 
     let stack = sp;
@@ -847,12 +837,12 @@ fn seed_chase(seeds: &mut [f32], linesper: i32, n: usize) {
         let endpos = if i < stack - 1 && ampstack[i + 1] > ampstack[i] {
             posstack[i + 1]
         } else {
-            posstack[i] + linesper as usize + 1
+            posstack[i] + lp + 1
         };
         let endpos = endpos.min(n);
-        while pos < endpos {
-            seeds[pos] = ampstack[i];
-            pos += 1;
+        if pos < endpos {
+            seeds[pos..endpos].fill(ampstack[i]);
+            pos = endpos;
         }
     }
 }
