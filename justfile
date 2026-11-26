@@ -161,6 +161,15 @@ regen-header-vectors:
     cargo run -p gen-header-vectors
     cp src/setup_blob.bin tests/vectors/headers/setup.bin
 
+# Regenerate src/tables/quality.rs (libvorbis 44.1/48 kHz mode-template
+# tables for quality-dependent setup) by compiling the vendored headers.
+# Also builds tools/oracle-encoder/dump_params, used by the oracle-gated
+# `quality_oracle_grid` test.
+regen-quality-tables:
+    ./tools/oracle-encoder/build_quality_dumpers.sh
+    ./tools/oracle-encoder/dump_quality_tables > src/tables/quality.rs
+    cargo fmt --all
+
 # Build the table generator and write src/tables/*.rs.
 regen-tables:
     cargo run --bin gen-tables
