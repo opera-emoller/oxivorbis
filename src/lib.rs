@@ -44,6 +44,7 @@ pub mod encode;
 mod envelope;
 mod lpc;
 mod mapping0;
+mod quality;
 mod setup;
 mod window;
 
