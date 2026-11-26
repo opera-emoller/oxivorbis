@@ -7,7 +7,10 @@ use std::fs;
 
 fn read_f32_bin(path: &str) -> Vec<f32> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
-    assert!(bytes.len() % 4 == 0, "{path}: length not multiple of 4");
+    assert!(
+        bytes.len().is_multiple_of(4),
+        "{path}: length not multiple of 4"
+    );
     bytes
         .chunks_exact(4)
         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -16,7 +19,10 @@ fn read_f32_bin(path: &str) -> Vec<f32> {
 
 fn read_i32_bin(path: &str) -> Vec<i32> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
-    assert!(bytes.len() % 4 == 0, "{path}: length not multiple of 4");
+    assert!(
+        bytes.len().is_multiple_of(4),
+        "{path}: length not multiple of 4"
+    );
     bytes
         .chunks_exact(4)
         .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
