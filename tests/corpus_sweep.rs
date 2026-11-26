@@ -1,22 +1,155 @@
 //! Walk `<repo_root>/corpus/` and assert byte-identical parity against
-//! libvorbis 1.3.7 Q5 for every audio file found. Skipped if the directory
+//! libvorbis 1.3.7 for every audio file found. Skipped if the directory
 //! doesn't exist (CI-friendly; contributors symlink their own corpus).
 //!
-//! Inputs are decoded via ffmpeg to s16le 44.1kHz stereo, encoded by both
-//! lewtoff and the oracle-encoder, and compared byte-for-byte.
+//! Each input is decoded via ffmpeg to s16le at every requested
+//! rate/channel config, encoded by both lewtoff and the oracle-encoder at
+//! every requested quality, and compared byte-for-byte.
 //!
-//! `CORPUS_QUALITY=<base_quality>` (libvorbis -0.1..1.0, default 0.5 = q5)
-//! selects the encode quality (q-1..q10).
+//! Environment:
+//!
+//! - `CORPUS_QUALITY=<q>[,<q>...]` libvorbis base_quality list (-0.1..1.0,
+//!   default `0.5` = q5).
+//! - `CORPUS_CONFIGS=<rate>x<ch>[,...]` or `all` (default `44100x2`).
+//!   `all` = `44100x2,44100x1,48000x2,48000x1`.
+//! - `CORPUS_JOBS=N` worker threads (default: available parallelism).
+//! - `CORPUS_LIMIT=N` only the first N files (sorted).
+//!
+//! Failing cases are saved to
+//! `target/corpus-failures/<rate>x<ch>-q<q>/<relpath>/` as `input.s16le`,
+//! `oracle.ogg`, `lewtoff.ogg` and `descriptor.txt` (which includes a
+//! `parity-fuzz --pcm` replay command).
 
 #![cfg(feature = "oracle")]
 
-mod common;
-
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 const CORPUS_DIR: &str = "corpus";
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac", "m4a", "aif", "aiff"];
+const ORACLE_BIN: &str = "./tools/oracle-encoder/oracle-encoder";
+const DEFAULT_QUALITY: f32 = 0.5;
+const ALL_CONFIGS: &[SweepConfig] = &[
+    SweepConfig { rate: 44100, ch: 2 },
+    SweepConfig { rate: 44100, ch: 1 },
+    SweepConfig { rate: 48000, ch: 2 },
+    SweepConfig { rate: 48000, ch: 1 },
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct SweepConfig {
+    rate: u32,
+    ch: u16,
+}
+
+impl SweepConfig {
+    fn parse(s: &str) -> SweepConfig {
+        let parsed = s.split_once(['x', 'X']).and_then(|(r, c)| {
+            let rate: u32 = r.trim().parse().ok()?;
+            let ch: u16 = c.trim().parse().ok()?;
+            (matches!(rate, 44100 | 48000) && matches!(ch, 1 | 2)).then_some((rate, ch))
+        });
+        let Some((rate, ch)) = parsed else {
+            panic!("CORPUS_CONFIGS entry {s:?} is not <44100|48000>x<1|2>");
+        };
+        SweepConfig { rate, ch }
+    }
+
+    /// Directory / table tag, e.g. `44100x2`.
+    fn tag(&self) -> String {
+        format!("{}x{}", self.rate, self.ch)
+    }
+
+    /// Human description used in the summary header, e.g. `stereo, 44.1k`.
+    fn describe(&self) -> String {
+        let ch = if self.ch == 1 { "mono" } else { "stereo" };
+        let rate = if self.rate == 44100 { "44.1k" } else { "48k" };
+        format!("{ch}, {rate}")
+    }
+
+    fn lewtoff(&self) -> (lewtoff::SampleRate, lewtoff::Channels) {
+        let r = match self.rate {
+            44100 => lewtoff::SampleRate::Hz44100,
+            _ => lewtoff::SampleRate::Hz48000,
+        };
+        let c = match self.ch {
+            1 => lewtoff::Channels::Mono,
+            _ => lewtoff::Channels::Stereo,
+        };
+        (r, c)
+    }
+}
+
+fn parse_configs() -> Vec<SweepConfig> {
+    let raw = std::env::var("CORPUS_CONFIGS").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return vec![ALL_CONFIGS[0]];
+    }
+    if raw.eq_ignore_ascii_case("all") {
+        return ALL_CONFIGS.to_vec();
+    }
+    let mut out: Vec<SweepConfig> = Vec::new();
+    for part in raw.split(',').filter(|p| !p.trim().is_empty()) {
+        let c = SweepConfig::parse(part.trim());
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    assert!(!out.is_empty(), "CORPUS_CONFIGS={raw:?} lists no configs");
+    out
+}
+
+fn parse_qualities() -> Vec<f32> {
+    let raw = std::env::var("CORPUS_QUALITY").unwrap_or_default();
+    let mut out: Vec<f32> = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let q = part
+            .parse::<f32>()
+            .unwrap_or_else(|_| panic!("CORPUS_QUALITY entry {part:?} is not a float"));
+        assert!(
+            (-0.1..=1.0).contains(&q),
+            "CORPUS_QUALITY {q} outside libvorbis range -0.1..1.0"
+        );
+        if !out.iter().any(|x| x.to_bits() == q.to_bits()) {
+            out.push(q);
+        }
+    }
+    if out.is_empty() {
+        out.push(DEFAULT_QUALITY);
+    }
+    out
+}
+
+fn parse_jobs() -> usize {
+    match std::env::var("CORPUS_JOBS") {
+        Ok(s) if !s.trim().is_empty() => s
+            .trim()
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("CORPUS_JOBS={s:?} is not a positive integer"))
+            .max(1),
+        _ => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+    }
+}
+
+fn failures_root() -> PathBuf {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"));
+    // Absolute, so the replay command in descriptor.txt works from anywhere.
+    std::env::current_dir()
+        .unwrap()
+        .join(target)
+        .join("corpus-failures")
+}
 
 fn ffmpeg_decode(path: &Path, rate: u32, ch: u16) -> Vec<i16> {
     let out = Command::new("ffmpeg")
@@ -35,27 +168,15 @@ fn ffmpeg_decode(path: &Path, rate: u32, ch: u16) -> Vec<i16> {
             "-",
         ])
         .output()
-        .unwrap_or_else(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                panic!(
-                    "ffmpeg not on PATH — install it (e.g. `brew install ffmpeg` on macOS, \
-                     `apt install ffmpeg` on Debian/Ubuntu) and re-run"
-                );
-            }
-            panic!("failed to invoke ffmpeg on {}: {e}", path.display());
-        });
+        .unwrap_or_else(|e| panic!("failed to invoke ffmpeg on {}: {e}", path.display()));
     out.stdout
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect()
 }
 
-fn oracle_encode(samples: &[i16], rate: u32, ch: u16, base_quality: f32) -> Vec<u8> {
-    let raw: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
-    use std::io::Write;
-    use std::process::Stdio;
-    let bin = "./tools/oracle-encoder/oracle-encoder";
-    let mut child = Command::new(bin)
+fn oracle_encode(raw: &[u8], rate: u32, ch: u16, base_quality: f32) -> Vec<u8> {
+    let mut child = Command::new(ORACLE_BIN)
         .args([
             &rate.to_string(),
             &ch.to_string(),
@@ -65,53 +186,139 @@ fn oracle_encode(samples: &[i16], rate: u32, ch: u16, base_quality: f32) -> Vec<
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap_or_else(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                panic!("{bin} not found — build it first with `./tools/oracle-encoder/build.sh`");
-            }
-            panic!("failed to spawn {bin}: {e}");
+        .unwrap_or_else(|e| panic!("failed to spawn {ORACLE_BIN}: {e}"));
+    // Feed stdin from a separate thread so a large input can't deadlock
+    // against the oracle filling its stdout pipe.
+    let mut stdin = child.stdin.take().unwrap();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let _ = stdin.write_all(raw);
         });
-    child.stdin.take().unwrap().write_all(&raw).unwrap();
-    child.wait_with_output().unwrap().stdout
+        child.wait_with_output().unwrap().stdout
+    })
 }
 
-fn check_one(path: &Path, base_quality: f32) -> Result<(), String> {
-    let samples = ffmpeg_decode(path, 44100, 2);
-    if samples.is_empty() {
-        return Err("empty samples".into());
+/// Fail early (once) with a helpful message instead of once per file.
+fn preflight() {
+    if let Err(e) = Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            panic!(
+                "ffmpeg not on PATH — install it (e.g. `brew install ffmpeg` on macOS, \
+                 `apt install ffmpeg` on Debian/Ubuntu) and re-run"
+            );
+        }
+        panic!("failed to invoke ffmpeg: {e}");
     }
-    let oracle = oracle_encode(&samples, 44100, 2, base_quality);
+    if !Path::new(ORACLE_BIN).exists() {
+        panic!("{ORACLE_BIN} not found — build it first with `./tools/oracle-encoder/build.sh`");
+    }
+}
+
+struct Divergence {
+    why: String,
+    /// (input PCM, oracle output, lewtoff output) when there is something
+    /// to save.
+    artifacts: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+}
+
+fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<(), Divergence> {
+    if samples.is_empty() {
+        return Err(Divergence {
+            why: "empty samples".into(),
+            artifacts: None,
+        });
+    }
+    let oracle = oracle_encode(raw, cfg.rate, cfg.ch, q);
     if oracle.len() < 18 {
-        return Err(format!("oracle too short: {} bytes", oracle.len()));
+        return Err(Divergence {
+            why: format!("oracle too short: {} bytes", oracle.len()),
+            artifacts: None,
+        });
     }
     let serial = u32::from_le_bytes(oracle[14..18].try_into().unwrap());
     let vendor: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
-    let lw = common::lewtoff_encode_q(
-        &samples,
-        lewtoff::SampleRate::Hz44100,
-        lewtoff::Channels::Stereo,
-        base_quality,
-        serial,
-        Some(vendor),
-        Some(b""),
-    );
-    if lw == oracle {
-        Ok(())
-    } else {
-        let mut first_diff = lw.len().min(oracle.len());
-        for i in 0..lw.len().min(oracle.len()) {
-            if lw[i] != oracle[i] {
-                first_diff = i;
-                break;
-            }
+    let (rate, channels) = cfg.lewtoff();
+    let lw = match catch_unwind(AssertUnwindSafe(|| {
+        lewtoff::encode_with_base_quality_and_meta(
+            samples,
+            rate,
+            channels,
+            q,
+            serial,
+            Some(vendor),
+            Some(b""),
+        )
+    })) {
+        Ok(lw) => lw,
+        Err(p) => {
+            let msg = p
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "<non-string panic>".into());
+            return Err(Divergence {
+                why: format!("lewtoff panicked: {msg}"),
+                artifacts: Some((raw.to_vec(), oracle, Vec::new())),
+            });
         }
-        Err(format!(
+    };
+    if lw == oracle {
+        return Ok(());
+    }
+    let first_diff = lw
+        .iter()
+        .zip(&oracle)
+        .position(|(a, b)| a != b)
+        .unwrap_or(lw.len().min(oracle.len()));
+    Err(Divergence {
+        why: format!(
             "lw={} or={} delta={} first_diff={}",
             lw.len(),
             oracle.len(),
             lw.len() as i64 - oracle.len() as i64,
             first_diff
-        ))
+        ),
+        artifacts: Some((raw.to_vec(), oracle, lw)),
+    })
+}
+
+fn save_failure(cfg: SweepConfig, q: f32, rel: &Path, d: &Divergence) {
+    let Some((pcm, oracle, lw)) = &d.artifacts else {
+        return;
+    };
+    let dir = failures_root()
+        .join(format!("{}-q{q}", cfg.tag()))
+        .join(rel);
+    let res = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("input.s16le"), pcm)?;
+        std::fs::write(dir.join("oracle.ogg"), oracle)?;
+        std::fs::write(dir.join("lewtoff.ogg"), lw)?;
+        let input = dir.join("input.s16le");
+        std::fs::write(
+            dir.join("descriptor.txt"),
+            format!(
+                "source: corpus/{}\nrate: {} channels: {} quality: {q}\nframes: {}\n{}\n\n\
+                 replay:\n  cargo run -p parity-fuzz --release -- --pcm {} --rates {} \
+                 --channels {} --quality {q} --no-minimize\n",
+                rel.display(),
+                cfg.rate,
+                cfg.ch,
+                pcm.len() / 2 / cfg.ch as usize,
+                d.why,
+                input.display(),
+                cfg.rate,
+                cfg.ch,
+            ),
+        )
+    })();
+    if let Err(e) = res {
+        eprintln!("warning: could not save failure to {}: {e}", dir.display());
     }
 }
 
@@ -137,27 +344,44 @@ fn walk_audio_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// First path component as "category", or "(root)" for files directly
+/// under corpus/.
+fn category(rel: &Path) -> String {
+    if rel.components().count() > 1 {
+        rel.components()
+            .next()
+            .unwrap()
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        "(root)".to_string()
+    }
+}
+
+/// Per-quality outcomes of one (file, config) unit.
+type UnitResult = Vec<Result<(), String>>;
+
+#[derive(Default)]
+struct ComboResult {
+    total: usize,
+    passed: usize,
+    by_category: BTreeMap<String, (usize, usize)>,
+    failures: Vec<(PathBuf, String)>,
+}
+
 /// Walk `<repo_root>/corpus/` recursively and assert parity for every audio
 /// file found. Skips silently if the directory is absent (typical CI case).
 ///
-/// Set `CORPUS_LIMIT=N` to test only the first N files (sorted) — useful for
-/// quick smoke runs. Set `CORPUS_QUALITY=<base_quality>` (default 0.5) to
-/// sweep at another libvorbis quality. Failures are reported per category and the test panics
-/// at the end with a summary if any file diverged.
+/// See the module docs for the `CORPUS_*` environment variables. Failures
+/// are reported per (config, quality) and per category, and the test panics
+/// at the end with a summary if any case diverged.
 #[test]
 #[ignore = "manual sweep over <repo_root>/corpus/ (gitignored, large)"]
 fn corpus_parity_sweep() {
-    let base_quality = match std::env::var("CORPUS_QUALITY") {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<f32>()
-            .unwrap_or_else(|_| panic!("CORPUS_QUALITY={s:?} is not a float")),
-        _ => common::LEWTOFF_NATIVE_QUALITY,
-    };
-    assert!(
-        (-0.1..=1.0).contains(&base_quality),
-        "CORPUS_QUALITY {base_quality} outside libvorbis range -0.1..1.0"
-    );
+    let qualities = parse_qualities();
+    let configs = parse_configs();
+    let jobs = parse_jobs();
 
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);
     if !root.exists() {
@@ -180,53 +404,163 @@ fn corpus_parity_sweep() {
         return;
     }
 
-    let mut total = 0usize;
-    let mut passed = 0usize;
-    let mut by_category: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
-    let mut failures: Vec<(PathBuf, String)> = Vec::new();
+    preflight();
 
-    for path in &files {
-        let rel = path.strip_prefix(&root).unwrap();
-        // First path component as "category", or "(root)" for files directly
-        // under corpus/.
-        let cat = if rel.components().count() > 1 {
-            rel.components()
-                .next()
-                .unwrap()
-                .as_os_str()
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "(root)".to_string()
-        };
-        total += 1;
-        match check_one(path, base_quality) {
-            Ok(()) => {
-                passed += 1;
-                by_category.entry(cat).or_default().0 += 1;
-            }
-            Err(why) => {
-                by_category.entry(cat).or_default().1 += 1;
-                failures.push((rel.to_path_buf(), why));
+    // Clear stale failures for exactly the combos this run covers.
+    for cfg in &configs {
+        for &q in &qualities {
+            let _ = std::fs::remove_dir_all(failures_root().join(format!("{}-q{q}", cfg.tag())));
+        }
+    }
+
+    // One work unit = one (file, config): a single ffmpeg decode feeds all
+    // qualities.
+    let units: Vec<(usize, usize)> = (0..files.len())
+        .flat_map(|f| (0..configs.len()).map(move |c| (f, c)))
+        .collect();
+    let jobs = jobs.min(units.len());
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    // results[unit][quality]
+    let results: Mutex<Vec<Option<UnitResult>>> =
+        Mutex::new((0..units.len()).map(|_| None).collect());
+    let start = Instant::now();
+    let progress_step = (units.len() / 20).max(1);
+
+    std::thread::scope(|s| {
+        for _ in 0..jobs {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= units.len() {
+                        break;
+                    }
+                    let (fi, ci) = units[i];
+                    let path = &files[fi];
+                    let cfg = configs[ci];
+                    let rel = path.strip_prefix(&root).unwrap();
+                    let samples = ffmpeg_decode(path, cfg.rate, cfg.ch);
+                    let raw: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    let per_q: UnitResult = qualities
+                        .iter()
+                        .map(|&q| {
+                            check_one(cfg, &samples, &raw, q).map_err(|d| {
+                                save_failure(cfg, q, rel, &d);
+                                d.why
+                            })
+                        })
+                        .collect();
+                    results.lock().unwrap()[i] = Some(per_q);
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n % progress_step == 0 || n == units.len() {
+                        eprintln!(
+                            "[corpus] {n}/{} (file, config) units, {:.0}s",
+                            units.len(),
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                }
+            });
+        }
+    });
+    let results = results.into_inner().unwrap();
+
+    // Aggregate per (config, quality), preserving the requested order.
+    let mut combos: Vec<ComboResult> = (0..configs.len() * qualities.len())
+        .map(|_| ComboResult::default())
+        .collect();
+    for (i, per_q) in results.into_iter().enumerate() {
+        let (fi, ci) = units[i];
+        let rel = files[fi].strip_prefix(&root).unwrap();
+        let cat = category(rel);
+        let per_q = per_q.expect("worker finished without a result");
+        for (qi, r) in per_q.into_iter().enumerate() {
+            let c = &mut combos[ci * qualities.len() + qi];
+            c.total += 1;
+            let entry = c.by_category.entry(cat.clone()).or_default();
+            match r {
+                Ok(()) => {
+                    c.passed += 1;
+                    entry.0 += 1;
+                }
+                Err(why) => {
+                    entry.1 += 1;
+                    c.failures.push((rel.to_path_buf(), why));
+                }
             }
         }
     }
 
-    eprintln!("\n=== corpus sweep (stereo, 44.1k, base_quality {base_quality}) ===");
-    eprintln!("Overall: {}/{} byte-identical", passed, total);
-    eprintln!("By category:");
-    for (cat, &(pass, fail)) in &by_category {
-        eprintln!("  {:30} {:5} pass, {:5} fail", cat, pass, fail);
+    let mut any_fail = 0usize;
+    let mut grand_total = 0usize;
+    for (ci, cfg) in configs.iter().enumerate() {
+        for (qi, q) in qualities.iter().enumerate() {
+            let c = &combos[ci * qualities.len() + qi];
+            eprintln!(
+                "\n=== corpus sweep ({}, base_quality {q}) ===",
+                cfg.describe()
+            );
+            eprintln!("Overall: {}/{} byte-identical", c.passed, c.total);
+            eprintln!("By category:");
+            for (cat, &(pass, fail)) in &c.by_category {
+                eprintln!("  {:30} {:5} pass, {:5} fail", cat, pass, fail);
+            }
+            if !c.failures.is_empty() {
+                eprintln!("\nFailures (showing up to 50):");
+                for (rel, why) in c.failures.iter().take(50) {
+                    eprintln!("  {} — {}", rel.display(), why);
+                }
+                eprintln!(
+                    "  (inputs + outputs saved under {}/{}-q{q}/)",
+                    failures_root().display(),
+                    cfg.tag()
+                );
+            }
+            any_fail += c.failures.len();
+            grand_total += c.total;
+        }
     }
-    if !failures.is_empty() {
-        eprintln!("\nFailures (showing up to 50):");
-        for (rel, why) in failures.iter().take(50) {
-            eprintln!("  {} — {}", rel.display(), why);
+
+    let multi = combos.len() > 1;
+    if multi {
+        eprintln!("\n=== totals per (config, quality) ===");
+        for (ci, cfg) in configs.iter().enumerate() {
+            for (qi, q) in qualities.iter().enumerate() {
+                let c = &combos[ci * qualities.len() + qi];
+                eprintln!(
+                    "  {:8} q{:<10} {:5} pass, {:5} fail",
+                    cfg.tag(),
+                    q,
+                    c.passed,
+                    c.total - c.passed
+                );
+            }
+        }
+        eprintln!(
+            "  {:19} {:5} pass, {:5} fail",
+            "all",
+            grand_total - any_fail,
+            any_fail
+        );
+    }
+    eprintln!(
+        "\n{} files x {} configs x {} qualities on {jobs} threads in {:.1}s",
+        files.len(),
+        configs.len(),
+        qualities.len(),
+        start.elapsed().as_secs_f64()
+    );
+
+    if any_fail > 0 {
+        if multi {
+            panic!(
+                "{any_fail}/{grand_total} (file, config, quality) cases diverged \
+                 (see stderr for details)"
+            );
         }
         panic!(
             "{}/{} files diverged (see stderr for details)",
-            failures.len(),
-            total
+            any_fail, grand_total
         );
     }
 }

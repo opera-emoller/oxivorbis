@@ -52,26 +52,44 @@ parity:
     cargo nextest run --features oracle,parallel --no-tests=warn parity_
 
 # Corpus parity sweep: walks <repo_root>/corpus/ recursively and asserts
-# byte-identical parity for every audio file (wav/mp3/ogg/flac/m4a/aif/aiff).
-# Symlink your corpus there first, e.g.
+# byte-identical parity for every audio file (wav/mp3/ogg/flac/m4a/aif/aiff)
+# against the in-tree oracle-encoder. Symlink your corpus there first, e.g.
 #     ln -s /path/to/sounds corpus
-# Pass a number as the first arg to limit the file count for smoke runs:
-#     just corpus           # sweep everything
-#     just corpus 100       # first 100 files (sorted)
-# Pass `parallel` as the second arg to test the rayon path:
-#     just corpus 100 parallel
-# Pass a libvorbis base_quality (-0.1..1.0, default 0.5 = q5) as the third
-# arg to sweep another quality:
-#     just corpus 100 "" 0.3
-corpus limit="" extra_features="" quality="":
+# Positional args (all optional; "" = default):
+#     just corpus                         # everything, 44100x2, q5
+#     just corpus 100                     # first 100 files (sorted)
+#     just corpus 100 parallel            # with the rayon `parallel` feature
+#     just corpus 100 "" 0.3              # libvorbis base_quality 0.3 (= q3)
+#     just corpus "" "" -0.1,0.5,1.0      # several qualities in one run
+#     just corpus "" "" 0.5 all           # 44100x2,44100x1,48000x2,48000x1
+#     just corpus "" "" "" 48000x1,44100x1 4   # 4 worker threads
+# Each arg falls back to its env var when empty: CORPUS_LIMIT,
+# CORPUS_QUALITY, CORPUS_CONFIGS, CORPUS_JOBS (default: all cores).
+# Files are processed in parallel; each one shells out to ffmpeg and the
+# -O0 oracle. The test is built with an optimized profile that keeps
+# debug assertions and overflow checks, so panics behave as in `cargo test`.
+# Failing inputs (s16le + both .ogg outputs + descriptor with a
+# parity-fuzz replay command) land in
+#     target/corpus-failures/<rate>x<ch>-q<q>/<relpath>/
+#
+# Corpus parity sweep (args: limit features quality-list configs jobs).
+corpus limit="" extra_features="" quality="" configs="" jobs="":
     #!/usr/bin/env bash
     set -euo pipefail
     FEATS="oracle"
     if [ -n "{{extra_features}}" ]; then
         FEATS="oracle,{{extra_features}}"
     fi
-    CORPUS_LIMIT={{limit}} CORPUS_QUALITY={{quality}} \
-        cargo nextest run --features "$FEATS" --no-tests=warn \
+    if [ -n "{{limit}}" ]; then export CORPUS_LIMIT="{{limit}}"; fi
+    if [ -n "{{quality}}" ]; then export CORPUS_QUALITY="{{quality}}"; fi
+    if [ -n "{{configs}}" ]; then export CORPUS_CONFIGS="{{configs}}"; fi
+    if [ -n "{{jobs}}" ]; then export CORPUS_JOBS="{{jobs}}"; fi
+    cargo nextest run --features "$FEATS" --no-tests=warn \
+        --cargo-profile corpus \
+        --config 'profile.corpus.inherits="release"' \
+        --config 'profile.corpus.debug-assertions=true' \
+        --config 'profile.corpus.overflow-checks=true' \
+        --no-capture \
         --run-ignored=only -E 'test(corpus_parity_sweep)'
 
 # Encode-throughput benchmark vs libvorbis (oggenc from vorbis-tools) using
