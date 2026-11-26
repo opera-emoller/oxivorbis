@@ -4,7 +4,11 @@
 //! owns its own seed, so rendering is a pure function of the case
 //! description; the minimizer relies on that to re-render simplified
 //! variants.
+//!
+//! All transcendental math goes through [`crate::det`] (no host libm), so
+//! a seed renders the same PCM on every platform.
 
+use crate::det;
 use std::f64::consts::PI;
 
 /// SplitMix64. Small, fast, and good enough for test-signal generation.
@@ -39,14 +43,14 @@ impl Rng {
     pub fn gauss(&mut self) -> f64 {
         let u1 = self.f64().max(1e-300);
         let u2 = self.f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+        (-2.0 * det::ln(u1)).sqrt() * det::cos(2.0 * PI * u2)
     }
     pub fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
         &xs[self.below(xs.len())]
     }
     /// Log-uniform amplitude in [10^(lo_db/20), 10^(hi_db/20)].
     pub fn amp_db(&mut self, lo_db: f64, hi_db: f64) -> f64 {
-        10f64.powf(self.range(lo_db, hi_db) / 20.0)
+        det::powf(10.0, self.range(lo_db, hi_db) / 20.0)
     }
 }
 
@@ -154,7 +158,54 @@ pub struct Case {
     pub segments: Vec<Segment>,
     /// Free-form label of how the case was constructed.
     pub kind: &'static str,
+    /// f32 mode only: how the rendered signal becomes `write_f32` input.
+    pub f32: F32Shape,
 }
+
+/// How [`Case::render_f32`] maps the rendered signal (full scale = 1.0) to
+/// f32 samples. Values stay finite and within the documented parity range
+/// of +-1e4.
+#[derive(Clone, Debug)]
+pub struct F32Shape {
+    /// Multiplier applied before the cast (1.0 = nominal range).
+    pub scale: f64,
+    /// Number of samples overwritten with special finite values
+    /// (subnormals, -0.0, +-1e4, ...), at positions drawn from `seed`.
+    pub specials: usize,
+    pub seed: u64,
+}
+
+impl Default for F32Shape {
+    fn default() -> Self {
+        F32Shape {
+            scale: 1.0,
+            specials: 0,
+            seed: 0,
+        }
+    }
+}
+
+/// The documented parity range for `write_f32` input.
+pub const F32_LIMIT: f64 = 1.0e4;
+
+const F32_SPECIALS: &[f32] = &[
+    -0.0,
+    0.0,
+    1.0e-45, // smallest subnormal
+    -1.0e-45,
+    1.0e-40,
+    -3.0e-39,
+    f32::MIN_POSITIVE,
+    -f32::MIN_POSITIVE,
+    1.0,
+    -1.0,
+    1.000_000_1,
+    32767.0 / 32768.0,
+    1.0e4,
+    -1.0e4,
+    9999.999,
+    -0.5e4,
+];
 
 impl Case {
     pub fn frames(&self) -> usize {
@@ -172,20 +223,7 @@ impl Case {
                 out.extend(l.iter().map(|&x| quant(x * seg.gain + seg.dc)));
                 continue;
             }
-            let r: Vec<f64> = match &seg.stereo {
-                Stereo::Identical | Stereo::LeftOnly => l.clone(),
-                Stereo::RightOnly => l.clone(),
-                Stereo::Inverted => l.iter().map(|x| -x).collect(),
-                Stereo::Scaled(k) => l.iter().map(|x| x * k).collect(),
-                Stereo::Uncorrelated => {
-                    let mut r2 = Rng::new(seg.seed ^ 0xA5A5_A5A5_5A5A_5A5A);
-                    render_gen(&seg.generator, seg.frames, self.rate, &mut r2)
-                }
-                Stereo::Different(g) => {
-                    let mut r2 = Rng::new(seg.seed ^ 0x1234_5678_9ABC_DEF0);
-                    render_gen(g, seg.frames, self.rate, &mut r2)
-                }
-            };
+            let r = right_channel(seg, &l, self.rate);
             for i in 0..seg.frames {
                 let (mut a, mut b) = (l[i] * seg.gain + seg.dc, r[i] * seg.gain + seg.dc);
                 match seg.stereo {
@@ -198,6 +236,61 @@ impl Case {
             }
         }
         out
+    }
+}
+
+impl Case {
+    /// Render to interleaved f32 (see [`F32Shape`]).
+    pub fn render_f32(&self) -> Vec<f32> {
+        let ch = self.channels as usize;
+        let mut out = Vec::with_capacity(self.frames() * ch);
+        for seg in &self.segments {
+            let mut rng = Rng::new(seg.seed);
+            let l = render_gen(&seg.generator, seg.frames, self.rate, &mut rng);
+            if ch == 1 {
+                out.extend(l.iter().map(|&x| self.f32_quant(x * seg.gain + seg.dc)));
+                continue;
+            }
+            let r = right_channel(seg, &l, self.rate);
+            for i in 0..seg.frames {
+                let (mut a, mut b) = (l[i] * seg.gain + seg.dc, r[i] * seg.gain + seg.dc);
+                match seg.stereo {
+                    Stereo::LeftOnly => b = 0.0,
+                    Stereo::RightOnly => a = 0.0,
+                    _ => {}
+                }
+                out.push(self.f32_quant(a));
+                out.push(self.f32_quant(b));
+            }
+        }
+        if !out.is_empty() {
+            let mut rng = Rng::new(self.f32.seed);
+            for _ in 0..self.f32.specials {
+                let p = rng.below(out.len());
+                out[p] = *rng.pick(F32_SPECIALS);
+            }
+        }
+        out
+    }
+
+    fn f32_quant(&self, x: f64) -> f32 {
+        (x * self.f32.scale).clamp(-F32_LIMIT, F32_LIMIT) as f32
+    }
+}
+
+fn right_channel(seg: &Segment, l: &[f64], rate: u32) -> Vec<f64> {
+    match &seg.stereo {
+        Stereo::Identical | Stereo::LeftOnly | Stereo::RightOnly => l.to_vec(),
+        Stereo::Inverted => l.iter().map(|x| -x).collect(),
+        Stereo::Scaled(k) => l.iter().map(|x| x * k).collect(),
+        Stereo::Uncorrelated => {
+            let mut r2 = Rng::new(seg.seed ^ 0xA5A5_A5A5_5A5A_5A5A);
+            render_gen(&seg.generator, seg.frames, rate, &mut r2)
+        }
+        Stereo::Different(g) => {
+            let mut r2 = Rng::new(seg.seed ^ 0x1234_5678_9ABC_DEF0);
+            render_gen(g, seg.frames, rate, &mut r2)
+        }
     }
 }
 
@@ -245,7 +338,7 @@ fn render_gen(g: &Gen, n: usize, rate: u32, rng: &mut Rng) -> Vec<f64> {
                 let t = i as f64 / fs;
                 partials
                     .iter()
-                    .map(|(f, a, p)| a * (2.0 * PI * f * t + p).sin())
+                    .map(|(f, a, p)| a * det::sin(2.0 * PI * f * t + p))
                     .sum()
             })
             .collect(),
@@ -256,13 +349,13 @@ fn render_gen(g: &Gen, n: usize, rate: u32, rng: &mut Rng) -> Vec<f64> {
                 .map(|i| {
                     let u = i as f64 / n.max(1) as f64;
                     let f = if *log {
-                        f0 * (f1 / f0).powf(u)
+                        f0 * det::powf(f1 / f0, u)
                     } else {
                         f0 + (f1 - f0) * u
                     };
                     let _ = dur;
                     phase += 2.0 * PI * f / fs;
-                    amp * phase.sin()
+                    amp * det::sin(phase)
                 })
                 .collect()
         }
@@ -335,7 +428,7 @@ fn render_gen(g: &Gen, n: usize, rate: u32, rng: &mut Rng) -> Vec<f64> {
             (0..n)
                 .map(|i| {
                     let t = i as f64 / fs;
-                    let mut x = amp * (2.0 * PI * freq * t).sin();
+                    let mut x = amp * det::sin(2.0 * PI * freq * t);
                     if i % every < *burst_len {
                         x += burst_amp * rng.range(-1.0, 1.0);
                     }
@@ -499,8 +592,30 @@ fn random_length(rng: &mut Rng, rate: u32, max_secs: f64) -> usize {
     n.min(max)
 }
 
-/// Build the case for one fuzz iteration.
+/// Build the case for one fuzz iteration. The f32 shape comes from a
+/// separate RNG stream, so it doesn't perturb the s16 case for a seed.
 pub fn make_case(case_seed: u64, rate: u32, channels: u16, max_secs: f64) -> Case {
+    let mut case = make_case_s16(case_seed, rate, channels, max_secs);
+    let mut rng = Rng::new(case_seed ^ 0x0F32_0F32_0F32_0F32);
+    case.f32 = F32Shape {
+        scale: match rng.below(8) {
+            0..=3 => 1.0,
+            4 => rng.range(1.0, 2.0),
+            5 => rng.amp_db(0.0, 40.0),  // up to 100x
+            6 => rng.amp_db(40.0, 80.0), // up to 1e4x, clamped to +-1e4
+            _ => rng.amp_db(-60.0, 0.0), // quiet
+        },
+        specials: if rng.chance(0.3) {
+            1 + rng.below(64)
+        } else {
+            0
+        },
+        seed: rng.next_u64(),
+    };
+    case
+}
+
+fn make_case_s16(case_seed: u64, rate: u32, channels: u16, max_secs: f64) -> Case {
     let mut rng = Rng::new(case_seed);
     match rng.below(10) {
         // Exact edge length, single segment.
@@ -512,6 +627,7 @@ pub fn make_case(case_seed: u64, rate: u32, channels: u16, max_secs: f64) -> Cas
                 channels,
                 segments: vec![seg],
                 kind: "edge-length",
+                f32: F32Shape::default(),
             }
         }
         // Single segment, random length.
@@ -523,6 +639,7 @@ pub fn make_case(case_seed: u64, rate: u32, channels: u16, max_secs: f64) -> Cas
                 channels,
                 segments: vec![seg],
                 kind: "single",
+                f32: F32Shape::default(),
             }
         }
         // Random concatenation of segments (abrupt level / content changes).
@@ -549,6 +666,7 @@ pub fn make_case(case_seed: u64, rate: u32, channels: u16, max_secs: f64) -> Cas
                 channels,
                 segments: segs,
                 kind: "concat",
+                f32: F32Shape::default(),
             }
         }
     }

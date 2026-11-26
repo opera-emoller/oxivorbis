@@ -7,7 +7,11 @@
 //!   cargo run -p parity-fuzz --release -- --iters N --seed S [--quality Q]
 //!       [--rates 44100,48000] [--channels 1,2] [--jobs J] [--max-secs T]
 //!       [--max-len SECS] [--keep-going] [--no-minimize] [--start I]
-//!       [--min-frames N] [--minimize-per-sig N] [--min-evals N]
+//!       [--min-frames N] [--minimize-per-sig N] [--min-evals N] [--f32]
+//!
+//!   --f32              feed f32 samples (`Encoder::write_f32` vs the oracle's
+//!                      f32 mode), incl. out-of-range values up to +-1e4,
+//!                      subnormals and -0.0
 //!
 //!   --keep-going       collect all failures instead of stopping at the first
 //!   --min-frames N     skip generated cases shorter than N frames (e.g. to
@@ -15,9 +19,13 @@
 //!   --minimize-per-sig only minimize the first N failures of each signature
 //!                      (class / divergent-packet position / length class)
 //!       [--out DIR] [--oracle PATH]
-//!   Replay a saved raw file (one rate / channel count):
-//!   cargo run -p parity-fuzz --release -- --pcm input.s16le --rates 44100 --channels 2
+//!   Replay a saved raw file (one rate / channel count; add --f32 for .f32le):
+//!   cargo run -p parity-fuzz --release -- --pcm input.s16le --rates 44100 --channels 2 --quality 0.5
+//!
+//! Case ids are `s<seed>-i<iter>-q<quality>[-f32]-<rate>-<ch>ch`; the same
+//! naming is used for repros kept in tests/vectors/fuzz/.
 
+mod det;
 mod generate;
 mod oggdiff;
 
@@ -39,8 +47,65 @@ fn quality_supported(q: f32) -> bool {
     (-0.1..=1.0).contains(&q)
 }
 
-fn lewtoff_encode(
-    pcm: &[i16],
+/// Input sample format: i16 (`write`, oracle s16 mode) or f32
+/// (`write_f32`, oracle f32 mode).
+trait Sample: Copy + PartialEq + Default + std::panic::RefUnwindSafe + 'static {
+    /// Oracle format argument and file extension stem.
+    const FORMAT: &'static str;
+    fn to_le(pcm: &[Self]) -> Vec<u8>;
+    fn from_le(raw: &[u8]) -> Vec<Self>;
+    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8];
+    fn render(case: &Case) -> Vec<Self>;
+}
+
+impl Sample for i16 {
+    const FORMAT: &'static str = "s16";
+    fn to_le(pcm: &[Self]) -> Vec<u8> {
+        pcm.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+    fn from_le(raw: &[u8]) -> Vec<Self> {
+        raw.chunks_exact(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect()
+    }
+    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8] {
+        enc.write(s)
+    }
+    fn render(case: &Case) -> Vec<Self> {
+        case.render()
+    }
+}
+
+impl Sample for f32 {
+    const FORMAT: &'static str = "f32";
+    fn to_le(pcm: &[Self]) -> Vec<u8> {
+        pcm.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+    fn from_le(raw: &[u8]) -> Vec<Self> {
+        raw.chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect()
+    }
+    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8] {
+        enc.write_f32(s)
+    }
+    fn render(case: &Case) -> Vec<Self> {
+        case.render_f32()
+    }
+}
+
+/// Case/replay id: `<prefix>-q<quality>[-f32]-<rate>-<ch>ch`. The quality
+/// uses Rust's shortest round-trip formatting, so the f32 parses back
+/// exactly (tests/parity.rs `oracle_parity_fuzz_repros` relies on this).
+fn case_id(prefix: &str, quality: f32, f32_input: bool, rate: u32, ch: u16) -> String {
+    format!(
+        "{prefix}-q{quality}{}-{rate}-{ch}ch",
+        if f32_input { "-f32" } else { "" }
+    )
+}
+
+fn lewtoff_encode<S: Sample>(
+    pcm: &[S],
     rate: u32,
     channels: u16,
     quality: f32,
@@ -79,7 +144,7 @@ fn lewtoff_encode(
             _ => rest.len(),
         }
         .min(rest.len());
-        out.extend_from_slice(enc.write(&rest[..n]));
+        out.extend_from_slice(S::write(&mut enc, &rest[..n]));
         rest = &rest[n..];
     }
     out.extend_from_slice(&enc.finish());
@@ -103,6 +168,7 @@ struct Config {
     out: PathBuf,
     oracle: PathBuf,
     pcm: Option<PathBuf>,
+    f32: bool,
     min_evals: usize,
     min_frames: usize,
     min_per_sig: usize,
@@ -112,7 +178,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: parity-fuzz [--iters N] [--seed S] [--start I] [--quality Q] \
          [--rates 44100,48000] [--channels 1,2] [--jobs J] [--max-secs T] [--max-len SECS] \
-         [--keep-going] [--no-minimize] [--min-evals N] [--min-frames N] [--minimize-per-sig N] [--out DIR] [--oracle PATH] [--pcm FILE]"
+         [--keep-going] [--no-minimize] [--min-evals N] [--min-frames N] [--minimize-per-sig N] [--out DIR] [--oracle PATH] [--pcm FILE] [--f32]"
     );
     std::process::exit(2)
 }
@@ -136,6 +202,7 @@ fn parse_args() -> Config {
         out: root.join("target/parity-fuzz"),
         oracle: root.join("tools/oracle-encoder/oracle-encoder"),
         pcm: None,
+        f32: false,
         min_evals: 300,
         min_frames: 0,
         min_per_sig: 2,
@@ -160,6 +227,7 @@ fn parse_args() -> Config {
             "--oracle" => cfg.oracle = PathBuf::from(val()),
             "--pcm" => cfg.pcm = Some(PathBuf::from(val())),
             "--keep-going" => cfg.keep_going = true,
+            "--f32" => cfg.f32 = true,
             "--no-minimize" => cfg.minimize = false,
             "--rates" => {
                 rates = val()
@@ -265,12 +333,19 @@ fn install_panic_hook() {
     }));
 }
 
-fn run_oracle(oracle: &Path, pcm: &[i16], rate: u32, ch: u16, q: f32) -> Result<Vec<u8>, String> {
-    let raw: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+fn run_oracle<S: Sample>(
+    oracle: &Path,
+    pcm: &[S],
+    rate: u32,
+    ch: u16,
+    q: f32,
+) -> Result<Vec<u8>, String> {
+    let raw = S::to_le(pcm);
     let mut child = Command::new(oracle)
         .arg(rate.to_string())
         .arg(ch.to_string())
         .arg(q.to_string())
+        .arg(S::FORMAT)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -292,7 +367,7 @@ fn run_oracle(oracle: &Path, pcm: &[i16], rate: u32, ch: u16, q: f32) -> Result<
     Ok(out.stdout)
 }
 
-fn run_case(cfg: &Config, pcm: &[i16], rate: u32, ch: u16) -> Outcome {
+fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
     let oracle = match run_oracle(&cfg.oracle, pcm, rate, ch, cfg.quality) {
         Ok(o) => o,
         Err(e) => {
@@ -375,7 +450,8 @@ fn run_case(cfg: &Config, pcm: &[i16], rate: u32, ch: u16) -> Outcome {
 // Minimization
 // ---------------------------------------------------------------------------
 
-struct Minimizer<'a> {
+struct Minimizer<'a, S> {
+    _sample: std::marker::PhantomData<S>,
     cfg: &'a Config,
     rate: u32,
     ch: u16,
@@ -389,11 +465,11 @@ struct Minimizer<'a> {
     log: Vec<String>,
 }
 
-impl Minimizer<'_> {
+impl<S: Sample> Minimizer<'_, S> {
     fn budget_left(&self) -> bool {
         self.evals < self.cfg.min_evals && Instant::now() < self.deadline
     }
-    fn fails(&mut self, pcm: &[i16]) -> bool {
+    fn fails(&mut self, pcm: &[S]) -> bool {
         self.evals += 1;
         let o = run_case(self.cfg, pcm, self.rate, self.ch);
         o.class == Some(self.class) && o.signature == self.signature
@@ -407,7 +483,7 @@ impl Minimizer<'_> {
             if case.segments.len() > 1 {
                 let mut c = case.clone();
                 c.segments.remove(i);
-                if self.fails(&c.render()) {
+                if self.fails(&S::render(&c)) {
                     self.log.push(format!("dropped segment {i}"));
                     *case = c;
                     continue;
@@ -439,7 +515,7 @@ impl Minimizer<'_> {
                 if !self.budget_left() {
                     break;
                 }
-                if self.fails(&c.render()) {
+                if self.fails(&S::render(&c)) {
                     self.log.push(format!("segment {i}: {what}"));
                     *case = c;
                 }
@@ -450,7 +526,7 @@ impl Minimizer<'_> {
 
     /// PCM-level: trim from the end, then from the start, then zero windows.
     /// Returns (pcm, frames trimmed from start).
-    fn pcm(&mut self, mut pcm: Vec<i16>) -> (Vec<i16>, usize) {
+    fn pcm(&mut self, mut pcm: Vec<S>) -> (Vec<S>, usize) {
         let ch = self.ch as usize;
         let mut trimmed_start = 0usize;
         for from_start in [false, true] {
@@ -461,7 +537,7 @@ impl Minimizer<'_> {
                     chunk = frames / 2;
                     continue;
                 }
-                let cand: Vec<i16> = if from_start {
+                let cand: Vec<S> = if from_start {
                     pcm[chunk * ch..].to_vec()
                 } else {
                     pcm[..(frames - chunk) * ch].to_vec()
@@ -488,9 +564,11 @@ impl Minimizer<'_> {
             let mut s = 0;
             while s < frames && self.budget_left() {
                 let e = (s + w).min(frames);
-                if pcm[s * ch..e * ch].iter().any(|&x| x != 0) {
+                if pcm[s * ch..e * ch].iter().any(|&x| x != S::default()) {
                     let mut cand = pcm.clone();
-                    cand[s * ch..e * ch].iter_mut().for_each(|x| *x = 0);
+                    cand[s * ch..e * ch]
+                        .iter_mut()
+                        .for_each(|x| *x = S::default());
                     if self.fails(&cand) {
                         pcm = cand;
                     }
@@ -499,7 +577,7 @@ impl Minimizer<'_> {
             }
             w /= 2;
         }
-        let nz = pcm.iter().filter(|&&x| x != 0).count();
+        let nz = pcm.iter().filter(|&&x| x != S::default()).count();
         self.log
             .push(format!("after zeroing: {nz} nonzero samples remain"));
         (pcm, trimmed_start)
@@ -538,10 +616,10 @@ struct Meta<'a> {
     note: &'a str,
 }
 
-fn save(dir: &Path, m: &Meta, pcm: &[i16], o: &Outcome) -> std::io::Result<()> {
+fn save<S: Sample>(dir: &Path, m: &Meta, pcm: &[S], o: &Outcome) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let raw: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-    std::fs::write(dir.join("input.s16le"), raw)?;
+    let input = dir.join(format!("input.{}le", S::FORMAT));
+    std::fs::write(&input, S::to_le(pcm))?;
     std::fs::write(dir.join("oracle.ogg"), &o.oracle)?;
     std::fs::write(dir.join("lewtoff.ogg"), &o.lewtoff)?;
     let frames = pcm.len() / m.ch as usize;
@@ -555,7 +633,7 @@ fn save(dir: &Path, m: &Meta, pcm: &[i16], o: &Outcome) -> std::io::Result<()> {
     let opt = |v: Option<usize>| v.map(|x| x.to_string()).unwrap_or("null".into());
     let json = format!(
         "{{\n  \"id\": {},\n  \"class\": {},\n  \"seed\": {},\n  \"iter\": {},\n  \"case_seed\": {},\n  \
-         \"rate\": {},\n  \"channels\": {},\n  \"quality\": {},\n  \"frames\": {},\n  \
+         \"rate\": {},\n  \"channels\": {},\n  \"quality\": {},\n  \"format\": {},\n  \"frames\": {},\n  \
          \"first_divergent_byte\": {},\n  \"first_divergent_packet\": {},\n  \"block_index\": {},\n  \
          \"note\": {},\n  \"message\": {},\n  \"case\": {},\n  \
          \"replay\": {}\n}}\n",
@@ -567,6 +645,7 @@ fn save(dir: &Path, m: &Meta, pcm: &[i16], o: &Outcome) -> std::io::Result<()> {
         m.rate,
         m.ch,
         m.quality,
+        esc(S::FORMAT),
         frames,
         opt(fb),
         opt(fp),
@@ -575,20 +654,23 @@ fn save(dir: &Path, m: &Meta, pcm: &[i16], o: &Outcome) -> std::io::Result<()> {
         esc(&o.message),
         esc(&case_dbg),
         esc(&format!(
-            "cargo run -p parity-fuzz --release -- --pcm {} --rates {} --channels {} --no-minimize",
-            dir.join("input.s16le").display(),
+            "cargo run -p parity-fuzz --release -- --pcm {} --rates {} --channels {} --quality {}{} --no-minimize",
+            input.display(),
             m.rate,
-            m.ch
+            m.ch,
+            m.quality,
+            if S::FORMAT == "f32" { " --f32" } else { "" }
         )),
     );
     std::fs::write(dir.join("descriptor.json"), json)?;
     let txt = format!(
-        "id: {}\nclass: {}\nrate: {} channels: {} quality: {} frames: {}\nseed: {} iter: {:?} case_seed: {:?}\nnote: {}\n\n{}\n\ncase:\n{}\n",
+        "id: {}\nclass: {}\nrate: {} channels: {} quality: {} format: {} frames: {}\nseed: {} iter: {:?} case_seed: {:?}\nnote: {}\n\n{}\n\ncase:\n{}\n",
         m.id,
         o.class.map(|c| c.name()).unwrap_or("none"),
         m.rate,
         m.ch,
         m.quality,
+        S::FORMAT,
         frames,
         m.seed,
         m.iter,
@@ -603,13 +685,13 @@ fn save(dir: &Path, m: &Meta, pcm: &[i16], o: &Outcome) -> std::io::Result<()> {
 /// Save the original failure, minimize it, save the minimized case.
 /// Returns a one-paragraph summary.
 #[allow(clippy::too_many_arguments)]
-fn handle_failure(
+fn handle_failure<S: Sample>(
     cfg: &Config,
     id: &str,
     iter: Option<usize>,
     case_seed: Option<u64>,
     case: Option<&Case>,
-    pcm: &[i16],
+    pcm: &[S],
     rate: u32,
     ch: u16,
     o: &Outcome,
@@ -642,7 +724,8 @@ fn handle_failure(
     if !minimize || class == Class::OracleFail {
         return summary;
     }
-    let mut m = Minimizer {
+    let mut m = Minimizer::<S> {
+        _sample: std::marker::PhantomData,
         cfg,
         rate,
         ch,
@@ -656,7 +739,7 @@ fn handle_failure(
     let mut min_case = case.cloned();
     if let Some(c) = min_case.as_mut() {
         m.segments(c);
-        start_pcm = c.render();
+        start_pcm = S::render(c);
     }
     let (min_pcm, _trim) = m.pcm(start_pcm);
     let mo = run_case(cfg, &min_pcm, rate, ch);
@@ -689,7 +772,14 @@ fn handle_failure(
 fn main() {
     let cfg = parse_args();
     install_panic_hook();
+    if cfg.f32 {
+        run::<f32>(cfg)
+    } else {
+        run::<i16>(cfg)
+    }
+}
 
+fn run<S: Sample>(cfg: Config) {
     if let Some(path) = cfg.pcm.clone() {
         let (rate, ch) = cfg.combos[0];
         if cfg.combos.len() != 1 {
@@ -700,10 +790,7 @@ fn main() {
             eprintln!("read {}: {e}", path.display());
             std::process::exit(2)
         });
-        let pcm: Vec<i16> = raw
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
-            .collect();
+        let pcm = S::from_le(&raw);
         let o = run_case(&cfg, &pcm, rate, ch);
         match o.class {
             None => println!("MATCH ({} bytes)", o.oracle.len()),
@@ -712,7 +799,7 @@ fn main() {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or("pcm".into());
-                let id = format!("replay-{stem}-{rate}-{ch}ch");
+                let id = case_id(&format!("replay-{stem}"), cfg.quality, cfg.f32, rate, ch);
                 println!(
                     "{}",
                     handle_failure(
@@ -752,11 +839,12 @@ fn main() {
     let end = cfg.start + cfg.iters;
 
     println!(
-        "parity-fuzz: seed={} iters={} (start {}) quality={} combos={:?} jobs={} oracle={}",
+        "parity-fuzz: seed={} iters={} (start {}) quality={} format={} combos={:?} jobs={} oracle={}",
         cfg.seed,
         cfg.iters,
         cfg.start,
         cfg.quality,
+        S::FORMAT,
         cfg.combos,
         cfg.jobs,
         cfg.oracle.display()
@@ -797,7 +885,7 @@ fn main() {
                     skipped.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                let pcm = case.render();
+                let pcm = S::render(&case);
                 let o = run_case(&cfg, &pcm, rate, ch);
                 per_combo[ci].0.fetch_add(1, Ordering::Relaxed);
                 frames_total.fetch_add(case.frames(), Ordering::Relaxed);
@@ -806,7 +894,13 @@ fn main() {
                     if !cfg.keep_going {
                         stop.store(true, Ordering::Relaxed);
                     }
-                    let id = format!("s{}-i{}-{}-{}ch", cfg.seed, i, rate, ch);
+                    let id = case_id(
+                        &format!("s{}-i{}", cfg.seed, i),
+                        cfg.quality,
+                        cfg.f32,
+                        rate,
+                        ch,
+                    );
                     let minimize = {
                         let mut st = state.lock().unwrap();
                         let e = st.by_sig.entry(o.signature.clone()).or_default();
