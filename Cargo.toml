@@ -53,6 +53,8 @@ rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 lewton = "0.10"
+# tests/robustness.rs drives encodes from inside Rayon pools.
+rayon = "1.10"
 # Integration tests reach the `__internal` entry points through this
 # self-dependency, so plain `cargo test` works without extra flags.
 lewtoff = { path = ".", features = ["__internal"] }

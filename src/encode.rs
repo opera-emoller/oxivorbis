@@ -825,16 +825,76 @@ impl EncoderCore {
     /// sequential chain over each block's local spectral peak, so batch
     /// boundaries cannot change the bytes. Per batch:
     ///
-    /// - pass A (parallel, async): each block's clamped local ampmax;
+    /// - pass A (parallel): each block's clamped local ampmax;
     /// - pass B (here, sequential): chain the ampmax each block starts from;
-    /// - pass C (parallel, async): full analysis into packets.
+    /// - pass C (parallel): full analysis into packets.
     ///
-    /// The Rayon pool runs pass C of the previous batch and pass A of the
-    /// one just filled while this thread windows the next batch; packets
-    /// are written in order, at most two batches behind (none once
-    /// `finishing`).
+    /// Called from an ordinary thread, the passes run asynchronously
+    /// ([`Self::pipeline_async`]) so the caller keeps windowing while the
+    /// pool works. Called on a Rayon worker thread (an encode inside a
+    /// user's `par_iter`, or under `ThreadPool::install`), the batch runs
+    /// synchronously on Rayon's own work-stealing joins instead: blocking
+    /// a pool thread on a job queued behind it can deadlock the pool, and
+    /// when the caller already is a pool thread there is no spare core for
+    /// the overlap to use.
     #[cfg(feature = "parallel")]
     fn pipeline(&mut self, finishing: bool) {
+        use rayon::prelude::*;
+        if rayon::current_thread_index().is_none() {
+            self.pipeline_async(finishing);
+            return;
+        }
+        // Batches launched by earlier calls made outside the pool go first.
+        let jobs = std::mem::take(&mut self.jobs);
+        while self.pass_a.is_some() || !self.pass_c.is_empty() {
+            self.pipeline_async(true);
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        let local_max: Vec<f32> = jobs
+            .par_iter()
+            .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
+            .collect();
+        let input_ampmax = self.chain_ampmax(&jobs, &local_max);
+        let packets = analyze_batch(
+            &self.setup,
+            &self.psy_looks,
+            &self.floor_seed,
+            self.ch,
+            &jobs,
+            &input_ampmax,
+        );
+        for (job, packet) in jobs.iter().zip(&packets) {
+            self.ogg
+                .write_packet(packet, job.granulepos, job.eos, false);
+        }
+    }
+
+    /// Pass B: the `ampmax` each block of `jobs` starts from, given the
+    /// blocks' local peaks. Advances `self.ampmax` past the batch.
+    #[cfg(feature = "parallel")]
+    fn chain_ampmax(&mut self, jobs: &[BlockJob], local_max: &[f32]) -> Vec<f32> {
+        let gi = &self.setup.cfg.psy_global;
+        let rate = self.psy_looks[0].rate;
+        let mut input_ampmax = Vec::with_capacity(jobs.len());
+        let mut prev = self.ampmax;
+        for (job, &m) in jobs.iter().zip(local_max) {
+            input_ampmax.push(prev);
+            let n2 = job.pcm[0].len() / 2;
+            prev = crate::psy::vp_ampmax_decay(prev, gi, n2, rate).max(m);
+        }
+        self.ampmax = prev;
+        input_ampmax
+    }
+
+    /// The asynchronous pipeline for callers outside the pool: passes A
+    /// and C are `rayon::spawn`ed and collected through channels. The pool
+    /// runs pass C of the previous batch and pass A of the one just filled
+    /// while this thread windows the next batch; packets are written in
+    /// order, at most two batches behind (none once `finishing`).
+    #[cfg(feature = "parallel")]
+    fn pipeline_async(&mut self, finishing: bool) {
         use rayon::prelude::*;
         use std::sync::mpsc::channel;
         const WORKER: &str = "parallel analysis worker panicked";
@@ -842,17 +902,8 @@ impl EncoderCore {
         // Pass B for the batch whose pass A was launched last time, then
         // launch its pass C.
         if let Some(rx) = self.pass_a.take() {
-            let (jobs, local_max) = rx.recv().expect(WORKER);
-            let gi = &self.setup.cfg.psy_global;
-            let rate = self.psy_looks[0].rate;
-            let mut input_ampmax = Vec::with_capacity(jobs.len());
-            let mut prev = self.ampmax;
-            for (job, &m) in jobs.iter().zip(&local_max) {
-                input_ampmax.push(prev);
-                let n2 = job.pcm[0].len() / 2;
-                prev = crate::psy::vp_ampmax_decay(prev, gi, n2, rate).max(m);
-            }
-            self.ampmax = prev;
+            let (jobs, local_max) = recv_helping(&rx).expect(WORKER);
+            let input_ampmax = self.chain_ampmax(&jobs, &local_max);
             let meta = jobs.iter().map(|j| (j.granulepos, j.eos)).collect();
             let (tx, rx) = channel();
             let setup = Arc::clone(&self.setup);
@@ -883,9 +934,37 @@ impl EncoderCore {
         let keep = if finishing { 0 } else { 1 };
         while self.pass_c.len() > keep {
             let (meta, rx) = self.pass_c.pop_front().expect("non-empty");
-            let packets = rx.recv().expect(WORKER);
+            let packets = recv_helping(&rx).expect(WORKER);
             for ((granulepos, eos), packet) in meta.into_iter().zip(&packets) {
                 self.ogg.write_packet(packet, granulepos, eos, false);
+            }
+        }
+    }
+}
+
+/// `rx.recv()`, except on a Rayon worker thread, where it keeps running
+/// pool jobs while it waits (the job it waits for may be queued behind it
+/// on this very thread, e.g. in a 1-thread pool). Pool threads only wait
+/// on a channel when an `Encoder` that launched batches from an ordinary
+/// thread is then driven from inside a pool.
+#[cfg(feature = "parallel")]
+fn recv_helping<T>(rx: &std::sync::mpsc::Receiver<T>) -> Result<T, std::sync::mpsc::RecvError> {
+    use std::sync::mpsc::{RecvError, RecvTimeoutError, TryRecvError};
+    if rayon::current_thread_index().is_none() {
+        return rx.recv();
+    }
+    loop {
+        match rx.try_recv() {
+            Ok(v) => return Ok(v),
+            Err(TryRecvError::Disconnected) => return Err(RecvError),
+            Err(TryRecvError::Empty) => {}
+        }
+        if rayon::yield_now() != Some(rayon::Yield::Executed) {
+            // Nothing to help with; the job runs on another thread.
+            match rx.recv_timeout(std::time::Duration::from_micros(200)) {
+                Ok(v) => return Ok(v),
+                Err(RecvTimeoutError::Disconnected) => return Err(RecvError),
+                Err(RecvTimeoutError::Timeout) => {}
             }
         }
     }
