@@ -3,10 +3,10 @@ use lewtoff::headers::{write_comment_header, write_id_header, write_setup_header
 use lewtoff::ogg_pages::OggStreamWriter;
 use lewtoff::{Channels, SampleRate};
 
-/// Comment-header strings of the ffmpeg-libvorbis encode the vectors were
-/// captured from.
-const LAVF_VENDOR: &[u8] = b"Lavf61.7.100";
-const LAVF_ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
+/// Comment-header strings of the oracle-encoder run the vectors were
+/// captured from (`just regen-header-vectors`, tools/gen-header-vectors).
+const VENDOR: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
+const ENCODER_TAG: &[u8] = b"encoder=lewtoff header vectors";
 
 fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<u8> {
     let mut w = OggStreamWriter::new(serial);
@@ -16,7 +16,7 @@ fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<
     w.write_packet(&bw.into_bytes(), 0, false, true);
 
     let mut bw = BitWriter::new();
-    write_comment_header(&mut bw, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
+    write_comment_header(&mut bw, VENDOR, &[ENCODER_TAG]);
     w.write_packet(&bw.into_bytes(), 0, false, false);
 
     let mut bw = BitWriter::new();
@@ -27,7 +27,7 @@ fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<
 }
 
 #[test]
-fn ogg_headers_mono44_match_ffmpeg() {
+fn ogg_headers_mono44_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_mono44.bin"));
     let actual = write_header_pages(SampleRate::Hz44100, Channels::Mono, serial);
     let expected = include_bytes!("vectors/ogg/headers_mono44.ogg");
@@ -39,7 +39,7 @@ fn ogg_headers_mono44_match_ffmpeg() {
 }
 
 #[test]
-fn ogg_headers_mono48_match_ffmpeg() {
+fn ogg_headers_mono48_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_mono48.bin"));
     let actual = write_header_pages(SampleRate::Hz48000, Channels::Mono, serial);
     let expected = include_bytes!("vectors/ogg/headers_mono48.ogg");
@@ -51,7 +51,7 @@ fn ogg_headers_mono48_match_ffmpeg() {
 }
 
 #[test]
-fn ogg_headers_stereo44_match_ffmpeg() {
+fn ogg_headers_stereo44_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_stereo44.bin"));
     let actual = write_header_pages(SampleRate::Hz44100, Channels::Stereo, serial);
     let expected = include_bytes!("vectors/ogg/headers_stereo44.ogg");
@@ -63,7 +63,7 @@ fn ogg_headers_stereo44_match_ffmpeg() {
 }
 
 #[test]
-fn ogg_headers_stereo48_match_ffmpeg() {
+fn ogg_headers_stereo48_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_stereo48.bin"));
     let actual = write_header_pages(SampleRate::Hz48000, Channels::Stereo, serial);
     let expected = include_bytes!("vectors/ogg/headers_stereo48.ogg");

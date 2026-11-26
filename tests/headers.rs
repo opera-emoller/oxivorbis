@@ -2,17 +2,17 @@ use lewtoff::bitpack::BitWriter;
 use lewtoff::headers::{write_comment_header, write_id_header, write_setup_header};
 use lewtoff::{Channels, SampleRate};
 
-/// Comment-header strings of the ffmpeg-libvorbis encode the vectors were
-/// captured from.
-const LAVF_VENDOR: &[u8] = b"Lavf61.7.100";
-const LAVF_ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
+/// Comment-header strings of the oracle-encoder run the vectors were
+/// captured from (`just regen-header-vectors`, tools/gen-header-vectors).
+const VENDOR: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
+const ENCODER_TAG: &[u8] = b"encoder=lewtoff header vectors";
 
 fn make_writer() -> BitWriter {
     BitWriter::new()
 }
 
 #[test]
-fn id_header_mono_44100_matches_ffmpeg() {
+fn id_header_mono_44100_matches_oracle() {
     let mut w = make_writer();
     write_id_header(SampleRate::Hz44100, Channels::Mono, &mut w);
     let actual = w.into_bytes();
@@ -25,7 +25,7 @@ fn id_header_mono_44100_matches_ffmpeg() {
 }
 
 #[test]
-fn id_header_mono_48000_matches_ffmpeg() {
+fn id_header_mono_48000_matches_oracle() {
     let mut w = make_writer();
     write_id_header(SampleRate::Hz48000, Channels::Mono, &mut w);
     let actual = w.into_bytes();
@@ -38,7 +38,7 @@ fn id_header_mono_48000_matches_ffmpeg() {
 }
 
 #[test]
-fn id_header_stereo_44100_matches_ffmpeg() {
+fn id_header_stereo_44100_matches_oracle() {
     let mut w = make_writer();
     write_id_header(SampleRate::Hz44100, Channels::Stereo, &mut w);
     let actual = w.into_bytes();
@@ -51,7 +51,7 @@ fn id_header_stereo_44100_matches_ffmpeg() {
 }
 
 #[test]
-fn id_header_stereo_48000_matches_ffmpeg() {
+fn id_header_stereo_48000_matches_oracle() {
     let mut w = make_writer();
     write_id_header(SampleRate::Hz48000, Channels::Stereo, &mut w);
     let actual = w.into_bytes();
@@ -64,9 +64,9 @@ fn id_header_stereo_48000_matches_ffmpeg() {
 }
 
 #[test]
-fn comment_header_mono_44100_matches_ffmpeg() {
+fn comment_header_mono_44100_matches_oracle() {
     let mut w = make_writer();
-    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
+    write_comment_header(&mut w, VENDOR, &[ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_mono44.bin");
     assert_eq!(
@@ -77,9 +77,9 @@ fn comment_header_mono_44100_matches_ffmpeg() {
 }
 
 #[test]
-fn comment_header_mono_48000_matches_ffmpeg() {
+fn comment_header_mono_48000_matches_oracle() {
     let mut w = make_writer();
-    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
+    write_comment_header(&mut w, VENDOR, &[ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_mono48.bin");
     assert_eq!(
@@ -90,9 +90,9 @@ fn comment_header_mono_48000_matches_ffmpeg() {
 }
 
 #[test]
-fn comment_header_stereo_44100_matches_ffmpeg() {
+fn comment_header_stereo_44100_matches_oracle() {
     let mut w = make_writer();
-    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
+    write_comment_header(&mut w, VENDOR, &[ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_stereo44.bin");
     assert_eq!(
@@ -103,9 +103,9 @@ fn comment_header_stereo_44100_matches_ffmpeg() {
 }
 
 #[test]
-fn comment_header_stereo_48000_matches_ffmpeg() {
+fn comment_header_stereo_48000_matches_oracle() {
     let mut w = make_writer();
-    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
+    write_comment_header(&mut w, VENDOR, &[ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_stereo48.bin");
     assert_eq!(
@@ -116,7 +116,7 @@ fn comment_header_stereo_48000_matches_ffmpeg() {
 }
 
 #[test]
-fn setup_header_matches_ffmpeg() {
+fn setup_header_matches_oracle() {
     let mut w = make_writer();
     write_setup_header(SampleRate::Hz44100, Channels::Mono, &mut w);
     let actual = w.into_bytes();
