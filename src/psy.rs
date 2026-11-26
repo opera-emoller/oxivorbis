@@ -1204,7 +1204,10 @@ pub fn vp_noisemask(p: &VorbisLookPsy, logmdct: &[f32], logmask: &mut [f32]) {
     }
 
     for i in 0..n {
-        let db = (logmask[i] + 0.5) as i32;
+        // C: `int dB = logmask[i] + .5;` — float + double literal, so the
+        // add happens in double. An f32 add can round up across an integer
+        // boundary (x.4999999 + 0.5 -> x+1.0) and pick the next compand step.
+        let db = (logmask[i] as f64 + 0.5) as i32;
         let db = db.max(0).min(NOISE_COMPAND_LEVELS as i32 - 1) as usize;
         logmask[i] = work[i] + p.vi.noisecompand[db];
     }
