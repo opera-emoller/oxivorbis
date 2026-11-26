@@ -31,12 +31,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// lewtoff adapter: the ONLY place lewtoff is called. When the public quality
-// API lands, change the body of this function (and `quality_supported`).
+// lewtoff adapter: the ONLY place lewtoff is called. `quality` is a libvorbis
+// base_quality (the oracle's 3rd argument), -0.1..=1.0.
 // ---------------------------------------------------------------------------
 
 fn quality_supported(q: f32) -> bool {
-    q == 0.5
+    (-0.1..=1.0).contains(&q)
 }
 
 fn lewtoff_encode(
@@ -59,7 +59,7 @@ fn lewtoff_encode(
         2 => lewtoff::Channels::Stereo,
         _ => unreachable!("channels validated at CLI"),
     };
-    lewtoff::encode_with_serial_and_meta(pcm, r, c, serial, Some(vendor), Some(tag))
+    lewtoff::encode_with_base_quality_and_meta(pcm, r, c, quality, serial, Some(vendor), Some(tag))
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +158,7 @@ fn parse_args() -> Config {
     }
     if !quality_supported(cfg.quality) {
         eprintln!(
-            "parity-fuzz: quality {} is not supported by lewtoff yet (only 0.5 / Q5). \
-             Update `quality_supported` + `lewtoff_encode` once the quality API lands.",
+            "parity-fuzz: --quality {} outside libvorbis base_quality -0.1..=1.0",
             cfg.quality
         );
         std::process::exit(2);
