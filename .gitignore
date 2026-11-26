@@ -30,3 +30,4 @@
 # committed alongside the Linux x86_64 version CI produces.
 /tools/oracle-encoder/oracle-encoder
 /tools/oracle-encoder/oracle-encoder.dSYM/
+.claude/worktrees/

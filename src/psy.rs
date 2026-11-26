@@ -1394,13 +1394,16 @@ fn noise_normalize(
 
     if sort_len > 0 {
         let sort_idx = &mut sort_buf[..sort_len];
-        sort_idx.sort_unstable_by(|&a, &b| {
+        // Stable sort: matches glibc's merge-sort qsort (and the oracle's
+        // lw_stable_qsort), so tied magnitudes keep ascending index order.
+        sort_idx.sort_by(|&a, &b| {
             let fa = q[a];
             let fb = q[b];
             fb.partial_cmp(&fa).unwrap_or(std::cmp::Ordering::Equal)
         });
         for &k in sort_idx.iter() {
-            if acc >= vi.normal_thresh as f32 {
+            // C compares float acc against double normal_thresh.
+            if acc as f64 >= vi.normal_thresh {
                 out[k] = unitnorm(r[k]) as i32;
                 acc -= 1.0;
                 q[k] = f[k];
