@@ -62,17 +62,21 @@ static STEREO_THRESHHOLDS_LIMITED: [f64; 9] = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 4.5
 // during psy_init (setup), not in the per-frame hot path.
 // ---------------------------------------------------------------------------
 
-/// toBARK (scales.h): `13.1f*atan(.00074f*n)+2.24f*atan(n*n*1.85e-8f)+1e-4f*n`.
-/// All constants are f32 in C and get promoted to f64 in math (atan is f64).
-/// Match exactly by promoting f32 constants to f64 before the arithmetic.
-fn to_bark(n: f32) -> f32 {
-    let n = n as f64;
-    let c0 = 13.1_f32 as f64;
-    let c1 = 0.00074_f32 as f64;
-    let c2 = 2.24_f32 as f64;
-    let c3 = 1.85e-8_f32 as f64;
-    let c4 = 1e-4_f32 as f64;
-    (c0 * (c1 * n).atan() + c2 * (n * n * c3).atan() + c4 * n) as f32
+/// toBARK (scales.h): `13.1f*atan(.00074f*(n))+2.24f*atan((n)*(n)*1.85e-8f)+1e-4f*(n)`
+/// for the integer (`long`) argument `_vp_psy_init` passes (`rate/(2*n)*i`).
+///
+/// With an integer `n` the C types are: `.00074f*(n)` and `1e-4f*(n)` are
+/// float multiplies; `(n)*(n)` is an exact integer product that is then
+/// rounded to float and multiplied in float; only the `atan`s and the
+/// `13.1f*`/`2.24f*` products (and hence the sums) are double. The result
+/// is double — callers compare it unrounded and only `float bark = ...`
+/// rounds to f32.
+fn to_bark(n: i64) -> f64 {
+    let nf = n as f32;
+    let a = (0.00074_f32 * nf) as f64;
+    let b = ((n * n) as f32 * 1.85e-8_f32) as f64;
+    let c = (1e-4_f32 * nf) as f64;
+    13.1_f32 as f64 * a.atan() + 2.24_f32 as f64 * b.atan() + c
 }
 
 /// toOC (scales.h): `log(n)*1.442695f-5.965784f`. C constants are f32, promoted
@@ -563,17 +567,17 @@ pub fn vp_psy_init(
         let mut lo: i64 = -99;
         let mut hi: i64 = 1;
         for i in 0..n {
-            let bark = to_bark((bin_hz * i as i64) as f32);
+            let bark = to_bark(bin_hz * i as i64) as f32;
 
             while lo + (vi.noisewindowlomin as i64) < i as i64
-                && to_bark((bin_hz * lo) as f32) < bark - vi.noisewindowlo
+                && to_bark(bin_hz * lo) < (bark - vi.noisewindowlo) as f64
             {
                 lo += 1;
             }
 
             while hi <= n as i64
                 && (hi < i as i64 + vi.noisewindowhimin as i64
-                    || to_bark((bin_hz * hi) as f32) < bark + vi.noisewindowhi)
+                    || to_bark(bin_hz * hi) < (bark + vi.noisewindowhi) as f64)
             {
                 hi += 1;
             }
