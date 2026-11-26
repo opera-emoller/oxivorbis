@@ -1090,7 +1090,32 @@ fn bark_noise_hybridmp(
     let inside = |i: usize| (i + half - fixed, i + half);
     let lower = |old: f32, r: f32| if r - offset < old { r - offset } else { old };
     hyb_run(&pre, 0, e5, true, mirrored, noise, lower);
-    hyb_run(&pre, e5, e6, false, inside, noise, lower);
+    {
+        // Inside the spectrum the fixed window's rows are contiguous
+        // (hi = i + half, lo = hi - fixed), so this pass is a plain
+        // element-wise loop over shifted slices; same ops as hyb_run.
+        let len = e6 - e5;
+        let (h0, l0) = (e5 + half, e5 + half - fixed.min(e5 + half));
+        fn win(v: &[f32], s: usize, len: usize) -> &[f32] {
+            &v[s..s + len]
+        }
+        let hs = |v| win(v, h0, len);
+        let ls = |v| win(v, l0, len);
+        let (nh, xh, xxh, yh, xyh) = (hs(pre.n), hs(pre.x), hs(pre.xx), hs(pre.y), hs(pre.xy));
+        let (nl, xl, xxl, yl, xyl) = (ls(pre.n), ls(pre.x), ls(pre.xx), ls(pre.y), ls(pre.xy));
+        let out = &mut noise[e5..e6];
+        for t in 0..len {
+            let (a, b, d) = abd(
+                nh[t] - nl[t],
+                xh[t] - xl[t],
+                xxh[t] - xxl[t],
+                yh[t] - yl[t],
+                xyh[t] - xyl[t],
+            );
+            let r = (a + (e5 + t) as f32 * b) / d;
+            out[t] = lower(out[t], r);
+        }
+    }
     let (big_a, big_b, big_d) = if e6 > e5 {
         let (lo, hi) = inside(e6 - 1);
         pre.abd(hi, lo, false)
