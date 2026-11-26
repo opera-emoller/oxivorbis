@@ -1,7 +1,8 @@
 # lewtoff
 
 A pure-Rust Ogg Vorbis **encoder** that produces byte-for-byte identical
-output to libvorbis 1.3.7 at quality Q5 for a constrained input space.
+output to libvorbis 1.3.7 (VBR mode, oggenc qualities 0–10, fractional
+included) for a constrained input space.
 Named after [lewton](https://github.com/RustAudio/lewton) — the pure-Rust
 Vorbis decoder. lewtoff is its encoder counterpart.
 
@@ -12,12 +13,13 @@ feature adds Rayon-based block-level fan-out — see
 
 ## Status
 
-All synthetic parity tests (silence, sine 440, ramps, mono+stereo at
-44.1k and 48k) match libvorbis 1.3.7 byte-for-byte. A real-audio corpus
+All synthetic parity tests (silence, sine 440, ramps, noise+tones,
+transients; mono+stereo at 44.1k and 48k; base qualities 0.0–1.0, i.e.
+oggenc `-q 0` … `-q 10`) match libvorbis 1.3.7 byte-for-byte. A real-audio corpus
 sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
 `<repo_root>/corpus/` directory the contributor has symlinked in and
 asserts the same parity for every file recursively; the most recent
-sweep over a 5954-file corpus passed 100% byte-identical. The EOS
+Q5 sweep over a 5954-file corpus passed 100% byte-identical. The EOS
 `eofflag` / post-extrap `n_train` derivation runs a faithful chunk-by-
 chunk streaming simulation of libvorbis's `vorbis_analysis_blockout`
 (see `envelope::simulate_eofflag`) so no per-input hardcodes are needed.
@@ -26,15 +28,31 @@ chunk streaming simulation of libvorbis's `vorbis_analysis_blockout`
 
 ```rust
 let pcm: &[i16] = /* interleaved 16-bit PCM */;
+
+// Quality 5 (same as `oggenc -q 5`).
 let ogg = lewtoff::encode(
     pcm,
     lewtoff::SampleRate::Hz44100,
     lewtoff::Channels::Stereo,
 );
+
+// Any quality on oggenc's -q scale, fractional allowed (same bytes as
+// `oggenc -q 7.5`).
+let ogg = lewtoff::encode_with_quality(
+    pcm,
+    lewtoff::SampleRate::Hz44100,
+    lewtoff::Channels::Stereo,
+    7.5,
+);
 ```
 
-Public surface is one function plus two enums. No `Result` (the input
+Public surface is two functions plus two enums. No `Result` (the input
 space is closed by construction), no streaming, no `Write` trait.
+
+`quality` is converted to libvorbis's `base_quality` exactly as oggenc
+1.4.3 does — `(float)((double)(float)q * 0.1)`, values above 10 clamped
+to 10 — so e.g. `-q 9.344` picks the same float (and the same ID-header
+nominal bitrate) as oggenc, not the nearest float to 0.9344.
 
 ## Supported input
 
@@ -43,9 +61,10 @@ space is closed by construction), no streaming, no `Write` trait.
 | Sample format | Interleaved `i16` PCM |
 | Sample rate   | 44100 Hz **or** 48000 Hz |
 | Channels      | Mono **or** Stereo |
-| Quality       | Q5 (≈160 kbps stereo, ≈80 kbps mono) |
+| Quality       | 0.0 – 10.0 on oggenc's `-q` scale (fractional ok); `encode()` is 5 |
 
-Outside this space, behavior is undefined.
+Quality -1 … <0 (libvorbis q-1, 512/4096-sample blocks) is not supported
+yet and panics. Outside this space, behavior is undefined.
 
 ## Parallel encoding
 
@@ -134,12 +153,13 @@ just parity                                    # parity for serial AND parallel 
 
 Quality-parameterized parity lives in `tests/parity.rs` as the
 `oracle_parity_q::<quality>::<config>::<signal>` matrix: one
-base_quality per libvorbis template interval (-0.05, 0.05 … 0.95, 1.0,
-plus 0.5) × 44.1/48 kHz × mono/stereo × silence / sine / ramp /
-noise+tone / 10 s transients. Only q5 runs today; the rest are
-`#[ignore = "pending quality wiring"]` until lewtoff accepts a quality
-(see `tests/common/mod.rs`). Run them with `--run-ignored=all`. The
-corpus sweep takes the quality via `CORPUS_QUALITY` (default 0.5), e.g.
+base_quality per libvorbis template interval (-0.05, 0.05 … 0.95, plus
+0.0, 0.5 and 1.0) × 44.1/48 kHz × mono/stereo × silence / sine / ramp /
+noise+tone / 10 s transients. Everything from 0.0 up runs by default;
+the q-1 row (-0.05) is `#[ignore = "pending 512/4096 block support"]`.
+`parity_oggenc_quality_conversion` pins the oggenc `-q` → base_quality
+float conversion against the system `oggenc`. The corpus sweep takes a
+libvorbis base_quality via `CORPUS_QUALITY` (default 0.5), e.g.
 `just corpus 100 "" 0.3`.
 
 CI (`.github/workflows/ci.yml`) installs `vorbis-tools`, builds the
