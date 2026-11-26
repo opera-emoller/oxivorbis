@@ -45,6 +45,15 @@ use crate::window::{MAX_LONG_BLOCK, MAX_LONG_HALF};
 //   opb          - output bit writer
 // ---------------------------------------------------------------------------
 
+/// libvorbis's `x + .345` dB fudge in `mapping0_forward`. The literal is a
+/// double, so C forms the sum in double and rounds it to float once on
+/// assignment: `(float)((double)x + .345)`. Adding `0.345f32` instead can
+/// differ by an ulp.
+#[inline(always)]
+pub(crate) fn add_345(x: f32) -> f32 {
+    (x as f64 + 0.345) as f32
+}
+
 /// Parameters for mode/window flags in the audio packet header.
 pub(crate) struct BlockMode {
     pub mode_number: usize,
@@ -105,18 +114,18 @@ impl MappingScratch {
 pub(crate) fn compute_block_local_ampmax_max(pcm_blocks: &[Vec<f32>]) -> f32 {
     let n = pcm_blocks[0].len();
     let scale = 4.0f32 / n as f32;
-    let scale_db = to_db(scale) + 0.345_f32;
+    let scale_db = add_345(to_db(scale));
     let mut max_local = f32::NEG_INFINITY;
     let mut fft_storage = [0.0f32; MAX_LONG_BLOCK];
     for ch_pcm in pcm_blocks {
         let fft_buf = &mut fft_storage[..n];
         fft_buf.copy_from_slice(ch_pcm);
         drft_forward_n(fft_buf);
-        let mut local = scale_db + to_db(fft_buf[0]) + 0.345_f32;
+        let mut local = add_345(scale_db + to_db(fft_buf[0]));
         let mut j = 1usize;
         while j < n - 1 {
             let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-            let t = scale_db + 0.5_f32 * to_db(temp) + 0.345_f32;
+            let t = add_345(scale_db + 0.5_f32 * to_db(temp));
             if t > local {
                 local = t;
             }
@@ -181,7 +190,7 @@ pub(crate) fn mapping0_forward(
 
     // Scale factor for dB computation (port of `scale = 4.f/n; scale_dB = todB(&scale) + .345`)
     let scale = 4.0f32 / n as f32;
-    let scale_dB = to_db(scale) + 0.345_f32;
+    let scale_dB = add_345(to_db(scale));
 
     // Apply ampmax decay at the START of each block (port of block.c _vp_ampmax_decay call).
     // libvorbis decays g->ampmax before calling mapping0_forward, using the CURRENT block's n2.
@@ -241,14 +250,14 @@ pub(crate) fn mapping0_forward(
             dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", fft_buf);
         }
         // DC bin
-        let lam = scale_dB + to_db(fft_buf[0]) + 0.345_f32;
+        let lam = add_345(scale_dB + to_db(fft_buf[0]));
         logfft[i][0] = lam;
         local_ampmax[i] = lam;
         // Bins 1..n/2
         let mut j = 1usize;
         while j < n - 1 {
             let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-            let t = scale_dB + 0.5_f32 * to_db(temp) + 0.345_f32;
+            let t = add_345(scale_dB + 0.5_f32 * to_db(temp));
             logfft[i][(j + 1) >> 1] = t;
             if t > local_ampmax[i] {
                 local_ampmax[i] = t;
@@ -288,7 +297,7 @@ pub(crate) fn mapping0_forward(
         // Compute logmdct in-place into scratch (per-channel; reused across channels).
         let logmdct = &mut scratch_logmdct[..n2];
         for j in 0..n2 {
-            logmdct[j] = to_db(gmdct[i][j].abs()) + 0.345_f32;
+            logmdct[j] = add_345(to_db(gmdct[i][j].abs()));
         }
         let logmdct = &*logmdct; // immutable view downstream
         if crate::debug_flag!("LW_DEBUG_MDCT_RAW") {
@@ -602,5 +611,23 @@ pub(crate) fn mapping0_forward(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_345;
+
+    /// `x + .345` must round like C (double sum, one rounding to float), not
+    /// like an f32 add. Pinned from `cc -O0 -ffp-contract=off`:
+    /// `float x = -0.99999994f; float r = x + .345;` gives 0xbf27ae13, where
+    /// `x + .345f` gives 0xbf27ae14.
+    #[test]
+    fn add_345_matches_c_double_literal() {
+        let x = f32::from_bits(0xbf7f_ffff);
+        assert_eq!(add_345(x).to_bits(), 0xbf27_ae13);
+        assert_eq!((x + 0.345_f32).to_bits(), 0xbf27_ae14);
+        // Agrees with the f32 add wherever that is exact enough.
+        assert_eq!(add_345(-100.0), -100.0_f32 + 0.345_f32);
     }
 }

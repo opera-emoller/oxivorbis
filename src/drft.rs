@@ -489,6 +489,7 @@ fn drft_sine_peak() {
 
 #[test]
 fn drft_logfft_sine_440() {
+    use crate::mapping0::add_345;
     use crate::psy::to_db;
     use std::f32::consts::PI;
 
@@ -513,17 +514,17 @@ fn drft_logfft_sine_440() {
     drft_forward_n(&mut pcm);
 
     let scale = 4.0f32 / n as f32;
-    let scale_db = to_db(scale) + 0.345_f32;
+    let scale_db = add_345(to_db(scale));
 
     // Compute logfft
     let mut logfft = [0.0f32; 128]; // n2
-    let lam = scale_db + to_db(pcm[0]) + 0.345_f32;
+    let lam = add_345(scale_db + to_db(pcm[0]));
     logfft[0] = lam;
     let mut local_ampmax = lam;
     let mut j = 1usize;
     while j < n - 1 {
         let temp = pcm[j] * pcm[j] + pcm[j + 1] * pcm[j + 1];
-        let t = scale_db + 0.5_f32 * to_db(temp) + 0.345_f32;
+        let t = add_345(scale_db + 0.5_f32 * to_db(temp));
         logfft[(j + 1) >> 1] = t;
         if t > local_ampmax {
             local_ampmax = t;
