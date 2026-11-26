@@ -91,7 +91,9 @@ jobs:
               'parity oracle_parity_short_input' \
               'parity parity_oggenc_quality_conversion' \
               'parity parity_silence_' \
-              'dsp_manifest_'; do
+              'dsp_manifest_' \
+              'parity_f32 ' \
+              'streaming '; do
             n=$(grep -cF -- "$pat" "$RUNNER_TEMP/tests.txt" || true)
             echo "$pat: $n"
             [ "$n" -gt 0 ] || { echo "::error::no tests match '$pat'"; fail=1; }
