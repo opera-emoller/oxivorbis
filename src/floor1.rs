@@ -415,62 +415,62 @@ fn vorbis_dBquant(x: f32) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
+// fit_codes — per-line inputs shared by accumulate_fit and inspect_error
+// ---------------------------------------------------------------------------
+
+/// Bit set in a fit code when `mdct + twofitatten >= flr` for that line.
+const FIT_ABOVE: i32 = 1 << 16;
+
+/// For each line x < n: `vorbis_dBquant(flr[x])`, with [`FIT_ABOVE`] set
+/// when `mdct[x] + twofitatten >= flr[x]`. libvorbis recomputes both inside
+/// accumulate_fit and in every inspect_error call over overlapping ranges;
+/// they depend only on the line, so they are computed once per floor fit
+/// (an element-wise loop that vectorizes).
+fn fit_codes(flr: &[f32], mdct: &[f32], info: &Floor1Setup, out: &mut [i32]) {
+    let atten = info.twofitatten;
+    for ((o, &fv), &mv) in out.iter_mut().zip(flr).zip(mdct) {
+        let above = if mv + atten >= fv { FIT_ABOVE } else { 0 };
+        *o = vorbis_dBquant(fv) | above;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // accumulate_fit — port of accumulate_fit in floor1.c
 // ---------------------------------------------------------------------------
 
-fn accumulate_fit(
-    flr: &[f32],
-    mdct: &[f32],
-    x0: i32,
-    x1: i32,
-    a: &mut LsfitAcc,
-    n: i32,
-    info: &Floor1Setup,
-) -> i32 {
-    let mut xa = 0i32;
-    let mut ya = 0i32;
-    let mut x2a = 0i32;
-    let mut y2a = 0i32;
-    let mut xya = 0i32;
-    let mut na = 0i32;
-    let mut xb = 0i32;
-    let mut yb = 0i32;
-    let mut x2b = 0i32;
-    let mut y2b = 0i32;
-    let mut xyb = 0i32;
-    let mut nb = 0i32;
-
+fn accumulate_fit(codes: &[i32], x0: i32, x1: i32, a: &mut LsfitAcc, n: i32) -> i32 {
     *a = LsfitAcc::default();
     a.x0 = x0;
     a.x1 = x1;
     let x1 = if x1 >= n { n - 1 } else { x1 };
 
-    // Pre-slice both spectra to [x0..=x1] so the inner loop has no per-iter
-    // bounds checks on flr[i]/mdct[i].
+    // Integer sums, so the order they are formed in cannot change them:
+    // each line adds its terms to the "a" (mdct above the attenuated floor)
+    // or "b" set via a 0/1 weight instead of a branch, and the loop
+    // vectorizes. Lines whose quantized floor is 0 are skipped, as in C.
+    let (mut xa, mut ya, mut x2a, mut y2a, mut xya, mut na) = (0i32, 0i32, 0i32, 0i32, 0i32, 0i32);
+    let (mut xb, mut yb, mut x2b, mut y2b, mut xyb, mut nb) = (0i32, 0i32, 0i32, 0i32, 0i32, 0i32);
     let lo = x0 as usize;
     let hi = x1 as usize;
-    let flr_w = &flr[lo..=hi];
-    let mdct_w = &mdct[lo..=hi];
-    for (k, (&fv, &mv)) in flr_w.iter().zip(mdct_w.iter()).enumerate() {
+    for (k, &c) in codes[lo..=hi].iter().enumerate() {
         let i = x0 + k as i32;
-        let quantized = vorbis_dBquant(fv);
-        if quantized != 0 {
-            if mv + info.twofitatten >= fv {
-                xa += i;
-                ya += quantized;
-                x2a += i * i;
-                y2a += quantized * quantized;
-                xya += i * quantized;
-                na += 1;
-            } else {
-                xb += i;
-                yb += quantized;
-                x2b += i * i;
-                y2b += quantized * quantized;
-                xyb += i * quantized;
-                nb += 1;
-            }
-        }
+        let q = c & 0xffff;
+        let used = (q != 0) as i32;
+        let wa = used & (c >> 16);
+        let wb = used - wa;
+        let (ii, qq, iq) = (i * i, q * q, i * q);
+        xa += i * wa;
+        ya += q * wa;
+        x2a += ii * wa;
+        y2a += qq * wa;
+        xya += iq * wa;
+        na += wa;
+        xb += i * wb;
+        yb += q * wb;
+        x2b += ii * wb;
+        y2b += qq * wb;
+        xyb += iq * wb;
+        nb += wb;
     }
 
     a.xa = xa;
@@ -589,15 +589,7 @@ fn fit_line(a: &[LsfitAcc], fits: usize, y0: &mut i32, y1: &mut i32, info: &Floo
 // inspect_error — port of inspect_error in floor1.c
 // ---------------------------------------------------------------------------
 
-fn inspect_error(
-    x0: i32,
-    x1: i32,
-    y0: i32,
-    y1: i32,
-    mask: &[f32],
-    mdct: &[f32],
-    info: &Floor1Setup,
-) -> i32 {
+fn inspect_error(x0: i32, x1: i32, y0: i32, y1: i32, codes: &[i32], info: &Floor1Setup) -> i32 {
     let dy = y1 - y0;
     let adx = x1 - x0;
     let ady = dy.abs();
@@ -606,7 +598,8 @@ fn inspect_error(
     let mut x = x0;
     let mut y = y0;
     let mut err: i32 = 0;
-    let val = vorbis_dBquant(mask[x as usize]);
+    let c = codes[x as usize];
+    let val = c & 0xffff;
     let mut n: i32 = 0;
 
     let ady = ady - (base * adx).abs();
@@ -616,7 +609,7 @@ fn inspect_error(
     // C: `if(y+info->maxover<val)` — int + float < int promotes both sides to
     // float. For Q5 maxover/maxunder are integers (60/30) so the f32 path is
     // bit-identical to the prior i32 cast; preserved as f32 for non-Q5 floors.
-    if mdct[x as usize] + info.twofitatten >= mask[x as usize] {
+    if c & FIT_ABOVE != 0 {
         if (y as f32) + info.maxover < val as f32 {
             return 1;
         }
@@ -638,21 +631,19 @@ fn inspect_error(
             y += base;
         }
 
-        let val = vorbis_dBquant(mask[x as usize]);
+        let c = codes[x as usize];
+        let val = c & 0xffff;
         mse += (y - val) * (y - val);
         n += 1;
-        if mdct[x as usize] + info.twofitatten >= mask[x as usize] {
-            if val != 0 {
-                if (y as f32) + info.maxover < val as f32 {
-                    return 1;
-                }
-                if (y as f32) - info.maxunder > val as f32 {
-                    return 1;
-                }
-            }
+        // Same tests as libvorbis, evaluated without short-circuiting so
+        // the only branch is the (rarely taken) early return.
+        let checked = (c & FIT_ABOVE != 0) & (val != 0);
+        let over = (y as f32) + info.maxover < val as f32;
+        let under = (y as f32) - info.maxunder > val as f32;
+        if checked & (over | under) {
+            return 1;
         }
     }
-
     // C: `info->maxover*info->maxover/n > info->maxerr` — float*float / int
     // is f32 (int promotes to f32 for the division). Compared to f32 maxerr.
     if info.maxover * info.maxover / n as f32 > info.maxerr {
@@ -700,20 +691,23 @@ pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -
     let mut hineighbor = [1i32; VIF_POSIT + 2];
     let mut memo = [-1i32; VIF_POSIT + 2];
 
+    let mut codes_arr = [0i32; crate::window::MAX_LONG_HALF];
+    let codes = &mut codes_arr[..n as usize];
+    fit_codes(&logmask[..n as usize], &logmdct[..n as usize], info, codes);
+    let codes = &*codes;
+
     // quantize the relevant floor points and collect them into line fit
     // structures (one per minimal division) at the same time
     if posts == 0 {
-        nonzero += accumulate_fit(logmask, logmdct, 0, n, &mut fits[0], n, info);
+        nonzero += accumulate_fit(codes, 0, n, &mut fits[0], n);
     } else {
         for i in 0..(posts - 1) as usize {
             nonzero += accumulate_fit(
-                logmask,
-                logmdct,
+                codes,
                 look.sorted_index[i],
                 look.sorted_index[i + 1],
                 &mut fits[i],
                 n,
-                info,
             );
         }
     }
@@ -761,7 +755,7 @@ pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -
                         panic!("floor1_fit: post_Y returned -1 (internal error)");
                     }
 
-                    if inspect_error(lx, hx, ly, hy, logmask, logmdct, info) != 0 {
+                    if inspect_error(lx, hx, ly, hy, codes, info) != 0 {
                         // outside error bounds/begin search area.  Split it.
                         let mut ly0 = -200i32;
                         let mut ly1 = -200i32;
@@ -1376,7 +1370,9 @@ mod tests {
         };
 
         let mut a = LsfitAcc::default();
-        let na = accumulate_fit(&flr, &mdct, 0, n - 1, &mut a, n, &info);
+        let mut codes = vec![0i32; n as usize];
+        fit_codes(&flr, &mdct, &info, &mut codes);
+        let na = accumulate_fit(&codes, 0, n - 1, &mut a, n);
 
         // All samples have mdct + twofitatten < flr → should be in bucket b
         // (quantized flr_val = vorbis_dBquant(-20.0) which is nonzero)
