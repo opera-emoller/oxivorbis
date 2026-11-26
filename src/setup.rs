@@ -10,6 +10,7 @@ use crate::codebook::{Codebook, unpack_codebook};
 use crate::floor1::{Floor1State, floor1_look, unpack_floor1};
 use crate::psy::VorbisInfoMapping0;
 use crate::residue::{ResidueLook, ResidueSetup, residue_look, unpack_residue};
+use crate::setup_gen::EncodeParams;
 
 use crate::bitpack::ov_ilog;
 
@@ -76,6 +77,8 @@ pub(crate) enum SetupError {
     BadChannels,
     BadModeWindowtype,
     BadBitstream,
+    /// `EncodeParams` does not have one entry per floor / residue.
+    ParamsMismatch,
 }
 
 impl From<crate::codebook::CodebookError> for SetupError {
@@ -98,10 +101,13 @@ impl From<crate::residue::ResidueError> for SetupError {
 // unpack_q5_setup: parse the full setup blob
 // ---------------------------------------------------------------------------
 
+/// Parses a setup header. `params` supplies the encode-only floor/residue
+/// fields (one entry per floor / residue, in header order), normally from
+/// [`crate::setup_gen::build_setup`].
 pub(crate) fn unpack_q5_setup(
     blob: &[u8],
     channels: usize,
-    rate_hz: u32,
+    params: &EncodeParams,
 ) -> Result<Q5Setup, SetupError> {
     if blob.len() < 7 || &blob[0..7] != b"\x05vorbis" {
         return Err(SetupError::BadMagic);
@@ -130,36 +136,31 @@ pub(crate) fn unpack_q5_setup(
             return Err(SetupError::BadBitstream);
         }
         let mut setup = unpack_floor1(&mut r, books_count)?;
-        // Wire up Floor1Setup encode-side fields.
-        // Values from libvorbis lib/modes/floor_all.h:
-        //   floor[5] (128x17): maxover=60, maxunder=30, maxerr=500, twofitweight=1, twofitatten=18
-        //   floor[7] (1024x27): maxover=60, maxunder=30, maxerr=500, twofitweight=3, twofitatten=18
-        setup.maxover = 60.0;
-        setup.maxunder = 30.0;
-        setup.maxerr = 500.0;
-        // n is the lowpass-limited bin count for this floor.
-        // libvorbis sets f->n = freq/nyq*blocksize where freq=lowpass_kHz*1000,
-        // nyq=rate/2, blocksize=blocksizes[block]/2.
-        // For Q5 at 44100 Hz: lowpass=18.9 kHz, nyq=22050.
-        //   short floor (postlist[1]=128):  18900/22050*128 = 109
-        //   long floor  (postlist[1]=1024): 18900/22050*1024 = 877
-        let postlist1 = setup.postlist[1];
-        let nyq = (rate_hz as f64) / 2.0;
-        let lowpass_hz = 18900.0_f64;
-        setup.n = ((lowpass_hz / nyq) * postlist1 as f64) as i32;
-        // twofitweight: 1 for short floors, 3 for long floors
-        setup.twofitweight = if postlist1 == 128 { 1.0 } else { 3.0 };
-        setup.twofitatten = 18.0;
+        // Encode-side fields are not in the bitstream; they come from the
+        // libvorbis floor1 template (see setup_gen).
+        let p = params
+            .floors
+            .get(floor_setups.len())
+            .ok_or(SetupError::ParamsMismatch)?;
+        setup.maxover = p.maxover;
+        setup.maxunder = p.maxunder;
+        setup.maxerr = p.maxerr;
+        setup.twofitweight = p.twofitweight;
+        setup.twofitatten = p.twofitatten;
         if crate::debug_flag!("LW_DEBUG_SETUP") {
             eprintln!(
-                "  floor: n={} postlist[1]={} partitions={}",
-                setup.n, setup.postlist[1], setup.partitions
+                "  floor: postlist[1]={} partitions={}",
+                setup.postlist[1], setup.partitions
             );
         }
         floor_setups.push(setup);
     }
     if crate::debug_flag!("LW_DEBUG_SETUP") {
         eprintln!("floors_count={}", floors_count);
+    }
+
+    if floor_setups.len() != params.floors.len() {
+        return Err(SetupError::ParamsMismatch);
     }
 
     // Build floor states (look structs)
@@ -172,56 +173,20 @@ pub(crate) fn unpack_q5_setup(
     for _ in 0..residues_count {
         let residue_type = r.read(16) as u16;
         let mut setup = unpack_residue(&mut r, books_count)?;
-        // Wire up classmetric1/classmetric2 from libvorbis residue templates.
-        // The setup blob doesn't carry these values; they're hardcoded per
-        // template and selected in vorbis_encode_residue_setup based on quality
-        // and channel layout. residue_type:
-        //   1 = uncoupled (mono) → _residue_44_*_un templates
-        //   2 = coupled (stereo, interleaved) → _residue_44_* templates
-        // Both share the same partition counts but have different classmetric
-        // values; see lib/modes/residue_44.h.
-        let coupled = residue_type == 2;
-        if setup.partitions == 10 {
-            let (cm1, cm2): ([i32; 9], [i32; 9]) = if coupled {
-                // _residue_44_mid (Q5 stereo, partitions=10)
-                (
-                    [0, 1, 1, 2, 2, 4, 8, 16, 32],
-                    [0, 0, 999, 0, 999, 4, 8, 16, 32],
-                )
-            } else {
-                // _residue_44_mid_un (Q5 mono, partitions=10)
-                (
-                    [0, 1, 1, 2, 2, 4, 4, 16, 60],
-                    [-1, 30, -1, 50, -1, 80, -1, -1, -1],
-                )
-            };
-            for (i, &v) in cm1.iter().enumerate() {
-                setup.classmetric1[i] = v;
-            }
-            for (i, &v) in cm2.iter().enumerate() {
-                setup.classmetric2[i] = v;
-            }
-            setup.classmetric1[9] = 0;
-            setup.classmetric2[9] = 0;
-        } else if setup.partitions == 8 {
-            let (cm1, cm2): ([i32; 7], [i32; 7]) = if coupled {
-                // _residue_44_low classmetric values
-                ([0, 1, 2, 2, 4, 8, 16], [0, 0, 0, 999, 4, 8, 16])
-            } else {
-                // _residue_44_low_un (current mono case)
-                ([0, 1, 1, 2, 2, 4, 28], [-1, 25, -1, 45, -1, -1, -1])
-            };
-            for (i, &v) in cm1.iter().enumerate() {
-                setup.classmetric1[i] = v;
-            }
-            for (i, &v) in cm2.iter().enumerate() {
-                setup.classmetric2[i] = v;
-            }
-            setup.classmetric1[7] = 0;
-            setup.classmetric2[7] = 0;
-        }
+        // classmetric1/2 are encode-only; they come from the libvorbis
+        // residue template (see setup_gen).
+        let p = params
+            .residues
+            .get(residue_setups.len())
+            .ok_or(SetupError::ParamsMismatch)?;
+        setup.classmetric1 = p.classmetric1;
+        setup.classmetric2 = p.classmetric2;
         residue_types.push(residue_type);
         residue_setups.push(setup);
+    }
+
+    if residue_setups.len() != params.residues.len() {
+        return Err(SetupError::ParamsMismatch);
     }
 
     // Build residue looks
@@ -370,30 +335,28 @@ pub(crate) fn q5_setup_for(rate: SampleRate, channels: Channels) -> &'static Q5S
         Q5_SETUP_MONO44, Q5_SETUP_MONO48, Q5_SETUP_STEREO44, Q5_SETUP_STEREO48,
     };
 
+    fn parse(blob: &[u8], ch: usize, rate_hz: u32) -> Q5Setup {
+        let (base, lowpass) = crate::setup_gen::vbr_setting(rate_hz, ch, 0.5);
+        let params = crate::setup_gen::build_setup(rate_hz, ch, base, lowpass).params;
+        unpack_q5_setup(blob, ch, &params).expect("Q5 setup parse failed")
+    }
+
     match (rate, channels) {
         (SampleRate::Hz44100, Channels::Mono) => {
             static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| {
-                unpack_q5_setup(Q5_SETUP_MONO44, 1, 44100).expect("mono44 setup parse failed")
-            })
+            CACHE.get_or_init(|| parse(Q5_SETUP_MONO44, 1, 44100))
         }
         (SampleRate::Hz48000, Channels::Mono) => {
             static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| {
-                unpack_q5_setup(Q5_SETUP_MONO48, 1, 48000).expect("mono48 setup parse failed")
-            })
+            CACHE.get_or_init(|| parse(Q5_SETUP_MONO48, 1, 48000))
         }
         (SampleRate::Hz44100, Channels::Stereo) => {
             static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| {
-                unpack_q5_setup(Q5_SETUP_STEREO44, 2, 44100).expect("stereo44 setup parse failed")
-            })
+            CACHE.get_or_init(|| parse(Q5_SETUP_STEREO44, 2, 44100))
         }
         (SampleRate::Hz48000, Channels::Stereo) => {
             static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| {
-                unpack_q5_setup(Q5_SETUP_STEREO48, 2, 48000).expect("stereo48 setup parse failed")
-            })
+            CACHE.get_or_init(|| parse(Q5_SETUP_STEREO48, 2, 48000))
         }
     }
 }

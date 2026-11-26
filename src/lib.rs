@@ -46,6 +46,8 @@ mod lpc;
 mod mapping0;
 mod quality;
 mod setup;
+mod setup_gen;
+mod setup_templates;
 mod window;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

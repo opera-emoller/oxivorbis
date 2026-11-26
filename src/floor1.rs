@@ -48,8 +48,6 @@ pub(crate) struct Floor1Setup {
     pub maxerr: f32,
     pub twofitweight: f32,
     pub twofitatten: f32,
-
-    pub n: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +139,6 @@ pub(crate) fn unpack_floor1(
         maxerr: 0.0,
         twofitweight: 0.0,
         twofitatten: 0.0,
-        n: 0,
     };
 
     // read partitions
@@ -1433,7 +1430,6 @@ mod tests {
             maxerr: 100.0,
             twofitweight: 10.0,
             twofitatten: 4.0,
-            n,
         };
 
         let mut a = LsfitAcc::default();
