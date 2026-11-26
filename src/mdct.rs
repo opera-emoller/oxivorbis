@@ -9,9 +9,6 @@
 #![allow(clippy::eq_op)]
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::approx_constant)]
-// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
-// yet; the fixed-size wrappers still are. Drop once call sites switch.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::tables::trig::{
     BITREV_128, BITREV_256, BITREV_512, BITREV_2048, BITREV_4096, SCALE_128, SCALE_256, SCALE_512,
@@ -493,18 +490,9 @@ fn mdct_forward_core(input: &[f32], output: &mut [f32], tab: &MdctTables, w: &mu
     }
 }
 
+/// The 2048-point MDCT (public for the integration tests).
 pub fn mdct_forward(input: &[f32; N], output: &mut [f32; N2]) {
-    mdct_forward_long(input, output)
-}
-
-/// Fixed-size wrapper: the 2048-point (q0..q10 long block) MDCT.
-pub(crate) fn mdct_forward_long(input: &[f32; N], output: &mut [f32; N2]) {
     mdct_forward_with(&MDCT_2048, input, output);
-}
-
-/// Fixed-size wrapper: the 256-point (q0..q10 short block) MDCT.
-pub(crate) fn mdct_forward_short(input: &[f32; 256], output: &mut [f32; 128]) {
-    mdct_forward_with(&MDCT_256, input, output);
 }
 
 /// MDCT for envelope detection (n=128, used by `_ve_amp`; fixed in libvorbis
@@ -550,24 +538,10 @@ mod tests {
         }
     }
 
-    /// The fixed-size wrappers the encoder calls today must stay
-    /// bit-identical to the generic entry point it will switch to.
+    /// The fixed-size 128-point envelope MDCT must stay bit-identical to
+    /// the generic entry point.
     #[test]
-    fn fixed_wrappers_match_generic() {
-        let inp = lcg_input(2048, 99);
-        let mut a = [0.0f32; 1024];
-        mdct_forward_long(inp.as_slice().try_into().unwrap(), &mut a);
-        let mut b = vec![0.0f32; 1024];
-        mdct_forward_n(&inp, &mut b);
-        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
-
-        let inp = lcg_input(256, 98);
-        let mut a = [0.0f32; 128];
-        mdct_forward_short(inp.as_slice().try_into().unwrap(), &mut a);
-        let mut b = vec![0.0f32; 128];
-        mdct_forward_n(&inp, &mut b);
-        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
-
+    fn envelope_wrapper_matches_generic() {
         let inp = lcg_input(128, 97);
         let mut a = [0.0f32; 64];
         mdct_forward_envelope(inp.as_slice().try_into().unwrap(), &mut a);

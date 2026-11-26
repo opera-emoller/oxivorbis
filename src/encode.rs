@@ -15,7 +15,7 @@ use crate::mapping0::{BlockMode, mapping0_forward};
 use crate::ogg_pages::OggStreamWriter;
 use crate::psy::{VorbisLookPsy, vp_psy_init};
 use crate::setup::encoder_setup_for;
-use crate::window::{LONG_BLOCK, LONG_HALF, SHORT_BLOCK, SHORT_HALF, WindowingBuffer};
+use crate::window::{BlockSizes, WindowingBuffer};
 use crate::{Channels, SampleRate};
 
 // Samples per vorbis_analysis_buffer/wrote call in the reference encoder
@@ -23,9 +23,6 @@ use crate::{Channels, SampleRate};
 const ANALYSIS_CHUNK: usize = 64;
 // LPC order used by libvorbis _preextrapolate_helper
 const LPC_ORDER: usize = 16;
-// centerW = blocksizes[1]/2 = 2048/2 = 1024 (every template with is >= 1,
-// i.e. q0..q10; q-1's 4096-sample long blocks are rejected at entry).
-const CENTER_W: usize = LONG_HALF;
 
 // ---------------------------------------------------------------------------
 // encode_impl / encode_with_serial: main encode entry point
@@ -33,15 +30,16 @@ const CENTER_W: usize = LONG_HALF;
 
 /// Port of libvorbis `_preextrapolate_helper`.
 ///
-/// Given the full PCM for one channel, compute `CENTER_W` pre-stream samples.
-/// Returns a Vec of `CENTER_W` samples where index `k` corresponds to virtual
+/// Given the PCM for one channel, compute `center_w` (= blocksizes[1]/2)
+/// pre-stream samples.
+/// Returns a Vec of `center_w` samples where index `k` corresponds to virtual
 /// sample `pcm[centerW - 1 - k]` in libvorbis (i.e., predicted[0] = sample at -1).
 ///
 /// These are filled into `win_bufs[c].prev_short` via `set_prestream`.
-fn preextrapolate_channel(pcm: &[f32]) -> [f32; CENTER_W] {
+fn preextrapolate_channel(pcm: &[f32], center_w: usize) -> Vec<f32> {
     let n = pcm.len();
 
-    let mut result = [0.0f32; CENTER_W];
+    let result = vec![0.0f32; center_w];
 
     // Safety check: need more than 2*LPC_ORDER samples
     if n <= LPC_ORDER * 2 {
@@ -68,9 +66,9 @@ fn preextrapolate_channel(pcm: &[f32]) -> [f32; CENTER_W] {
         eprintln!("LW_LPC_PRIME: [{}]", vals.join(","));
     }
 
-    // Predict CENTER_W samples forward in reversed domain
-    let mut predicted = vec![0.0f32; CENTER_W];
-    lpc_predict(&lpc_coeffs, &prime, LPC_ORDER, &mut predicted, CENTER_W);
+    // Predict center_w samples forward in reversed domain
+    let mut predicted = vec![0.0f32; center_w];
+    lpc_predict(&lpc_coeffs, &prime, LPC_ORDER, &mut predicted, center_w);
 
     if crate::debug_flag!("LW_DEBUG_LPC") {
         let vals: Vec<String> = predicted[..8]
@@ -83,19 +81,13 @@ fn preextrapolate_channel(pcm: &[f32]) -> [f32; CENTER_W] {
     // Write-back in libvorbis: pcm[centerW - 1 - k] = predicted[k]
     // (equivalent to pcm[0..centerW] = predicted[centerW-1..0])
     // So result[k] = predicted[k] (k=0 is virtual sample at -1)
-    result.copy_from_slice(&predicted);
-    result
+    predicted
 }
 
+/// q0..q10 (256/2048) pre-extrapolation, for the envelope unit tests.
 #[cfg(test)]
-pub(crate) fn pre_extrap_for_test(pcm: &[f32]) -> [f32; CENTER_W] {
-    preextrapolate_channel(pcm)
-}
-
-#[cfg(test)]
-pub(crate) fn post_extrap_for_test(pcm: &[f32]) -> Vec<f32> {
-    let pre = [0.0f32; CENTER_W];
-    postextrapolate_channel(&pre, pcm, pcm.len())
+pub(crate) fn pre_extrap_for_test(pcm: &[f32]) -> Vec<f32> {
+    preextrapolate_channel(pcm, BlockSizes::BS_256_2048.long_half())
 }
 
 /// Port of libvorbis post-stream LPC extrapolation (block.c lines 487-527).
@@ -105,7 +97,6 @@ pub(crate) fn post_extrap_for_test(pcm: &[f32]) -> Vec<f32> {
 /// samples. The predictions fill out the right side of the last data block(s)
 /// so the encoder doesn't see a discontinuity from audio to zero.
 const LPC_ORDER_POST: usize = 32;
-const POST_EXTRAPOLATE_LEN: usize = LONG_BLOCK * 3; // libvorbis blocksizes[1]*3 = 6144
 
 /// Post-extrapolate one channel the way libvorbis does at
 /// `vorbis_analysis_wrote(0)`.
@@ -120,13 +111,15 @@ const POST_EXTRAPOLATE_LEN: usize = LONG_BLOCK * 3; // libvorbis blocksizes[1]*3
 /// the whole thing is skipped (zero-fill) when `eofflag <= 64`.
 ///
 /// `pre[k]` is the pre-extrapolated sample at virtual index `-(k+1)`
-/// (the layout `preextrapolate_channel` returns).
-fn postextrapolate_channel(pre: &[f32], audio: &[f32], eofflag: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; POST_EXTRAPOLATE_LEN];
+/// (the layout `preextrapolate_channel` returns). Returns the
+/// `blocksizes[1]*3` predicted samples following the audio.
+fn postextrapolate_channel(pre: &[f32], audio: &[f32], eofflag: usize, bs_long: usize) -> Vec<f32> {
+    let post_len = bs_long * 3;
+    let mut out = vec![0.0f32; post_len];
     if eofflag <= LPC_ORDER_POST * 2 {
         return out; // libvorbis falls back to zero-fill (memset)
     }
-    let n_train = eofflag.min(LONG_BLOCK);
+    let n_train = eofflag.min(bs_long);
     // Materialize the last n_train samples of [pre ++ audio].
     let total = pre.len() + audio.len();
     debug_assert!(n_train <= total);
@@ -145,7 +138,7 @@ fn postextrapolate_channel(pre: &[f32], audio: &[f32], eofflag: usize) -> Vec<f3
         &buf[n_train - LPC_ORDER_POST..],
         LPC_ORDER_POST,
         &mut out,
-        POST_EXTRAPOLATE_LEN,
+        post_len,
     );
     out
 }
@@ -244,23 +237,21 @@ pub(crate) fn encode_with_base_quality_and_meta(
         (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base_quality),
         "base_quality {base_quality} outside libvorbis's -0.1..=1.0 (oggenc -q -1..10)"
     );
-    assert!(
-        base_quality >= 0.0,
-        "q-1 not yet supported (base_quality {base_quality} selects 512/4096-sample blocks)"
-    );
 
     // Quality-derived parameters + setup header (codebooks, floors,
     // residues, mappings, modes), cached per (rate, channels, quality).
     let enc_setup = encoder_setup_for(rate_hz as u32, ch, base_quality);
     let cfg = &enc_setup.cfg;
     let setup = &enc_setup.setup;
-    // The DSP (window/MDCT/FFT/envelope) is still sized for 256/2048.
-    assert!(
-        cfg.blocksizes == [SHORT_BLOCK, LONG_BLOCK],
-        "q-1 not yet supported (blocksizes {:?})",
-        cfg.blocksizes
-    );
-    let [bs_short, bs_long] = cfg.blocksizes;
+    // 256/2048 for q0..q10, 512/4096 for q-1.
+    let bs = BlockSizes {
+        short: cfg.blocksizes[0],
+        long: cfg.blocksizes[1],
+    };
+    // libvorbis centerW = blocksizes[1]/2: the pre-extrapolated prefix of
+    // its analysis buffer and the offset of audio[0] in envelope space.
+    let center_w = bs.long_half();
+    let post_len = bs.long * 3;
 
     // libvorbis VBR setups always have mode 0 = short (blockflag=0) and
     // mode 1 = long (blockflag=1).
@@ -283,10 +274,11 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // impulse / padding (short, n2 = bs0/2), transition / long (n2 = bs1/2).
     let gi = &cfg.psy_global;
     let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
-    let psy_look_long: VorbisLookPsy = vp_psy_init(vi_long, gi, bs_long / 2, rate_hz);
-    let psy_look_transition: VorbisLookPsy = vp_psy_init(vi_transition, gi, bs_long / 2, rate_hz);
-    let psy_look_short: VorbisLookPsy = vp_psy_init(vi_impulse, gi, bs_short / 2, rate_hz);
-    let psy_look_padding: VorbisLookPsy = vp_psy_init(vi_padding, gi, bs_short / 2, rate_hz);
+    let psy_look_long: VorbisLookPsy = vp_psy_init(vi_long, gi, bs.long_half(), rate_hz);
+    let psy_look_transition: VorbisLookPsy =
+        vp_psy_init(vi_transition, gi, bs.long_half(), rate_hz);
+    let psy_look_short: VorbisLookPsy = vp_psy_init(vi_impulse, gi, bs.short_half(), rate_hz);
+    let psy_look_padding: VorbisLookPsy = vp_psy_init(vi_padding, gi, bs.short_half(), rate_hz);
 
     // De-interleave input into per-channel buffers
     let total_samples = if ch > 1 {
@@ -311,7 +303,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // envelope detection of leading transients), then a long transition
     // block, then long mainline blocks, then a flush block at EOS.
     //
-    //   first_long_start = (n_short_blocks - 1) * SHORT_HALF + 576
+    //   first_long_start = (n_short_blocks - 1) * short/2 + 576 (256/2048)
     //   - 576 for n_short=1 (sine/silence)
     //   - 704 for n_short=2 (ramp transient)
     //
@@ -330,30 +322,30 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // `postextrapolate_channel`). Getting eofflag wrong produces diverging
     // post-extrap samples → diverging envelope marks at the very end of the
     // stream. We resolve the chicken-and-egg (eofflag depends on marks via
-    // `simulate_eofflag`, marks depend on env_pcm post-extrap which depends
+    // `simulate_eofflag_bs`, marks depend on env_pcm post-extrap which depends
     // on eofflag) by iterating to a fixed point. In practice 2 passes
     // suffice (long streams converge in 1 since n_train clamps to bs1
     // either way).
     // Pre-extrapolation fires once pcm_current - centerW > blocksizes[1],
-    // i.e. after blocksizes[1] + one 64-sample analysis chunk (2112 for the
-    // 2048-sample long block of q0..q10).
-    let lpc_n = bs_long + ANALYSIS_CHUNK;
+    // i.e. after blocksizes[1] + one 64-sample analysis chunk (2112 for
+    // 256/2048, 4160 for 512/4096).
+    let lpc_n = bs.long + ANALYSIS_CHUNK;
     let lpc_train_end = lpc_n.min(total_samples);
-    let pre_per_channel: Vec<[f32; CENTER_W]> = (0..ch)
-        .map(|c| preextrapolate_channel(&pcm_channels[c][..lpc_train_end]))
+    let pre_per_channel: Vec<Vec<f32>> = (0..ch)
+        .map(|c| preextrapolate_channel(&pcm_channels[c][..lpc_train_end], center_w))
         .collect();
     let build_post = |eofflag: usize| -> Vec<Vec<f32>> {
         (0..ch)
-            .map(|c| postextrapolate_channel(&pre_per_channel[c], &pcm_channels[c], eofflag))
+            .map(|c| {
+                postextrapolate_channel(&pre_per_channel[c], &pcm_channels[c], eofflag, bs.long)
+            })
             .collect()
     };
     let build_env_pcm = |post: &[Vec<f32>]| -> Vec<Vec<f32>> {
         let mut env_pcm: Vec<Vec<f32>> = Vec::with_capacity(ch);
         for c in 0..ch {
-            let mut buf = Vec::with_capacity(CENTER_W + total_samples + POST_EXTRAPOLATE_LEN);
-            for k in 0..CENTER_W {
-                buf.push(pre_per_channel[c][CENTER_W - 1 - k]);
-            }
+            let mut buf = Vec::with_capacity(center_w + total_samples + post_len);
+            buf.extend(pre_per_channel[c].iter().rev());
             buf.extend_from_slice(&pcm_channels[c]);
             buf.extend_from_slice(&post[c]);
             env_pcm.push(buf);
@@ -362,11 +354,11 @@ pub(crate) fn encode_with_base_quality_and_meta(
     };
     // The post-extrapolation depends on eofflag only through
     // n = min(eofflag, bs1) and the `eofflag > 2*order` guard.
-    let post_key = |eofflag: usize| (eofflag.min(LONG_BLOCK), eofflag > LPC_ORDER_POST * 2);
+    let post_key = |eofflag: usize| (eofflag.min(bs.long), eofflag > LPC_ORDER_POST * 2);
 
     // Initial guess: nothing drained before EOS (eofflag = centerW + audio);
     // exact for short inputs, and long inputs clamp to n = bs1 anyway.
-    let mut eofflag_lpc = CENTER_W + total_samples;
+    let mut eofflag_lpc = center_w + total_samples;
     let mut iterations = 0;
     let (block_w, env_marks, block_curmarks, post_predicted) = loop {
         let post = build_post(eofflag_lpc);
@@ -374,19 +366,23 @@ pub(crate) fn encode_with_base_quality_and_meta(
         let marks = crate::envelope::compute_marks(&env_pcm, gi);
         // Re-derive eofflag using these marks; if it implies a different
         // post-extrapolation, rebuild env_pcm (and thus the marks).
-        let eof_candidate =
-            crate::envelope::simulate_eofflag(&marks, total_samples as i64, ANALYSIS_CHUNK as i64)
-                as usize;
+        let eof_candidate = crate::envelope::simulate_eofflag_bs(
+            bs,
+            &marks,
+            total_samples as i64,
+            ANALYSIS_CHUNK as i64,
+        ) as usize;
         iterations += 1;
         if post_key(eof_candidate) == post_key(eofflag_lpc) || iterations >= 8 {
             debug_assert!(post_key(eof_candidate) == post_key(eofflag_lpc));
             eofflag_lpc = eof_candidate;
             // libvorbis terminates emission at v->centerW >= v->eofflag.
             // eofflag is the END OF REAL AUDIO position. In env_pcm coords
-            // that's CENTER_W (pre-extrap) + total_samples; post-extrap
+            // that's center_w (pre-extrap) + total_samples; post-extrap
             // content extends the marks array but doesn't extend eofflag.
-            let n_eof = (CENTER_W + total_samples) as i64;
-            let (pattern, curmarks) = crate::envelope::full_w_pattern_with_curmark(&marks, n_eof);
+            let n_eof = (center_w + total_samples) as i64;
+            let (pattern, curmarks) =
+                crate::envelope::full_w_pattern_with_curmark_bs(bs, &marks, n_eof);
             break (pattern, marks, curmarks, post);
         }
         eofflag_lpc = eof_candidate;
@@ -404,25 +400,13 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // block's start (libvorbis centerW evolution; first block at 0).
     let block_starts: Vec<usize> = {
         let mut starts = Vec::with_capacity(block_w.len());
-        let mut start: i64 = 0;
+        let mut start: usize = 0;
         let mut prev_w: i32 = 0;
         for (i, &w) in block_w.iter().enumerate() {
-            if i == 0 {
-                starts.push(0);
-            } else {
-                let advance = (if prev_w == 1 {
-                    bs_long as i64
-                } else {
-                    bs_short as i64
-                }) / 4
-                    + (if w == 1 {
-                        bs_long as i64
-                    } else {
-                        bs_short as i64
-                    }) / 4;
-                start += advance;
-                starts.push(start as usize);
+            if i > 0 {
+                start += bs.get(prev_w == 1) / 4 + bs.get(w == 1) / 4;
             }
+            starts.push(start);
             prev_w = w;
         }
         starts
@@ -431,7 +415,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // Per-short-block IMPULSE vs PADDING decision (libvorbis _ve_envelope_mark).
     // A short block is IMPULSE if any envelope mark falls within centerW±bs/2.
     // centerW for envelope-mark space includes the LPC pre-extrap offset
-    // (CENTER_W = 1024 samples).
+    // (center_w = blocksizes[1]/2 samples).
     // libvorbis decides IMPULSE vs PADDING for each short block via
     // _ve_envelope_mark, which scans the envelope-mark buffer in a window
     // around centerW. For the very first short block, libvorbis fires its
@@ -452,8 +436,8 @@ pub(crate) fn encode_with_base_quality_and_meta(
             if w != 0 {
                 false
             } else {
-                let center_w_in_env = (start + CENTER_W) as i64;
-                crate::envelope::short_is_impulse(&env_marks, curmark, center_w_in_env)
+                let center_w_in_env = (start + center_w) as i64;
+                crate::envelope::short_is_impulse_bs(bs, &env_marks, curmark, center_w_in_env)
             }
         })
         .collect();
@@ -496,31 +480,20 @@ pub(crate) fn encode_with_base_quality_and_meta(
     }
 
     // Windowing buffers per channel
-    let mut win_bufs: Vec<WindowingBuffer> = (0..ch).map(|_| WindowingBuffer::new()).collect();
+    let mut win_bufs: Vec<WindowingBuffer> = (0..ch)
+        .map(|_| WindowingBuffer::with_blocksizes(bs))
+        .collect();
 
     // Pre-stream LPC extrapolation (port of libvorbis _preextrapolate_helper).
-    // Fill in virtual samples before the stream start so the first short block's
-    // left half contains LPC-predicted continuations instead of zeros.
-    //
-    // libvorbis triggers _preextrapolate_helper when pcm_current - centerW > blocksizes[1].
-    // centerW = 1024, chunk_size = 1024. After 3 chunks:
-    //   pcm_current = centerW + 3*1024 = 4096
-    //   pcm_current - centerW = 3072 > blocksizes[1]=2048 → trigger fires
-    // LPC trains on work[0..n_lpc] where n_lpc = pcm_current - centerW = 3072.
-    // work[j] = pcm[pcm_current-j-1] for j=0..pcm_current-1.
-    // work[0..3072] = pcm[4095..1024] reversed = audio[0..3071] reversed.
-    // (audio[i] = pcm[i + centerW], so pcm[1024] = audio[0], pcm[4095] = audio[3071])
-    // Equivalent: train on audio[0..3072], reversed.
-    // n_lpc matching ffmpeg's libvorbis encoder (frame_size=64 → n_lpc=2112).
-    // libvorbis triggers preextrapolation when pcm_current - centerW > blocksizes[1].
-    // With frame_size=64: trigger fires after 33 frames → pcm_current=3136, n_lpc=2112.
-    let lpc_end = lpc_n.min(total_samples);
-    let lpc_start = 0usize;
+    // Fill in virtual samples before the stream start so the first short
+    // block's left half contains LPC-predicted continuations instead of
+    // zeros. libvorbis triggers the helper once pcm_current - centerW >
+    // blocksizes[1], i.e. after bs1 + one 64-sample chunk of audio (lpc_n),
+    // and trains on that audio reversed (pre_per_channel above). Only the
+    // short/2 samples nearest the stream start reach the first block.
     for c in 0..ch {
-        let prestream = preextrapolate_channel(&pcm_channels[c][lpc_start..lpc_end]);
-        // prestream[k] = virtual sample at -(k+1)
-        // win_bufs[c].prev_short[SHORT_HALF-1-k] = prestream[k]
-        win_bufs[c].set_prestream(&prestream[..SHORT_HALF]);
+        // pre_per_channel[c][k] = virtual sample at -(k+1)
+        win_bufs[c].set_prestream(&pre_per_channel[c][..bs.short_half()]);
     }
 
     // Per-block analysis state. Under `feature = "parallel"`, blocks are
@@ -567,6 +540,32 @@ pub(crate) fn encode_with_base_quality_and_meta(
     #[cfg(feature = "parallel")]
     let mut jobs: Vec<BlockJob> = Vec::with_capacity(total_blocks);
 
+    // Copy `dst.len()` samples of channel `c` starting at `start` from
+    // [audio ++ post-extrapolation ++ zeros].
+    let read_range = |c: usize, start: usize, dst: &mut [f32]| {
+        let audio = &pcm_channels[c];
+        let post = &post_predicted[c];
+        let mut k = 0;
+        let mut idx = start;
+        if idx < total_samples {
+            let n = dst.len().min(total_samples - idx);
+            dst[..n].copy_from_slice(&audio[idx..idx + n]);
+            k = n;
+            idx += n;
+        }
+        if k < dst.len() {
+            let p = idx - total_samples;
+            if p < post.len() {
+                let n = (dst.len() - k).min(post.len() - p);
+                dst[k..k + n].copy_from_slice(&post[p..p + n]);
+                k += n;
+            }
+            dst[k..].fill(0.0);
+        }
+    };
+    // Current-half scratch, reused across blocks and channels.
+    let mut cur_buf = vec![0.0f32; bs.long_half()];
+
     for block_idx in 0..total_blocks {
         let cur_w = block_w[block_idx];
         let prev_w = if block_idx == 0 {
@@ -593,36 +592,15 @@ pub(crate) fn encode_with_base_quality_and_meta(
         let windowed_blocks: Vec<Vec<f32>>;
         let block_mode: BlockMode;
 
-        // Helper to read a sample, falling back to post-extrapolation past EOS.
-        let read_sample = |c: usize, idx: usize| -> f32 {
-            if idx < total_samples {
-                pcm_channels[c][idx]
-            } else {
-                let post_idx = idx - total_samples;
-                if post_idx < post_predicted[c].len() {
-                    post_predicted[c][post_idx]
-                } else {
-                    0.0
-                }
-            }
-        };
-
         if is_short {
-            let current_blocks_short: Vec<[f32; SHORT_HALF]> = (0..ch)
-                .map(|c| {
-                    let mut blk = [0.0f32; SHORT_HALF];
-                    for i in 0..SHORT_HALF {
-                        blk[i] = read_sample(c, block_start + i);
-                    }
-                    blk
-                })
-                .collect();
-
+            let sh = bs.short_half();
             windowed_blocks = (0..ch)
                 .map(|c| {
-                    win_bufs[c]
-                        .push_short_block(&current_blocks_short[c])
-                        .to_vec()
+                    let current = &mut cur_buf[..sh];
+                    read_range(c, block_start, current);
+                    let mut out = vec![0.0f32; bs.short];
+                    win_bufs[c].push_short_block_into(current, &mut out);
+                    out
                 })
                 .collect();
 
@@ -646,10 +624,11 @@ pub(crate) fn encode_with_base_quality_and_meta(
             };
         } else {
             // For a long block whose previous block was short, the un-windowed
-            // middle section of the analysis frame needs the 448 samples
-            // preceding `block_start` (= the gap between the prev short
-            // block's right edge and this long block's current half).
-            let mid_len = LONG_HALF - (LONG_BLOCK / 4 - SHORT_BLOCK / 4) - SHORT_HALF; // 448
+            // middle section of the analysis frame needs the long/4 - short/4
+            // samples preceding `block_start` (448 for 256/2048, 896 for
+            // 512/4096: the gap between the prev short block's right edge and
+            // this long block's current half).
+            let mid_len = bs.long_short_gap();
             let pre_current_data: Option<Vec<Vec<f32>>> = if !prev_is_long {
                 Some(
                     (0..ch)
@@ -657,9 +636,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
                             let pre_start = block_start.saturating_sub(mid_len);
                             let pre_end = block_start;
                             let mut pre = vec![0.0f32; mid_len];
-                            for (i, idx) in (pre_start..pre_end).enumerate() {
-                                pre[i] = read_sample(c, idx);
-                            }
+                            read_range(c, pre_start, &mut pre[..pre_end - pre_start]);
                             pre
                         })
                         .collect(),
@@ -668,22 +645,15 @@ pub(crate) fn encode_with_base_quality_and_meta(
                 None
             };
 
-            let current_blocks_long: Vec<[f32; LONG_HALF]> = (0..ch)
-                .map(|c| {
-                    let mut blk = [0.0f32; LONG_HALF];
-                    for i in 0..LONG_HALF {
-                        blk[i] = read_sample(c, block_start + i);
-                    }
-                    blk
-                })
-                .collect();
-
+            let lh = bs.long_half();
             windowed_blocks = (0..ch)
                 .map(|c| {
+                    let current = &mut cur_buf[..lh];
+                    read_range(c, block_start, current);
                     let pre = pre_current_data.as_ref().map(|v| v[c].as_slice());
-                    win_bufs[c]
-                        .push_long_block(&current_blocks_long[c], pre, nw_is_long)
-                        .to_vec()
+                    let mut out = vec![0.0f32; bs.long];
+                    win_bufs[c].push_long_block_into(current, pre, nw_is_long, &mut out);
+                    out
                 })
                 .collect();
 
@@ -713,16 +683,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
         } else {
             cumulative_granule
         };
-        let movement_w: u64 = (if cur_w == 1 {
-            bs_long as u64
-        } else {
-            bs_short as u64
-        }) / 4
-            + (if next_w == 1 {
-                bs_long as u64
-            } else {
-                bs_short as u64
-            }) / 4;
+        let movement_w = (bs.get(cur_w == 1) / 4 + bs.get(next_w == 1) / 4) as u64;
         if is_last {
             // Cap at total_samples on the final block (mirroring libvorbis's
             // movementW - (centerW - eofflag) clamp).
@@ -807,7 +768,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
         // proved a wash — ~90MB of cache pressure ate the FFT savings.)
         let max_local_per_block: Vec<f32> = jobs
             .par_iter()
-            .map(|job| mapping0::compute_block_local_ampmax_max(&job.windowed_blocks, job.is_long))
+            .map(|job| mapping0::compute_block_local_ampmax_max(&job.windowed_blocks))
             .collect();
 
         // Pre-pass B (sequential): chain the recurrence
@@ -820,7 +781,7 @@ pub(crate) fn encode_with_base_quality_and_meta(
             let mut prev = -9999.0f32;
             for (job, max_local) in jobs.iter().zip(max_local_per_block.iter()) {
                 input_ampmax_per_block.push(prev);
-                let n2 = if job.is_long { LONG_HALF } else { SHORT_HALF };
+                let n2 = bs.get(job.is_long) / 2;
                 let decayed = crate::psy::vp_ampmax_decay(prev, gi, n2, rate_hz);
                 prev = decayed.max(*max_local);
             }

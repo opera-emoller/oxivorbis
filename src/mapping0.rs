@@ -13,9 +13,9 @@
 
 use crate::bitpack::BitWriter;
 use crate::debug_dump as dd;
-use crate::drft::{drft_forward_long, drft_forward_short};
+use crate::drft::drft_forward_n;
 use crate::floor1::{Floor1State, floor1_encode, floor1_fit};
-use crate::mdct::{mdct_forward_long, mdct_forward_short};
+use crate::mdct::mdct_forward_n;
 use crate::psy::{
     VorbisInfoPsyGlobal, VorbisLookPsy, to_db, vp_ampmax_decay, vp_noisemask, vp_offset_and_mix,
     vp_tonemask,
@@ -24,13 +24,13 @@ use crate::residue::{
     ResidueLook, ResidueSetup, res1_class, res1_forward, res2_class, res2_forward,
 };
 use crate::setup::Mapping;
-use crate::window::{LONG_BLOCK, LONG_HALF, SHORT_BLOCK, SHORT_HALF};
+use crate::window::{MAX_LONG_BLOCK, MAX_LONG_HALF};
 
 // ---------------------------------------------------------------------------
 // mapping0_forward
 //
 // Arguments:
-//   pcm_blocks   - per-channel 2048-sample windowed PCM blocks
+//   pcm_blocks   - per-channel windowed PCM blocks (blocksizes[W] samples)
 //   psy_look     - psy analysis state (single shared look used for all channels)
 //   gi           - global psy info (for ampmax decay, coupling)
 //   ampmax       - mutable current amplitude max (updated in place)
@@ -49,7 +49,7 @@ use crate::window::{LONG_BLOCK, LONG_HALF, SHORT_BLOCK, SHORT_HALF};
 pub(crate) struct BlockMode {
     pub mode_number: usize,
     pub modebits: u32,
-    /// Is this a long block? (false = short block, n=256)
+    /// Is this a long block? (false = short block, n = blocksizes[0])
     pub is_long: bool,
     /// Was the previous block long? (only written for long blocks)
     pub prev_window: bool,
@@ -58,7 +58,7 @@ pub(crate) struct BlockMode {
 }
 
 /// Reusable per-block scratch owned by the encoder loop. Each `Vec` is
-/// preallocated to `LONG_HALF` (the max half-block size) and re-sliced to
+/// preallocated to `MAX_LONG_HALF` (the max half-block size) and re-sliced to
 /// the current block's `n2` per call. Avoids ~10 heap allocs per block in
 /// `mapping0_forward`.
 pub(crate) struct MappingScratch {
@@ -72,23 +72,26 @@ pub(crate) struct MappingScratch {
     pub iwork: Vec<Vec<i32>>,
     pub nonzero: Vec<i32>,
     pub floor_posts: Vec<Option<Vec<i32>>>,
+    /// In-place FFT buffer (`MAX_LONG_BLOCK`; sliced to the block size).
+    pub fft_buf: Vec<f32>,
 }
 
 impl MappingScratch {
     pub fn new(channels: usize) -> Self {
-        let make_vv_f32 = || (0..channels).map(|_| vec![0.0f32; LONG_HALF]).collect();
-        let make_vv_i32 = || (0..channels).map(|_| vec![0i32; LONG_HALF]).collect();
+        let make_vv_f32 = || (0..channels).map(|_| vec![0.0f32; MAX_LONG_HALF]).collect();
+        let make_vv_i32 = || (0..channels).map(|_| vec![0i32; MAX_LONG_HALF]).collect();
         Self {
             gmdct: make_vv_f32(),
             logfft: make_vv_f32(),
             local_ampmax: vec![0.0f32; channels],
-            logmdct: vec![0.0f32; LONG_HALF],
-            logmask: vec![0.0f32; LONG_HALF],
+            logmdct: vec![0.0f32; MAX_LONG_HALF],
+            logmask: vec![0.0f32; MAX_LONG_HALF],
             noise_bufs: make_vv_f32(),
             tone_bufs: make_vv_f32(),
             iwork: make_vv_i32(),
             nonzero: vec![0i32; channels],
             floor_posts: (0..channels).map(|_| None).collect(),
+            fft_buf: vec![0.0f32; MAX_LONG_BLOCK],
         }
     }
 }
@@ -99,43 +102,26 @@ impl MappingScratch {
 /// (`encode.rs` under `feature = "parallel"`) to compute each block's
 /// starting ampmax in a sequential pre-pass.
 #[cfg(feature = "parallel")]
-pub(crate) fn compute_block_local_ampmax_max(pcm_blocks: &[Vec<f32>], is_long: bool) -> f32 {
-    let n = if is_long { LONG_BLOCK } else { SHORT_BLOCK };
+pub(crate) fn compute_block_local_ampmax_max(pcm_blocks: &[Vec<f32>]) -> f32 {
+    let n = pcm_blocks[0].len();
     let scale = 4.0f32 / n as f32;
     let scale_db = to_db(scale) + 0.345_f32;
     let mut max_local = f32::NEG_INFINITY;
+    let mut fft_storage = [0.0f32; MAX_LONG_BLOCK];
     for ch_pcm in pcm_blocks {
-        let mut local = if is_long {
-            let mut fft_buf = [0.0f32; LONG_BLOCK];
-            fft_buf.copy_from_slice(ch_pcm);
-            drft_forward_long(&mut fft_buf);
-            let mut local = scale_db + to_db(fft_buf[0]) + 0.345_f32;
-            let mut j = 1usize;
-            while j < n - 1 {
-                let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-                let t = scale_db + 0.5_f32 * to_db(temp) + 0.345_f32;
-                if t > local {
-                    local = t;
-                }
-                j += 2;
+        let fft_buf = &mut fft_storage[..n];
+        fft_buf.copy_from_slice(ch_pcm);
+        drft_forward_n(fft_buf);
+        let mut local = scale_db + to_db(fft_buf[0]) + 0.345_f32;
+        let mut j = 1usize;
+        while j < n - 1 {
+            let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
+            let t = scale_db + 0.5_f32 * to_db(temp) + 0.345_f32;
+            if t > local {
+                local = t;
             }
-            local
-        } else {
-            let mut fft_buf = [0.0f32; SHORT_BLOCK];
-            fft_buf.copy_from_slice(ch_pcm);
-            drft_forward_short(&mut fft_buf);
-            let mut local = scale_db + to_db(fft_buf[0]) + 0.345_f32;
-            let mut j = 1usize;
-            while j < n - 1 {
-                let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-                let t = scale_db + 0.5_f32 * to_db(temp) + 0.345_f32;
-                if t > local {
-                    local = t;
-                }
-                j += 2;
-            }
-            local
-        };
+            j += 2;
+        }
         if local > 0.0 {
             local = 0.0;
         }
@@ -147,7 +133,7 @@ pub(crate) fn compute_block_local_ampmax_max(pcm_blocks: &[Vec<f32>], is_long: b
 }
 
 pub(crate) fn mapping0_forward(
-    pcm_blocks: &[Vec<f32>], // per-channel windowed PCM, variable length (256 or 2048)
+    pcm_blocks: &[Vec<f32>], // per-channel windowed PCM, blocksizes[W] samples
     psy_look: &VorbisLookPsy,
     gi: &VorbisInfoPsyGlobal,
     ampmax: &mut f32,
@@ -161,14 +147,10 @@ pub(crate) fn mapping0_forward(
     scratch: &mut MappingScratch,
     opb: &mut BitWriter,
 ) {
-    let n = if block_mode.is_long {
-        LONG_BLOCK
-    } else {
-        SHORT_BLOCK
-    };
+    let n = pcm_blocks[0].len();
     let n2 = n / 2;
     let channels = pcm_blocks.len();
-    // Reset scratch buffers (sized to LONG_HALF; touch only n2 worth).
+    // Reset scratch buffers (sized to MAX_LONG_HALF; touch only n2 worth).
     for c in 0..channels {
         scratch.gmdct[c][..n2].fill(0.0);
         scratch.logfft[c][..n2].fill(0.0);
@@ -193,6 +175,7 @@ pub(crate) fn mapping0_forward(
     let iwork: &mut Vec<Vec<i32>> = &mut scratch.iwork;
     let nonzero: &mut Vec<i32> = &mut scratch.nonzero;
     let floor_posts: &mut Vec<Option<Vec<i32>>> = &mut scratch.floor_posts;
+    let fft_buf: &mut [f32] = &mut scratch.fft_buf[..n];
 
     let do_dump = !block_mode.is_long && dd::dump_enabled() && dd::try_claim_mapping0_dump();
 
@@ -211,7 +194,7 @@ pub(crate) fn mapping0_forward(
             eprintln!("LW_WINDOWED_PCM ch={} n={}: [{}]", i, n, vals.join(","));
         }
     }
-    if crate::debug_flag!("LW_DEBUG_PCM_LAST") && n == LONG_BLOCK {
+    if crate::debug_flag!("LW_DEBUG_PCM_LAST") && block_mode.is_long {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static N: AtomicUsize = AtomicUsize::new(0);
         let idx = N.fetch_add(1, Ordering::Relaxed);
@@ -240,24 +223,8 @@ pub(crate) fn mapping0_forward(
     // Apply window (already done by caller), MDCT, and compute log-FFT approx
     // Port of: lines 254-360 in mapping0.c
     for i in 0..channels {
-        // MDCT — dispatch on block size
-        if block_mode.is_long {
-            let pcm_arr: &[f32; LONG_BLOCK] = pcm_blocks[i]
-                .as_slice()
-                .try_into()
-                .expect("long block size");
-            let mut out = [0.0f32; LONG_HALF];
-            mdct_forward_long(pcm_arr, &mut out);
-            gmdct[i][..n2].copy_from_slice(&out);
-        } else {
-            let pcm_arr: &[f32; SHORT_BLOCK] = pcm_blocks[i]
-                .as_slice()
-                .try_into()
-                .expect("short block size");
-            let mut out = [0.0f32; SHORT_HALF];
-            mdct_forward_short(pcm_arr, &mut out);
-            gmdct[i][..n2].copy_from_slice(&out);
-        }
+        // MDCT (mdct_forward(&b->transform[vb->W][0], pcm, gmdct[i]))
+        mdct_forward_n(&pcm_blocks[i], &mut gmdct[i][..n2]);
 
         // Compute log-magnitude spectrum via real FFT on the windowed PCM.
         // Port of mapping0.c lines 308-337:
@@ -267,49 +234,29 @@ pub(crate) fn mapping0_forward(
         //     temp = pcm[j]^2 + pcm[j+1]^2
         //     logfft[(j+1)>>1] = scale_dB + 0.5*todB(&temp) + .345
         //     local_ampmax[i] = max(...)
-        if block_mode.is_long {
-            let mut fft_buf = [0.0f32; LONG_BLOCK];
-            fft_buf.copy_from_slice(&pcm_blocks[i]);
-            drft_forward_long(&mut fft_buf);
-            // DC bin
-            let lam = scale_dB + to_db(fft_buf[0]) + 0.345_f32;
-            logfft[i][0] = lam;
-            local_ampmax[i] = lam;
-            // Bins 1..n/2
-            let mut j = 1usize;
-            while j < n - 1 {
-                let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-                let t = scale_dB + 0.5_f32 * to_db(temp) + 0.345_f32;
-                logfft[i][(j + 1) >> 1] = t;
-                if t > local_ampmax[i] {
-                    local_ampmax[i] = t;
-                }
-                j += 2;
+        fft_buf.copy_from_slice(&pcm_blocks[i]);
+        drft_forward_n(fft_buf);
+        if do_dump && i == 0 {
+            std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
+            dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", fft_buf);
+        }
+        // DC bin
+        let lam = scale_dB + to_db(fft_buf[0]) + 0.345_f32;
+        logfft[i][0] = lam;
+        local_ampmax[i] = lam;
+        // Bins 1..n/2
+        let mut j = 1usize;
+        while j < n - 1 {
+            let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
+            let t = scale_dB + 0.5_f32 * to_db(temp) + 0.345_f32;
+            logfft[i][(j + 1) >> 1] = t;
+            if t > local_ampmax[i] {
+                local_ampmax[i] = t;
             }
-        } else {
-            let mut fft_buf = [0.0f32; SHORT_BLOCK];
-            fft_buf.copy_from_slice(&pcm_blocks[i]);
-            drft_forward_short(&mut fft_buf);
-            if do_dump && i == 0 {
-                std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
-                dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", &fft_buf);
-            }
-            let lam = scale_dB + to_db(fft_buf[0]) + 0.345_f32;
-            logfft[i][0] = lam;
-            local_ampmax[i] = lam;
-            let mut j = 1usize;
-            while j < n - 1 {
-                let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-                let t = scale_dB + 0.5_f32 * to_db(temp) + 0.345_f32;
-                logfft[i][(j + 1) >> 1] = t;
-                if t > local_ampmax[i] {
-                    local_ampmax[i] = t;
-                }
-                j += 2;
-            }
-            if do_dump && i == 0 {
-                dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", &logfft[i]);
-            }
+            j += 2;
+        }
+        if do_dump && i == 0 {
+            dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", &logfft[i]);
         }
         if local_ampmax[i] > 0.0 {
             local_ampmax[i] = 0.0;
@@ -361,7 +308,7 @@ pub(crate) fn mapping0_forward(
         // Noise mask
         vp_noisemask(psy_look, logmdct, &mut noise_bufs[i]);
 
-        if crate::debug_flag!("LW_DEBUG_NOISE220") && n == LONG_BLOCK && i == 0 {
+        if crate::debug_flag!("LW_DEBUG_NOISE220") && block_mode.is_long && i == 0 {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static N: AtomicUsize = AtomicUsize::new(0);
             let idx = N.fetch_add(1, Ordering::Relaxed);
@@ -454,7 +401,7 @@ pub(crate) fn mapping0_forward(
                 "LW_LOGMASK ch={} n={} ampmax={:.2} [0..5]: {:.2} {:.2} {:.2} {:.2} {:.2}",
                 i, n, *ampmax, logmask[0], logmask[1], logmask[2], logmask[3], logmask[4]
             );
-            if n == LONG_BLOCK {
+            if block_mode.is_long {
                 eprintln!(
                     "LW_LOGMASK_BINS n={}: bin186={:.6} bin220={:.6} bin260={:.6} bin312={:.6} bin372={:.6}",
                     n, logmask[186], logmask[220], logmask[260], logmask[312], logmask[372]

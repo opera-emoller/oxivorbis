@@ -1,7 +1,7 @@
 # lewtoff
 
 A pure-Rust Ogg Vorbis **encoder** that produces byte-for-byte identical
-output to libvorbis 1.3.7 (VBR mode, oggenc qualities 0–10, fractional
+output to libvorbis 1.3.7 (VBR mode, oggenc qualities -1–10, fractional
 included) for a constrained input space.
 Named after [lewton](https://github.com/RustAudio/lewton) — the pure-Rust
 Vorbis decoder. lewtoff is its encoder counterpart.
@@ -14,15 +14,16 @@ feature adds Rayon-based block-level fan-out — see
 ## Status
 
 All synthetic parity tests (silence, sine 440, ramps, noise+tones,
-transients; mono+stereo at 44.1k and 48k; base qualities 0.0–1.0, i.e.
-oggenc `-q 0` … `-q 10`) match libvorbis 1.3.7 byte-for-byte. A real-audio corpus
+transients; mono+stereo at 44.1k and 48k; base qualities -0.1–1.0, i.e.
+oggenc `-q -1` … `-q 10`; input lengths from 0 frames up) match libvorbis
+1.3.7 byte-for-byte. A real-audio corpus
 sweep (`tests/corpus_sweep.rs::corpus_parity_sweep`) walks any
 `<repo_root>/corpus/` directory the contributor has symlinked in and
 asserts the same parity for every file recursively; the most recent
 Q5 sweep over a 5954-file corpus passed 100% byte-identical. The EOS
 `eofflag` / post-extrap `n_train` derivation runs a faithful chunk-by-
 chunk streaming simulation of libvorbis's `vorbis_analysis_blockout`
-(see `envelope::simulate_eofflag`) so no per-input hardcodes are needed.
+(see `envelope::simulate_eofflag_bs`) so no per-input hardcodes are needed.
 
 ## Use
 
@@ -61,10 +62,11 @@ nominal bitrate) as oggenc, not the nearest float to 0.9344.
 | Sample format | Interleaved `i16` PCM |
 | Sample rate   | 44100 Hz **or** 48000 Hz |
 | Channels      | Mono **or** Stereo |
-| Quality       | 0.0 – 10.0 on oggenc's `-q` scale (fractional ok); `encode()` is 5 |
+| Quality       | -1.0 – 10.0 on oggenc's `-q` scale (fractional ok); `encode()` is 5 |
 
-Quality -1 … <0 (libvorbis q-1, 512/4096-sample blocks) is not supported
-yet and panics. Outside this space, behavior is undefined.
+Qualities -1 … <0 select libvorbis's q-1 template (512/4096-sample
+blocks instead of 256/2048) and are byte-identical too. Outside this
+space, behavior is undefined.
 
 ## Parallel encoding
 
@@ -153,10 +155,11 @@ just parity                                    # parity for serial AND parallel 
 
 Quality-parameterized parity lives in `tests/parity.rs` as the
 `oracle_parity_q::<quality>::<config>::<signal>` matrix: one
-base_quality per libvorbis template interval (-0.05, 0.05 … 0.95, plus
-0.0, 0.5 and 1.0) × 44.1/48 kHz × mono/stereo × silence / sine / ramp /
-noise+tone / 10 s transients. Everything from 0.0 up runs by default;
-the q-1 row (-0.05) is `#[ignore = "pending 512/4096 block support"]`.
+base_quality per libvorbis template interval (0.05 … 0.95, plus 0.0,
+0.5 and 1.0), the q-1 range (-0.1, -0.08, -0.05, -0.01, -0.0000001) ×
+44.1/48 kHz × mono/stereo × silence / sine / ramp / noise+tone / 10 s
+transients. `oracle_parity_short_input` sweeps input lengths 0..2100
+frames (around the 2048-sample long block) at two qualities.
 `parity_oggenc_quality_conversion` pins the oggenc `-q` → base_quality
 float conversion against the system `oggenc`. The corpus sweep takes a
 libvorbis base_quality via `CORPUS_QUALITY` (default 0.5), e.g.

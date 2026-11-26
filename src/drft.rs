@@ -11,15 +11,11 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
 #![allow(non_snake_case)]
-// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
-// yet; the fixed-size wrappers still are. Drop once call sites switch.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::tables::drft::{
     DRFT_SPLIT_256, DRFT_SPLIT_512, DRFT_SPLIT_2048, DRFT_SPLIT_4096, DRFT_WA_256, DRFT_WA_512,
     DRFT_WA_2048, DRFT_WA_4096,
 };
-use crate::window::{LONG_BLOCK, SHORT_BLOCK};
 
 // ---------------------------------------------------------------------------
 // dradf2  (radix-2 forward butterfly)
@@ -379,16 +375,6 @@ pub(crate) fn drft_forward_n(data: &mut [f32]) {
     drft_forward_with(drft_tables(data.len()), data);
 }
 
-/// Fixed-size wrapper: the 2048-point (q0..q10 long block) FFT.
-pub(crate) fn drft_forward_long(data: &mut [f32; LONG_BLOCK]) {
-    drft_forward_with(&DRFT_2048, data);
-}
-
-/// Fixed-size wrapper: the 256-point (q0..q10 short block) FFT.
-pub(crate) fn drft_forward_short(data: &mut [f32; SHORT_BLOCK]) {
-    drft_forward_with(&DRFT_256, data);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,28 +407,11 @@ mod tests {
     }
 
     #[test]
-    fn fixed_wrappers_match_generic() {
-        let inp = lcg_input(2048, 5);
-        let mut a: [f32; 2048] = inp.as_slice().try_into().unwrap();
-        drft_forward_long(&mut a);
-        let mut b = inp.clone();
-        drft_forward_n(&mut b);
-        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
-
-        let inp = lcg_input(256, 6);
-        let mut a: [f32; 256] = inp.as_slice().try_into().unwrap();
-        drft_forward_short(&mut a);
-        let mut b = inp.clone();
-        drft_forward_n(&mut b);
-        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
-    }
-
-    #[test]
     fn drft_short_dc_only() {
         // Input: constant 1.0 → DC bin = N, all other bins = 0
-        let n = SHORT_BLOCK;
-        let mut data = [1.0f32; SHORT_BLOCK];
-        drft_forward_short(&mut data);
+        let n = 256;
+        let mut data = [1.0f32; 256];
+        drft_forward_n(&mut data);
         // DC bin
         let dc = data[0];
         assert!(
@@ -464,9 +433,9 @@ mod tests {
 
     #[test]
     fn drft_long_dc_only() {
-        let n = LONG_BLOCK;
-        let mut data = [1.0f32; LONG_BLOCK];
-        drft_forward_long(&mut data);
+        let n = 2048;
+        let mut data = [1.0f32; 2048];
+        drft_forward_n(&mut data);
         let dc = data[0];
         assert!(
             (dc - n as f32).abs() < 0.1,
@@ -488,13 +457,13 @@ mod tests {
 #[test]
 fn drft_sine_peak() {
     use std::f32::consts::PI;
-    let n = SHORT_BLOCK; // 256
-    let mut data = [0.0f32; SHORT_BLOCK];
+    let n = 256; // 256
+    let mut data = [0.0f32; 256];
     // Sine at bin 10 (freq = 10/256 cycles/sample)
     for i in 0..n {
         data[i] = (2.0 * PI * 10.0 * i as f32 / n as f32).sin();
     }
-    drft_forward_short(&mut data);
+    drft_forward_n(&mut data);
 
     // Find peak in Fortran-packed output
     let mut max_mag = 0.0f32;
@@ -525,13 +494,13 @@ fn drft_logfft_sine_440() {
 
     let rate = 44100u32;
     let freq = 440.0f32;
-    let n = SHORT_BLOCK; // 256
+    let n = 256; // 256
     let _n2 = n / 2;
 
     // Build 256 samples of sine at 440Hz (matching lewtoff test amplitude)
     // In the test: (sin(2pi*440*t) * 16384.0) as i16, normalized to f32 by /32768.0
     // Actually lewtoff normalizes: pcm[i] = sample as f32 / 32768.0
-    let mut pcm = [0.0f32; SHORT_BLOCK];
+    let mut pcm = [0.0f32; 256];
     for i in 0..n {
         let t = i as f32 / rate as f32;
         let sample = (2.0 * PI * freq * t).sin() * 16384.0;
@@ -541,7 +510,7 @@ fn drft_logfft_sine_440() {
     // Apply a basic symmetric window (approximation)
     // Actually this is before windowing. Let's skip window for now.
 
-    drft_forward_short(&mut pcm);
+    drft_forward_n(&mut pcm);
 
     let scale = 4.0f32 / n as f32;
     let scale_db = to_db(scale) + 0.345_f32;

@@ -425,8 +425,7 @@ fn channel_count(channels: Channels) -> u16 {
 /// Oracle parity at an arbitrary libvorbis base_quality (-0.1..1.0).
 ///
 /// The oracle gets `base_quality` as its 3rd argument; lewtoff goes through
-/// `common::lewtoff_encode_q`. q-1 (base_quality < 0) is not supported yet
-/// and its matrix entries are `#[ignore]`d.
+/// `common::lewtoff_encode_q`.
 fn assert_parity_oracle_q(
     samples: &[i16],
     rate: SampleRate,
@@ -605,7 +604,13 @@ mod oracle_parity_q {
         };
     }
 
-    quality!(q_m005, -0.05, #[ignore = "pending 512/4096 block support"]);
+    // q-1 (512/4096 blocks): the -0.1 anchor, interior points, and the
+    // smallest-magnitude negative base_quality that still selects it.
+    quality!(q_m010, -0.1);
+    quality!(q_m008, -0.08);
+    quality!(q_m005, -0.05);
+    quality!(q_m001, -0.01);
+    quality!(q_m0000001, -0.0000001);
     quality!(q_000, 0.0);
     quality!(q_005, 0.05);
     quality!(q_015, 0.15);

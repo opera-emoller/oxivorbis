@@ -459,7 +459,11 @@ mod tests {
             .take(10)
             .collect();
         eprintln!("silence first marks at indices: {:?}", first_marks);
-        assert_eq!(n_short_blocks_at_start(&marks), 1, "silence: 1 short");
+        assert_eq!(
+            n_short_blocks_at_start_bs(BlockSizes::BS_256_2048, &marks),
+            1,
+            "silence: 1 short"
+        );
     }
 
     #[test]
@@ -490,7 +494,8 @@ mod tests {
         let marks = compute_marks(&pcm, &gi);
         // n_samples here is the audio buffer length (including the LPC
         // pre-stream prefix that envelope detection saw).
-        let pattern = full_w_pattern(&marks, pcm[0].len() as i64);
+        let (pattern, _) =
+            full_w_pattern_with_curmark_bs(BlockSizes::BS_256_2048, &marks, pcm[0].len() as i64);
         let n_short = pattern.iter().filter(|&&w| w == 0).count();
         eprintln!(
             "ramp pattern len={} n_short={} pattern={:?}",
@@ -508,7 +513,7 @@ mod tests {
         // libvorbis envelope detection runs on the pre-extrapolated PCM
         // buffer: 1024 LPC-predicted virtual samples (centerW) + audio. Mirror
         // that here so envelope state evolves the same way.
-        use crate::encode::{post_extrap_for_test, pre_extrap_for_test};
+        use crate::encode::pre_extrap_for_test;
 
         let n = 44100usize;
         let raw_l: Vec<f32> = (0..n)
@@ -530,7 +535,6 @@ mod tests {
                 }
                 buf.extend_from_slice(&pre_rev);
                 buf.extend_from_slice(raw);
-                let _ = post_extrap_for_test;
                 buf
             })
             .collect();
@@ -544,7 +548,7 @@ mod tests {
             .take(20)
             .collect();
         eprintln!("ramp first marks at indices: {:?}", first_marks);
-        let n_short = n_short_blocks_at_start(&marks);
+        let n_short = n_short_blocks_at_start_bs(BlockSizes::BS_256_2048, &marks);
         assert_eq!(n_short, 2, "ramp: 2 short (got {n_short})");
     }
 }
@@ -555,13 +559,8 @@ mod tests {
 /// `[centerW - bs[0]/2, centerW + bs[0]/2)` = `[centerW-128, centerW+128)`.
 /// Any mark in that window → block is IMPULSE (returns true). No mark →
 /// PADDING (returns false). Long blocks don't use this — their type is
-/// determined by lW/nW.
-pub fn short_is_impulse(marks: &[bool], curmark: i64, center_w: i64) -> bool {
-    short_is_impulse_bs(BlockSizes::BS_256_2048, marks, curmark, center_w)
-}
-
-/// [`short_is_impulse`] for an arbitrary blocksize pair (the scan window is
-/// `centerW ± bs.short/2`).
+/// determined by lW/nW. The scan window is `centerW ± bs.short/2` in
+/// general.
 pub(crate) fn short_is_impulse_bs(
     bs: BlockSizes,
     marks: &[bool],
@@ -590,12 +589,7 @@ pub(crate) fn short_is_impulse_bs(
 /// Count how many short blocks libvorbis would emit at the start of the
 /// stream. For our constrained input space (silence / sine / ramp), this is
 /// either 1 (no transient detected past the leading-edge ampbuf-init noise)
-/// or 2 (transient detected before testW=2176).
-pub fn n_short_blocks_at_start(marks: &[bool]) -> usize {
-    n_short_blocks_at_start_bs(BlockSizes::BS_256_2048, marks)
-}
-
-/// [`n_short_blocks_at_start`] for an arbitrary blocksize pair.
+/// or 2 (transient detected before testW=2176 for 256/2048).
 pub(crate) fn n_short_blocks_at_start_bs(bs: BlockSizes, marks: &[bool]) -> usize {
     // libvorbis _ve_envelope_search: cursor starts at bs1/2 (1024 → mark
     // index 16 for 256/2048). testW for the first decision = centerW +
@@ -627,24 +621,6 @@ pub(crate) fn n_short_blocks_at_start_bs(bs: BlockSizes, marks: &[bool]) -> usiz
 /// (insufficient data, defer).
 ///
 /// Returns (nW, new_cursor). nW: 0=short, 1=long, -1=insufficient.
-pub fn next_w(
-    marks: &[bool],
-    cursor: i64,
-    curmark_in: i64,
-    center_w: i64,
-    w: i32,
-) -> (i32, i64, i64) {
-    next_w_bs(
-        BlockSizes::BS_256_2048,
-        marks,
-        cursor,
-        curmark_in,
-        center_w,
-        w,
-    )
-}
-
-/// [`next_w`] for an arbitrary blocksize pair.
 pub(crate) fn next_w_bs(
     bs: BlockSizes,
     marks: &[bool],
@@ -686,19 +662,9 @@ pub(crate) fn next_w_bs(
 ///
 /// `n_samples` includes any post-extrapolated tail (so blocks past EOS are
 /// also decided).
-pub fn full_w_pattern(marks: &[bool], n_samples: i64) -> Vec<i32> {
-    let (pattern, _) = full_w_pattern_with_curmark(marks, n_samples);
-    pattern
-}
-
-/// Same as [`full_w_pattern`] but also returns the per-block `curmark`
-/// position (in env-mark space) — needed for `_ve_envelope_mark` IMPULSE
-/// vs PADDING decisions.
-pub fn full_w_pattern_with_curmark(marks: &[bool], n_samples: i64) -> (Vec<i32>, Vec<i64>) {
-    full_w_pattern_with_curmark_bs(BlockSizes::BS_256_2048, marks, n_samples)
-}
-
-/// [`full_w_pattern_with_curmark`] for an arbitrary blocksize pair.
+///
+/// Also returns the per-block `curmark` position (in env-mark space) —
+/// needed for `_ve_envelope_mark` IMPULSE vs PADDING decisions.
 pub(crate) fn full_w_pattern_with_curmark_bs(
     bs: BlockSizes,
     marks: &[bool],
@@ -774,11 +740,6 @@ pub(crate) fn full_w_pattern_with_curmark_bs(
 /// Returns `pcm_current` at the moment EOS is signaled — i.e. after all audio
 /// has been fed and the blockout drain has run as far as it can without
 /// `eofflag` being set. This is the value libvorbis stores in `v->eofflag`.
-pub fn simulate_eofflag(marks: &[bool], total_audio: i64, chunk_size: i64) -> i64 {
-    simulate_eofflag_bs(BlockSizes::BS_256_2048, marks, total_audio, chunk_size)
-}
-
-/// [`simulate_eofflag`] for an arbitrary blocksize pair.
 pub(crate) fn simulate_eofflag_bs(
     bs: BlockSizes,
     marks: &[bool],

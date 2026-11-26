@@ -60,8 +60,8 @@ parity:
 #     just corpus 100       # first 100 files (sorted)
 # Pass `parallel` as the second arg to test the rayon path:
 #     just corpus 100 parallel
-# Pass a libvorbis base_quality (0.0..1.0, default 0.5 = q5) as the third
-# arg to sweep another quality (q-1, i.e. < 0.0, is not supported yet):
+# Pass a libvorbis base_quality (-0.1..1.0, default 0.5 = q5) as the third
+# arg to sweep another quality:
 #     just corpus 100 "" 0.3
 corpus limit="" extra_features="" quality="":
     #!/usr/bin/env bash
@@ -84,7 +84,7 @@ corpus limit="" extra_features="" quality="":
 #     just bench corpus/path/to/file.wav parallel      # parallel on file
 #     just bench corpus/beach_bro/snd_neon_nights.mp3 parallel
 #
-# Pass an oggenc-scale quality (0..10, default 5) as the third arg:
+# Pass an oggenc-scale quality (-1..10, default 5) as the third arg:
 #     just bench corpus/path/to/file.wav "" 2.5
 bench input="corpus/beach_bro/snd_neon_nights.mp3" features="" quality="5":
     #!/usr/bin/env bash

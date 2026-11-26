@@ -2,9 +2,6 @@
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::explicit_counter_loop)]
-// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
-// yet; the fixed-size wrappers still are. Drop once call sites switch.
-#![cfg_attr(not(test), allow(dead_code))]
 //!
 //! Port of libvorbis `lib/window.c` `_vorbis_apply_window` supporting both
 //! blocksize pairs the 44.1/48 kHz templates use — 256/2048 (q0..q10) and
@@ -30,14 +27,6 @@
 
 use crate::tables::window::{WIN_HALF_256, WIN_HALF_512, WIN_HALF_2048, WIN_HALF_4096};
 
-pub(crate) const LONG_BLOCK: usize = 2048;
-pub(crate) const SHORT_BLOCK: usize = 256;
-pub(crate) const LONG_HALF: usize = LONG_BLOCK / 2; // 1024
-pub(crate) const SHORT_HALF: usize = SHORT_BLOCK / 2; // 128
-
-pub(crate) const BLOCK_SIZE: usize = LONG_BLOCK;
-pub(crate) const HALF_BLOCK: usize = LONG_HALF;
-
 /// Largest long block over all supported blocksize pairs (q-1: 4096).
 pub(crate) const MAX_LONG_BLOCK: usize = 4096;
 /// Largest long half-block (q-1: 2048). Also the largest psy `n`.
@@ -58,11 +47,15 @@ pub(crate) struct BlockSizes {
 
 impl BlockSizes {
     /// 44.1/48 kHz templates at q0..q10 (`blocksize_*_44[1..]`).
+    #[cfg(test)]
     pub(crate) const BS_256_2048: BlockSizes = BlockSizes {
         short: 256,
         long: 2048,
     };
     /// 44.1/48 kHz templates at q-1 (template index 0, `base_quality < 0`).
+    /// (The encoder takes its pair from `QualityConfig::blocksizes`; these
+    /// named constants are for tests.)
+    #[cfg(test)]
     pub(crate) const BS_512_4096: BlockSizes = BlockSizes {
         short: 512,
         long: 4096,
@@ -164,11 +157,6 @@ pub(crate) struct WindowingBuffer {
 }
 
 impl WindowingBuffer {
-    /// Buffer for the 256/2048 blocksize pair (q0..q10).
-    pub(crate) fn new() -> Self {
-        Self::with_blocksizes(BlockSizes::BS_256_2048)
-    }
-
     /// Buffer for an arbitrary supported blocksize pair.
     pub(crate) fn with_blocksizes(bs: BlockSizes) -> Self {
         assert!(bs.long <= MAX_LONG_BLOCK && bs.short <= MAX_SHORT_BLOCK);
@@ -289,34 +277,6 @@ impl WindowingBuffer {
         // Update state
         self.prev_short[..sh].copy_from_slice(current);
         self.prev_is_long = false;
-    }
-
-    /// Fixed-size wrapper of [`Self::push_long_block_into`] for the
-    /// 256/2048 pair.
-    pub(crate) fn push_long_block(
-        &mut self,
-        current: &[f32; LONG_HALF],
-        pre_current: Option<&[f32]>,
-        nw_is_long: bool,
-    ) -> [f32; LONG_BLOCK] {
-        debug_assert_eq!(self.bs, BlockSizes::BS_256_2048);
-        let mut out = [0.0f32; LONG_BLOCK];
-        self.push_long_block_into(current, pre_current, nw_is_long, &mut out);
-        out
-    }
-
-    /// Fixed-size wrapper of [`Self::push_short_block_into`] for the
-    /// 256/2048 pair.
-    pub(crate) fn push_short_block(&mut self, current: &[f32; SHORT_HALF]) -> [f32; SHORT_BLOCK] {
-        debug_assert_eq!(self.bs, BlockSizes::BS_256_2048);
-        let mut out = [0.0f32; SHORT_BLOCK];
-        self.push_short_block_into(current, &mut out);
-        out
-    }
-
-    #[cfg(test)]
-    pub(crate) fn push_block(&mut self, current: &[f32; HALF_BLOCK]) -> [f32; BLOCK_SIZE] {
-        self.push_long_block(current, None, true)
     }
 }
 
@@ -460,13 +420,22 @@ mod tests {
         check_stream_model(BlockSizes::BS_512_4096);
     }
 
+    const HALF_BLOCK: usize = 1024;
+    const SHORT_HALF: usize = 128;
+
+    fn push_long(buf: &mut WindowingBuffer, current: &[f32]) -> Vec<f32> {
+        let mut out = vec![0.0f32; 2 * HALF_BLOCK];
+        buf.push_long_block_into(current, None, true, &mut out);
+        out
+    }
+
     #[test]
     fn windowing_all_ones_gives_window_values() {
-        let mut buf = WindowingBuffer::new();
+        let mut buf = WindowingBuffer::with_blocksizes(BlockSizes::BS_256_2048);
         let block = [1.0f32; HALF_BLOCK];
 
         // First block: prev is zeros, current is ones
-        let out = buf.push_block(&block);
+        let out = push_long(&mut buf, &block);
 
         // First half (prev = zeros) should be zero after windowing
         for v in &out[..HALF_BLOCK] {
@@ -490,14 +459,14 @@ mod tests {
 
     #[test]
     fn windowing_second_block_all_ones() {
-        let mut buf = WindowingBuffer::new();
+        let mut buf = WindowingBuffer::with_blocksizes(BlockSizes::BS_256_2048);
         let block = [1.0f32; HALF_BLOCK];
 
         // After first block, prev = [1..1]
-        let _first = buf.push_block(&block);
+        let _first = push_long(&mut buf, &block);
 
         // Second block: both prev and current are ones → output = window
-        let out = buf.push_block(&block);
+        let out = push_long(&mut buf, &block);
         for (i, (got, exp)) in out.iter().zip(SIN_WINDOW_2048.iter()).enumerate() {
             assert!(
                 (got - exp).abs() < 1e-6,
@@ -510,10 +479,11 @@ mod tests {
 
     #[test]
     fn short_block_window_is_symmetric() {
-        let mut buf = WindowingBuffer::new();
+        let mut buf = WindowingBuffer::with_blocksizes(BlockSizes::BS_256_2048);
         let block = [1.0f32; SHORT_HALF];
 
-        let out = buf.push_short_block(&block);
+        let mut out = [0.0f32; 2 * SHORT_HALF];
+        buf.push_short_block_into(&block, &mut out);
 
         // First half is prev=zeros, second half is ones
         // After windowing:

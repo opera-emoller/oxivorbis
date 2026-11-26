@@ -1,5 +1,5 @@
 //! lewtoff: pure-Rust Ogg Vorbis encoder, byte-identical to libvorbis 1.3.7
-//! (VBR, oggenc qualities 0..10).
+//! (VBR, oggenc qualities -1..10).
 //!
 //! See `README.md` for scope, design, and constraints. The crate intentionally
 //! has a tiny public surface — two functions and two enums — because the
@@ -49,9 +49,6 @@ mod quality;
 mod setup;
 mod setup_gen;
 mod setup_templates;
-// The Q5-era BLOCK_SIZE / HALF_BLOCK aliases in window.rs are unused now
-// that block sizes come from QualityConfig; window.rs is being made
-// block-size generic separately, so silence that here rather than edit it.
 mod window;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -85,18 +82,15 @@ pub fn encode(samples: &[i16], rate: SampleRate, channels: Channels) -> Vec<u8> 
 ///
 /// # Panics
 ///
-/// Supported range is `0.0..=10.0`. Panics below 0: oggenc's `-1..0`
-/// range (libvorbis q-1, 512/4096-sample blocks) is not supported yet.
+/// Supported range is `-1.0..=10.0` (above 10 clamps to 10). Panics below
+/// -1, where libvorbis itself rejects the quality. `-1 <= quality < 0`
+/// selects libvorbis's q-1 template (512/4096-sample blocks).
 pub fn encode_with_quality(
     samples: &[i16],
     rate: SampleRate,
     channels: Channels,
     quality: f32,
 ) -> Vec<u8> {
-    assert!(
-        quality >= 0.0,
-        "q-1 not yet supported (quality {quality}; supported range is 0..=10)"
-    );
     crate::encode::encode_with_base_quality_and_meta(
         samples,
         rate,

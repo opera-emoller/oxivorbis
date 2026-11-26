@@ -6,9 +6,7 @@
 //! lewtoff and the oracle-encoder, and compared byte-for-byte.
 //!
 //! `CORPUS_QUALITY=<base_quality>` (libvorbis -0.1..1.0, default 0.5 = q5)
-//! selects the encode quality. Only q5 is supported by lewtoff until
-//! quality is wired through (see tests/common/mod.rs); other values fail
-//! fast with a "pending quality wiring" message.
+//! selects the encode quality (q-1..q10).
 
 #![cfg(feature = "oracle")]
 
@@ -159,10 +157,6 @@ fn corpus_parity_sweep() {
     assert!(
         (-0.1..=1.0).contains(&base_quality),
         "CORPUS_QUALITY {base_quality} outside libvorbis range -0.1..1.0"
-    );
-    assert!(
-        common::lewtoff_supports_quality(base_quality),
-        "pending 512/4096 block support: lewtoff cannot encode CORPUS_QUALITY {base_quality} yet"
     );
 
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);

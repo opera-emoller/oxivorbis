@@ -119,7 +119,7 @@ fn encode_with_quality_q5_matches_encode_and_others_decode() {
     let b = lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, 5.0);
     assert_eq!(a.len(), b.len());
     let mut prev_len = 0;
-    for q in [0.0f32, 2.5, 6.0, 10.0] {
+    for q in [-1.0f32, -0.5, 0.0, 2.5, 6.0, 10.0] {
         let bytes =
             lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, q);
         check_ogg(&bytes);
@@ -136,7 +136,7 @@ fn encode_with_quality_q5_matches_encode_and_others_decode() {
 }
 
 #[test]
-#[should_panic(expected = "q-1 not yet supported")]
-fn encode_with_quality_rejects_q_minus_1() {
-    lewtoff::encode_with_quality(&silence(4410), SampleRate::Hz44100, Channels::Mono, -0.5);
+#[should_panic(expected = "outside libvorbis's -0.1..=1.0")]
+fn encode_with_quality_rejects_below_q_minus_1() {
+    lewtoff::encode_with_quality(&silence(4410), SampleRate::Hz44100, Channels::Mono, -1.5);
 }
