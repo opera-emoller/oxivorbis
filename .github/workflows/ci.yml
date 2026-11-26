@@ -74,6 +74,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --all-targets --features parallel -- -D warnings
       - run: cargo clippy --all-targets --features oracle,parallel -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features lewtoff/oracle,lewtoff/parallel -- -D warnings
       - name: Guard against silently skipped oracle tests
         # The oracle runs below use no name filter (they run the whole
         # suite with the feature on). This guard makes sure the

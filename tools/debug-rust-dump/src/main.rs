@@ -5,7 +5,12 @@
 //! Dumps land in /tmp/lewtoff-debug/r_*.
 
 fn main() {
-    std::env::set_var("LEWTOFF_DEBUG_DUMP", "1");
+    // Edition 2024 makes env::set_var unsafe (and the crate forbids unsafe),
+    // so the caller must set LEWTOFF_DEBUG_DUMP=1 (`just debug-dump-rust` does).
+    if std::env::var_os("LEWTOFF_DEBUG_DUMP").is_none() {
+        eprintln!("debug-rust-dump: set LEWTOFF_DEBUG_DUMP=1 (or run `just debug-dump-rust`)");
+        std::process::exit(2);
+    }
 
     let rate_hz = 44100usize;
     let duration_secs = 1usize;
