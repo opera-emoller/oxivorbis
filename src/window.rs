@@ -32,8 +32,10 @@ pub(crate) const MAX_LONG_BLOCK: usize = 4096;
 /// Largest long half-block (q-1: 2048). Also the largest psy `n`.
 pub(crate) const MAX_LONG_HALF: usize = MAX_LONG_BLOCK / 2;
 /// Largest short block over all supported blocksize pairs (q-1: 512).
+#[cfg(test)]
 pub(crate) const MAX_SHORT_BLOCK: usize = 512;
 /// Largest short half-block (q-1: 256).
+#[cfg(test)]
 pub(crate) const MAX_SHORT_HALF: usize = MAX_SHORT_BLOCK / 2;
 
 /// A `ci->blocksizes[0..2]` pair.
@@ -82,6 +84,7 @@ impl BlockSizes {
     /// block; equivalently the length of the un-windowed middle section
     /// `[leftend..long/2)` of a long block entered from a short one
     /// (`long/4 - short/4`: 448 for 256/2048, 896 for 512/4096).
+    #[cfg(test)]
     #[inline]
     pub(crate) const fn long_short_gap(self) -> usize {
         self.long / 4 - self.short / 4
@@ -143,7 +146,10 @@ pub(crate) fn apply_window_bs(d: &mut [f32], bs: BlockSizes, lw: bool, w: bool, 
     }
 }
 
-/// Holds state for windowing between blocks.
+/// Holds state for windowing between blocks. The encoder slices its PCM
+/// buffer and calls [`apply_window_bs`] directly; this incremental model is
+/// kept as a test cross-check of that slicing.
+#[cfg(test)]
 pub(crate) struct WindowingBuffer {
     bs: BlockSizes,
     /// Previous `bs.long/2` samples (long block overlap buffer); only the
@@ -156,6 +162,7 @@ pub(crate) struct WindowingBuffer {
     prev_is_long: bool,
 }
 
+#[cfg(test)]
 impl WindowingBuffer {
     /// Buffer for an arbitrary supported blocksize pair.
     pub(crate) fn with_blocksizes(bs: BlockSizes) -> Self {

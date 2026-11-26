@@ -134,6 +134,26 @@ impl EnvelopeLookup {
         }
     }
 
+    /// One iteration of the mark loop in libvorbis `_ve_envelope_search`:
+    /// bump `stretch`, run `_ve_amp` over every channel's 128-sample window
+    /// `pcm[c][off..off + 128]`, and apply the `ret & 4` stretch reset.
+    /// Returns `ret` (bit 0 = preecho, bit 1 = postecho, bit 2 = strong);
+    /// the caller applies it to its marks (`mark[j]`, `mark[j±1]`).
+    pub(crate) fn step(&mut self, gi: &VorbisInfoPsyGlobal, pcm: &[Vec<f32>], off: usize) -> i32 {
+        let mut ret = 0i32;
+        self.stretch += 1;
+        if self.stretch > VE_MAXSTRETCH * 2 {
+            self.stretch = VE_MAXSTRETCH * 2;
+        }
+        for i in 0..self.ch {
+            ret |= self.amp(gi, &pcm[i][off..off + ENV_WINLENGTH], i * VE_BANDS);
+        }
+        if (ret & 4) != 0 {
+            self.stretch = -1;
+        }
+        ret
+    }
+
     /// Run envelope amplitude analysis on a 128-sample window.
     /// Updates `self.filters[band_offset..]` in place; returns the trigger
     /// flags (bit 0 = preecho hi, bit 1 = postecho lo, bit 2 = strong).
@@ -395,16 +415,7 @@ pub fn compute_marks(pcm_channels: &[Vec<f32>], gi: &VorbisInfoPsyGlobal) -> Vec
 
     let dbg = crate::debug_flag!("LW_DEBUG_ENV");
     for j in 0..n_steps {
-        let mut ret = 0i32;
-        e.stretch += 1;
-        if e.stretch > VE_MAXSTRETCH * 2 {
-            e.stretch = VE_MAXSTRETCH * 2;
-        }
-        let off = j * ENV_SEARCHSTEP;
-        for i in 0..ch {
-            let pcm = &pcm_channels[i][off..off + ENV_WINLENGTH];
-            ret |= e.amp(gi, pcm, i * VE_BANDS);
-        }
+        let ret = e.step(gi, pcm_channels, j * ENV_SEARCHSTEP);
         marks[j + VE_POST] = false;
         if (ret & 1) != 0 {
             marks[j] = true;
@@ -417,9 +428,6 @@ pub fn compute_marks(pcm_channels: &[Vec<f32>], gi: &VorbisInfoPsyGlobal) -> Vec
             if j > 0 {
                 marks[j - 1] = true;
             }
-        }
-        if (ret & 4) != 0 {
-            e.stretch = -1;
         }
         if dbg && ret != 0 {
             eprintln!("R_ENV_MARK j={} ret={} stretch={}", j, ret, e.stretch);

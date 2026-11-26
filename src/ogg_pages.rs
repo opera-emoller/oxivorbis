@@ -85,6 +85,20 @@ impl OggStreamWriter {
         self.page_packets_done = 0;
     }
 
+    /// Bytes of every page completed since the last [`Self::clear_output`].
+    /// Pages still being filled stay inside the writer.
+    pub fn output(&self) -> &[u8] {
+        self.writer.inner().get_ref()
+    }
+
+    /// Drop the completed-page bytes (keeping the allocation) so the next
+    /// [`Self::output`] only shows pages completed after this call.
+    pub fn clear_output(&mut self) {
+        let cursor = self.writer.inner_mut();
+        cursor.get_mut().clear();
+        cursor.set_position(0);
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
         self.writer.into_inner().into_inner()
     }
