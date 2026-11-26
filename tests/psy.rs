@@ -5,7 +5,9 @@
 
 #![allow(clippy::field_reassign_with_default)]
 
-use lewtoff::psy::{VorbisInfoPsy, VorbisInfoPsyGlobal, vp_noisemask, vp_psy_init, vp_tonemask};
+use lewtoff::psy::{
+    PsyScratch, VorbisInfoPsy, VorbisInfoPsyGlobal, vp_noisemask, vp_psy_init, vp_tonemask,
+};
 
 /// Build a minimal VorbisInfoPsy matching libvorbis Q5 long-block params.
 /// These values are taken from lib/modes/setup_44.h / psych_44.h for the
@@ -74,7 +76,7 @@ fn psy_noisemask_finite() {
 
     let logmdct: Vec<f32> = (0..n).map(|i| i as f32 * 0.01 - 40.0).collect();
     let mut logmask = vec![0.0f32; n];
-    vp_noisemask(&p, &logmdct, &mut logmask);
+    vp_noisemask(&p, &logmdct, &mut logmask, &mut PsyScratch::new());
 
     for &v in &logmask {
         assert!(v.is_finite(), "logmask contains non-finite value: {v}");
@@ -91,7 +93,14 @@ fn psy_tonemask_finite() {
 
     let logfft: Vec<f32> = (0..n).map(|i| i as f32 * 0.01 - 50.0).collect();
     let mut logmask = vec![0.0f32; n];
-    vp_tonemask(&p, &logfft, &mut logmask, 0.0, -50.0);
+    vp_tonemask(
+        &p,
+        &logfft,
+        &mut logmask,
+        0.0,
+        -50.0,
+        &mut PsyScratch::new(),
+    );
 
     for &v in &logmask {
         assert!(v.is_finite() || v == -9999.0, "unexpected value: {v}");
@@ -109,10 +118,17 @@ fn psy_compute_mask_determinism() {
     let spectrum: Vec<f32> = (0..n).map(|i| (i as f32) * 0.001 - 30.0).collect();
 
     let mut noise_mask = vec![0.0f32; n];
-    vp_noisemask(&p, &spectrum, &mut noise_mask);
+    vp_noisemask(&p, &spectrum, &mut noise_mask, &mut PsyScratch::new());
 
     let mut tone_mask = vec![0.0f32; n];
-    vp_tonemask(&p, &spectrum, &mut tone_mask, -10.0, -30.0);
+    vp_tonemask(
+        &p,
+        &spectrum,
+        &mut tone_mask,
+        -10.0,
+        -30.0,
+        &mut PsyScratch::new(),
+    );
 
     // combine: element-wise max of noise and tone masks
     let mask: Vec<f32> = noise_mask

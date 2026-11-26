@@ -801,10 +801,16 @@ fn seed_loop(
 // seed_chase
 // ---------------------------------------------------------------------------
 
-fn seed_chase(seeds: &mut [f32], linesper: i32, n: usize) {
-    // Stack-allocated stacks. n <= MAX_OCTAVE_LINES (1024 worst case Q5).
-    let mut posstack = [0usize; MAX_OCTAVE_LINES];
-    let mut ampstack = [0.0f32; MAX_OCTAVE_LINES];
+fn seed_chase(
+    seeds: &mut [f32],
+    linesper: i32,
+    n: usize,
+    posstack: &mut [usize],
+    ampstack: &mut [f32],
+) {
+    // Stacks: n <= MAX_OCTAVE_LINES; at most n entries.
+    let posstack = &mut posstack[..n];
+    let ampstack = &mut ampstack[..n];
     let lp = linesper as usize;
     let seeds = &mut seeds[..n];
     let mut sp = 0usize;
@@ -851,11 +857,17 @@ fn seed_chase(seeds: &mut [f32], linesper: i32, n: usize) {
 // max_seeds
 // ---------------------------------------------------------------------------
 
-fn max_seeds(p: &VorbisLookPsy, seed: &mut [f32], flr: &mut [f32]) {
+fn max_seeds(
+    p: &VorbisLookPsy,
+    seed: &mut [f32],
+    flr: &mut [f32],
+    posstack: &mut [usize],
+    ampstack: &mut [f32],
+) {
     let n = p.total_octave_lines as usize;
     let linesper = p.eighth_octave_lines;
 
-    seed_chase(seed, linesper, n);
+    seed_chase(seed, linesper, n, posstack, ampstack);
 
     let mut linpos: usize = 0;
     let mut pos = p.octave[0] as i64 - p.firstoc - (linesper >> 1) as i64;
@@ -902,20 +914,24 @@ fn max_seeds(p: &VorbisLookPsy, seed: &mut [f32], flr: &mut [f32]) {
 // bark_noise_hybridmp
 // ---------------------------------------------------------------------------
 
-fn bark_noise_hybridmp(n: usize, b: &[i64], f: &[f32], noise: &mut [f32], offset: f32, fixed: i32) {
-    // Stack-allocated prefix-sum scratch (n <= MAX_LONG_HALF = 2048, the
-    // q-1 long block). Avoids the 5 × vec![0.0; n] heap allocs that would
-    // otherwise fire twice per long block (in vp_noisemask).
-    let mut big_n_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let mut big_x_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let mut big_xx_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let mut big_y_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let mut big_xy_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let big_n = &mut big_n_arr[..n];
-    let big_x = &mut big_x_arr[..n];
-    let big_xx = &mut big_xx_arr[..n];
-    let big_y = &mut big_y_arr[..n];
-    let big_xy = &mut big_xy_arr[..n];
+fn bark_noise_hybridmp(
+    n: usize,
+    b: &[i64],
+    f: &[f32],
+    noise: &mut [f32],
+    offset: f32,
+    fixed: i32,
+    pre: &mut [f32],
+) {
+    // Prefix-sum scratch (5 slots of MAX_LONG_HALF; n <= 2048, the q-1 long
+    // block). Every [..n] entry is written before it is read.
+    let mut slots = pre.chunks_exact_mut(crate::window::MAX_LONG_HALF);
+    let mut slot = || &mut slots.next().unwrap()[..n];
+    let big_n = slot();
+    let big_x = slot();
+    let big_xx = slot();
+    let big_y = slot();
+    let big_xy = slot();
 
     // Prefix-sum loops scoped so the running accumulators live in registers
     // (no per-iter spills to function-scope memory slots).
@@ -1173,19 +1189,23 @@ fn hyb_tail(
 // _vp_noisemask
 // ---------------------------------------------------------------------------
 
-pub fn vp_noisemask(p: &VorbisLookPsy, logmdct: &[f32], logmask: &mut [f32]) {
+pub fn vp_noisemask(
+    p: &VorbisLookPsy,
+    logmdct: &[f32],
+    logmask: &mut [f32],
+    scratch: &mut PsyScratch,
+) {
     let n = p.n;
-    // n-sized (not octave-line-sized) scratch: up to 2048 at q-1.
-    let mut work_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
-    let work = &mut work_arr[..n];
+    let pre = &mut scratch.prefix[..];
+    let work = &mut scratch.work[..n];
 
-    bark_noise_hybridmp(n, &p.bark, logmdct, logmask, 140.0, -1);
+    bark_noise_hybridmp(n, &p.bark, logmdct, logmask, 140.0, -1, pre);
 
     for i in 0..n {
         work[i] = logmdct[i] - logmask[i];
     }
 
-    bark_noise_hybridmp(n, &p.bark, work, logmask, 0.0, p.vi.noisewindowfixed);
+    bark_noise_hybridmp(n, &p.bark, work, logmask, 0.0, p.vi.noisewindowfixed, pre);
 
     for i in 0..n {
         work[i] = logmdct[i] - work[i];
@@ -1211,12 +1231,13 @@ pub fn vp_tonemask(
     logmask: &mut [f32],
     global_specmax: f32,
     local_specmax: f32,
+    scratch: &mut PsyScratch,
 ) {
     let n = p.n;
-    // Stack-allocated seed scratch. Q5 max observed total_octave_lines is 777
-    // (long block at 44.1kHz); MAX_OCTAVE_LINES gives headroom for 48k.
-    let mut seed_arr = [NEGINF; MAX_OCTAVE_LINES];
-    let mut seed = &mut seed_arr[..p.total_octave_lines as usize];
+    // Seed lines: Q5 max observed total_octave_lines is 777 (long block at
+    // 44.1kHz); MAX_OCTAVE_LINES gives headroom for 48k. Fully written by
+    // the transpose below before anything reads it.
+    let seed = &mut scratch.seed[..p.total_octave_lines as usize];
 
     let mut att = local_specmax + p.vi.ath_adjatt;
     if att < p.vi.ath_maxatt {
@@ -1233,8 +1254,8 @@ pub fn vp_tonemask(
     let total = p.total_octave_lines as usize;
     let lp = p.eighth_octave_lines as usize;
     let qlen = total.div_ceil(lp);
-    let mut phase_arr = [NEGINF; MAX_OCTAVE_LINES + MAX_LINESPER];
-    let phase = &mut phase_arr[..qlen * lp];
+    let phase = &mut scratch.phase[..qlen * lp];
+    phase.fill(NEGINF);
     seed_loop(p, &p.tonecurves, logfft, logmask, phase, global_specmax, qlen);
     for (q, chunk) in seed.chunks_mut(lp).enumerate() {
         for (r, s) in chunk.iter_mut().enumerate() {
@@ -1252,7 +1273,40 @@ pub fn vp_tonemask(
             let _ = std::fs::write("/tmp/lewtoff-debug/r_tone_seed.bin", &bytes);
         }
     }
-    max_seeds(p, seed, logmask);
+    max_seeds(p, seed, logmask, &mut scratch.posstack, &mut scratch.ampstack);
+}
+
+/// Reusable scratch for the per-block psy passes, so they don't zero tens
+/// of KB of stack arrays on every call. Contents carry nothing between
+/// calls: every entry is written before it is read.
+pub struct PsyScratch {
+    /// bark_noise_hybridmp's five prefix sums, MAX_LONG_HALF each.
+    prefix: Vec<f32>,
+    work: Vec<f32>,
+    seed: Vec<f32>,
+    phase: Vec<f32>,
+    posstack: Vec<usize>,
+    ampstack: Vec<f32>,
+}
+
+impl Default for PsyScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PsyScratch {
+    pub fn new() -> Self {
+        let half = crate::window::MAX_LONG_HALF;
+        Self {
+            prefix: vec![0.0; 5 * half],
+            work: vec![0.0; half],
+            seed: vec![0.0; MAX_OCTAVE_LINES],
+            phase: vec![0.0; MAX_OCTAVE_LINES + MAX_LINESPER],
+            posstack: vec![0; MAX_OCTAVE_LINES],
+            ampstack: vec![0.0; MAX_OCTAVE_LINES],
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

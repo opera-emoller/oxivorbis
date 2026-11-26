@@ -83,6 +83,7 @@ pub(crate) struct MappingScratch {
     pub floor_posts: Vec<Option<Vec<i32>>>,
     /// In-place FFT buffer (`MAX_LONG_BLOCK`; sliced to the block size).
     pub fft_buf: Vec<f32>,
+    pub psy: crate::psy::PsyScratch,
 }
 
 impl MappingScratch {
@@ -101,6 +102,7 @@ impl MappingScratch {
             nonzero: vec![0i32; channels],
             floor_posts: (0..channels).map(|_| None).collect(),
             fft_buf: vec![0.0f32; MAX_LONG_BLOCK],
+            psy: crate::psy::PsyScratch::new(),
         }
     }
 }
@@ -185,6 +187,7 @@ pub(crate) fn mapping0_forward(
     let nonzero: &mut Vec<i32> = &mut scratch.nonzero;
     let floor_posts: &mut Vec<Option<Vec<i32>>> = &mut scratch.floor_posts;
     let fft_buf: &mut [f32] = &mut scratch.fft_buf[..n];
+    let psy_scratch = &mut scratch.psy;
 
     let do_dump = !block_mode.is_long && dd::dump_enabled() && dd::try_claim_mapping0_dump();
 
@@ -315,7 +318,7 @@ pub(crate) fn mapping0_forward(
         logmask.fill(0.0);
 
         // Noise mask
-        vp_noisemask(psy_look, logmdct, &mut noise_bufs[i]);
+        vp_noisemask(psy_look, logmdct, &mut noise_bufs[i], psy_scratch);
 
         if crate::debug_flag!("LW_DEBUG_NOISE220") && block_mode.is_long && i == 0 {
             use std::sync::atomic::{AtomicUsize, Ordering};
@@ -346,6 +349,7 @@ pub(crate) fn mapping0_forward(
             &mut tone_bufs[i],
             *ampmax,
             local_ampmax[i],
+            psy_scratch,
         );
 
         if crate::debug_flag!("LW_DEBUG_TONE") {
