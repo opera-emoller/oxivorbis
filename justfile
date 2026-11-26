@@ -60,14 +60,18 @@ parity:
 #     just corpus 100       # first 100 files (sorted)
 # Pass `parallel` as the second arg to test the rayon path:
 #     just corpus 100 parallel
-corpus limit="" extra_features="":
+# Pass a libvorbis base_quality (-0.1..1.0, default 0.5 = q5) as the third
+# arg to sweep another quality (needs quality wiring in lewtoff first):
+#     just corpus 100 "" 0.3
+corpus limit="" extra_features="" quality="":
     #!/usr/bin/env bash
     set -euo pipefail
     FEATS="oracle"
     if [ -n "{{extra_features}}" ]; then
         FEATS="oracle,{{extra_features}}"
     fi
-    CORPUS_LIMIT={{limit}} cargo nextest run --features "$FEATS" --no-tests=warn \
+    CORPUS_LIMIT={{limit}} CORPUS_QUALITY={{quality}} \
+        cargo nextest run --features "$FEATS" --no-tests=warn \
         --run-ignored=only -E 'test(corpus_parity_sweep)'
 
 # Encode-throughput benchmark vs libvorbis (oggenc from vorbis-tools) using

@@ -4,8 +4,15 @@
 //!
 //! Inputs are decoded via ffmpeg to s16le 44.1kHz stereo, encoded by both
 //! lewtoff and the oracle-encoder, and compared byte-for-byte.
+//!
+//! `CORPUS_QUALITY=<base_quality>` (libvorbis -0.1..1.0, default 0.5 = q5)
+//! selects the encode quality. Only q5 is supported by lewtoff until
+//! quality is wired through (see tests/common/mod.rs); other values fail
+//! fast with a "pending quality wiring" message.
 
 #![cfg(feature = "oracle")]
+
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,13 +52,17 @@ fn ffmpeg_decode(path: &Path, rate: u32, ch: u16) -> Vec<i16> {
         .collect()
 }
 
-fn oracle_encode(samples: &[i16], rate: u32, ch: u16) -> Vec<u8> {
+fn oracle_encode(samples: &[i16], rate: u32, ch: u16, base_quality: f32) -> Vec<u8> {
     let raw: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
     use std::io::Write;
     use std::process::Stdio;
     let bin = "./tools/oracle-encoder/oracle-encoder";
     let mut child = Command::new(bin)
-        .args([&rate.to_string(), &ch.to_string()])
+        .args([
+            &rate.to_string(),
+            &ch.to_string(),
+            &base_quality.to_string(),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -66,21 +77,22 @@ fn oracle_encode(samples: &[i16], rate: u32, ch: u16) -> Vec<u8> {
     child.wait_with_output().unwrap().stdout
 }
 
-fn check_one(path: &Path) -> Result<(), String> {
+fn check_one(path: &Path, base_quality: f32) -> Result<(), String> {
     let samples = ffmpeg_decode(path, 44100, 2);
     if samples.is_empty() {
         return Err("empty samples".into());
     }
-    let oracle = oracle_encode(&samples, 44100, 2);
+    let oracle = oracle_encode(&samples, 44100, 2, base_quality);
     if oracle.len() < 18 {
         return Err(format!("oracle too short: {} bytes", oracle.len()));
     }
     let serial = u32::from_le_bytes(oracle[14..18].try_into().unwrap());
     let vendor: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
-    let lw = lewtoff::encode_with_serial_and_meta(
+    let lw = common::lewtoff_encode_q(
         &samples,
         lewtoff::SampleRate::Hz44100,
         lewtoff::Channels::Stereo,
+        base_quality,
         serial,
         Some(vendor),
         Some(b""),
@@ -131,11 +143,28 @@ fn walk_audio_files(root: &Path) -> Vec<PathBuf> {
 /// file found. Skips silently if the directory is absent (typical CI case).
 ///
 /// Set `CORPUS_LIMIT=N` to test only the first N files (sorted) — useful for
-/// quick smoke runs. Failures are reported per category and the test panics
+/// quick smoke runs. Set `CORPUS_QUALITY=<base_quality>` (default 0.5) to
+/// sweep at another libvorbis quality. Failures are reported per category and the test panics
 /// at the end with a summary if any file diverged.
 #[test]
 #[ignore = "manual sweep over <repo_root>/corpus/ (gitignored, large)"]
 fn corpus_parity_sweep() {
+    let base_quality = match std::env::var("CORPUS_QUALITY") {
+        Ok(s) if !s.trim().is_empty() => s
+            .trim()
+            .parse::<f32>()
+            .unwrap_or_else(|_| panic!("CORPUS_QUALITY={s:?} is not a float")),
+        _ => common::LEWTOFF_NATIVE_QUALITY,
+    };
+    assert!(
+        (-0.1..=1.0).contains(&base_quality),
+        "CORPUS_QUALITY {base_quality} outside libvorbis range -0.1..1.0"
+    );
+    assert!(
+        common::lewtoff_supports_quality(base_quality),
+        "pending quality wiring: lewtoff cannot encode CORPUS_QUALITY {base_quality} yet"
+    );
+
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);
     if !root.exists() {
         eprintln!("no {} directory; skipping", root.display());
@@ -177,7 +206,7 @@ fn corpus_parity_sweep() {
             "(root)".to_string()
         };
         total += 1;
-        match check_one(path) {
+        match check_one(path, base_quality) {
             Ok(()) => {
                 passed += 1;
                 by_category.entry(cat).or_default().0 += 1;
@@ -189,7 +218,7 @@ fn corpus_parity_sweep() {
         }
     }
 
-    eprintln!("\n=== corpus sweep (stereo, 44.1k) ===");
+    eprintln!("\n=== corpus sweep (stereo, 44.1k, base_quality {base_quality}) ===");
     eprintln!("Overall: {}/{} byte-identical", passed, total);
     eprintln!("By category:");
     for (cat, &(pass, fail)) in &by_category {

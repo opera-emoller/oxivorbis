@@ -10,6 +10,8 @@
 
 #![cfg(feature = "oracle")]
 
+mod common;
+
 use lewtoff::{Channels, SampleRate};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -18,13 +20,26 @@ use std::process::{Command, Stdio};
 /// Pinned compile flags (-O0 -ffp-contract=off) make this deterministic;
 /// CI / dev hosts produce identical bytes given identical input.
 fn oracle_encode_q5(samples: &[i16], rate: u32, channels: u16) -> Vec<u8> {
+    oracle_encode(samples, rate, channels, None)
+}
+
+/// Like [`oracle_encode_q5`] but at an arbitrary libvorbis base_quality
+/// (-0.1..1.0 == q-1..q10), passed as the oracle's 3rd argument.
+fn oracle_encode_q(samples: &[i16], rate: u32, channels: u16, base_quality: f32) -> Vec<u8> {
+    oracle_encode(samples, rate, channels, Some(base_quality))
+}
+
+fn oracle_encode(samples: &[i16], rate: u32, channels: u16, base_quality: Option<f32>) -> Vec<u8> {
     let raw: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
     let bin = std::env::current_dir()
         .unwrap()
         .join("tools/oracle-encoder/oracle-encoder");
-    let mut child = Command::new(&bin)
-        .arg(rate.to_string())
-        .arg(channels.to_string())
+    let mut cmd = Command::new(&bin);
+    cmd.arg(rate.to_string()).arg(channels.to_string());
+    if let Some(q) = base_quality {
+        cmd.arg(q.to_string());
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -347,3 +362,281 @@ fn parity_dump_sine_files() {
 // <repo_root>/corpus/ recursively and runs every file through the same
 // assert_parity_oracle path. That's gated by the `oracle` feature and
 // `#[ignore]` (manual run) since it depends on an out-of-tree corpus.
+
+// --- Quality-parameterized oracle parity ---
+
+fn rate_hz(rate: SampleRate) -> u32 {
+    match rate {
+        SampleRate::Hz44100 => 44100,
+        SampleRate::Hz48000 => 48000,
+    }
+}
+
+fn channel_count(channels: Channels) -> u16 {
+    match channels {
+        Channels::Mono => 1,
+        Channels::Stereo => 2,
+    }
+}
+
+/// Oracle parity at an arbitrary libvorbis base_quality (-0.1..1.0).
+///
+/// The oracle gets `base_quality` as its 3rd argument; lewtoff goes through
+/// `common::lewtoff_encode_q`, which only supports q5 until quality is
+/// wired into the encoder (other qualities panic with "pending quality
+/// wiring" — such tests are `#[ignore]`d).
+fn assert_parity_oracle_q(
+    samples: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+) {
+    let oracle_bytes = oracle_encode_q(
+        samples,
+        rate_hz(rate),
+        channel_count(channels),
+        base_quality,
+    );
+    let serial = extract_serial(&oracle_bytes);
+    let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
+    let lewtoff_bytes = common::lewtoff_encode_q(
+        samples,
+        rate,
+        channels,
+        base_quality,
+        serial,
+        Some(&vendor),
+        Some(&encoder_tag),
+    );
+    if lewtoff_bytes != oracle_bytes {
+        let div = first_diff(&lewtoff_bytes, &oracle_bytes);
+        let start = div.saturating_sub(8);
+        let lw_end = (div + 16).min(lewtoff_bytes.len());
+        let or_end = (div + 16).min(oracle_bytes.len());
+        panic!(
+            "ORACLE parity (base_quality {base_quality}) diverged at byte {div}\n  lewtoff len: {}\n  oracle  len: {}\n  lewtoff ctx: {:02x?}\n  oracle  ctx: {:02x?}",
+            lewtoff_bytes.len(),
+            oracle_bytes.len(),
+            &lewtoff_bytes[start.min(lewtoff_bytes.len())..lw_end],
+            &oracle_bytes[start.min(oracle_bytes.len())..or_end],
+        );
+    }
+}
+
+/// Deterministic xorshift32 so the noise signals are reproducible.
+struct XorShift32(u32);
+
+impl XorShift32 {
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+
+    /// Uniform in [-1, 1).
+    fn next_f32(&mut self) -> f32 {
+        (self.next_u32() >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Signal {
+    /// 1 s digital silence.
+    Silence,
+    /// 1 s sine (440 Hz left/mono, 660 Hz right).
+    Sine440,
+    /// 1 s full-scale sawtooth ramp over interleaved samples.
+    Ramp,
+    /// 2 s seeded white noise mixed with two tones.
+    NoiseTone,
+    /// ~10 s quiet tone bed with sharp decaying noise bursts, so the
+    /// envelope detector picks short blocks / impulse handling.
+    Transients,
+}
+
+impl Signal {
+    fn generate(self, rate: u32, channels: u16) -> Vec<i16> {
+        let ch = channels as usize;
+        let sr = rate as f32;
+        let tau = 2.0 * std::f32::consts::PI;
+        let frames = |secs: f32| (sr * secs) as usize;
+        let clip = |v: f32| v.clamp(-32768.0, 32767.0) as i16;
+        match self {
+            Signal::Silence => vec![0; frames(1.0) * ch],
+            Signal::Sine440 => (0..frames(1.0))
+                .flat_map(|i| {
+                    let t = i as f32 / sr;
+                    (0..ch).map(move |c| {
+                        let f = if c == 0 { 440.0 } else { 660.0 };
+                        (f32::sin(tau * f * t) * 16384.0) as i16
+                    })
+                })
+                .collect(),
+            Signal::Ramp => (0..frames(1.0) * ch)
+                .map(|i| ((i % 65536) as i32 - 32768) as i16)
+                .collect(),
+            Signal::NoiseTone => {
+                let mut rng = XorShift32(0x1234_5678);
+                let mut out = Vec::with_capacity(frames(2.0) * ch);
+                for i in 0..frames(2.0) {
+                    let t = i as f32 / sr;
+                    for c in 0..ch {
+                        let tone = f32::sin(tau * 330.0 * t) * 6000.0
+                            + f32::sin(tau * (2500.0 + 500.0 * c as f32) * t) * 3000.0;
+                        out.push(clip(tone + rng.next_f32() * 4000.0));
+                    }
+                }
+                out
+            }
+            Signal::Transients => {
+                let mut rng = XorShift32(0x9E37_79B9);
+                let n = frames(10.0);
+                // Burst onsets at irregular ~0.2..0.6 s spacing.
+                let mut onsets = Vec::new();
+                let mut pos = frames(0.25);
+                while pos < n {
+                    onsets.push(pos);
+                    pos += frames(0.2) + (rng.next_u32() as usize % frames(0.4));
+                }
+                let decay = 1.0 / (sr * 0.03);
+                let mut out = Vec::with_capacity(n * ch);
+                let mut next = 0;
+                let mut since = usize::MAX;
+                for i in 0..n {
+                    if next < onsets.len() && onsets[next] == i {
+                        since = 0;
+                        next += 1;
+                    }
+                    let t = i as f32 / sr;
+                    let env = if since == usize::MAX {
+                        0.0
+                    } else {
+                        f32::exp(-(since as f32) * decay)
+                    };
+                    since = since.saturating_add(1);
+                    for c in 0..ch {
+                        let bed = f32::sin(tau * (220.0 + 110.0 * c as f32) * t) * 800.0;
+                        out.push(clip(bed + rng.next_f32() * 28000.0 * env));
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+fn run_quality_case(base_quality: f32, rate: SampleRate, channels: Channels, signal: Signal) {
+    let samples = signal.generate(rate_hz(rate), channel_count(channels));
+    assert_parity_oracle_q(&samples, rate, channels, base_quality);
+}
+
+/// Test matrix: `oracle_parity_q::<quality>::<config>::<signal>`.
+/// One representative base_quality per libvorbis template interval
+/// (-0.1, 0.0, ..., 1.0 are the 12 anchor points; the midpoints exercise
+/// interpolation between adjacent templates) plus the endpoint 1.0 and
+/// q5 itself (0.5, the only one lewtoff encodes today).
+mod oracle_parity_q {
+    use super::*;
+
+    macro_rules! signal_tests {
+        ($q:expr, $rate:expr, $ch:expr; $(#[$m:meta])*) => {
+            #[test] $(#[$m])* fn silence() { run_quality_case($q, $rate, $ch, Signal::Silence) }
+            #[test] $(#[$m])* fn sine440() { run_quality_case($q, $rate, $ch, Signal::Sine440) }
+            #[test] $(#[$m])* fn ramp() { run_quality_case($q, $rate, $ch, Signal::Ramp) }
+            #[test] $(#[$m])* fn noise_tone() { run_quality_case($q, $rate, $ch, Signal::NoiseTone) }
+            #[test] $(#[$m])* fn transients() { run_quality_case($q, $rate, $ch, Signal::Transients) }
+        };
+    }
+
+    macro_rules! quality {
+        ($name:ident, $q:expr $(, #[$m:meta])*) => {
+            mod $name {
+                use super::*;
+                mod mono44 { use super::*; signal_tests!($q, SampleRate::Hz44100, Channels::Mono; $(#[$m])*); }
+                mod stereo44 { use super::*; signal_tests!($q, SampleRate::Hz44100, Channels::Stereo; $(#[$m])*); }
+                mod mono48 { use super::*; signal_tests!($q, SampleRate::Hz48000, Channels::Mono; $(#[$m])*); }
+                mod stereo48 { use super::*; signal_tests!($q, SampleRate::Hz48000, Channels::Stereo; $(#[$m])*); }
+            }
+        };
+    }
+
+    quality!(q_m005, -0.05, #[ignore = "pending quality wiring"]);
+    quality!(q_005, 0.05, #[ignore = "pending quality wiring"]);
+    quality!(q_015, 0.15, #[ignore = "pending quality wiring"]);
+    quality!(q_025, 0.25, #[ignore = "pending quality wiring"]);
+    quality!(q_035, 0.35, #[ignore = "pending quality wiring"]);
+    quality!(q_045, 0.45, #[ignore = "pending quality wiring"]);
+    quality!(q_050, 0.5);
+    quality!(q_055, 0.55, #[ignore = "pending quality wiring"]);
+    quality!(q_065, 0.65, #[ignore = "pending quality wiring"]);
+    quality!(q_075, 0.75, #[ignore = "pending quality wiring"]);
+    quality!(q_085, 0.85, #[ignore = "pending quality wiring"]);
+    quality!(q_095, 0.95, #[ignore = "pending quality wiring"]);
+    quality!(q_100, 1.0, #[ignore = "pending quality wiring"]);
+}
+
+/// Reassemble Ogg packets from a stream (single logical stream).
+fn ogg_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut packets = Vec::new();
+    let mut cur = Vec::new();
+    let mut i = 0;
+    while i + 27 <= bytes.len() {
+        let n = bytes[i + 26] as usize;
+        let lacing = &bytes[i + 27..i + 27 + n];
+        let mut off = i + 27 + n;
+        for &l in lacing {
+            cur.extend_from_slice(&bytes[off..off + l as usize]);
+            off += l as usize;
+            if l < 255 {
+                packets.push(std::mem::take(&mut cur));
+            }
+        }
+        i = off;
+    }
+    packets
+}
+
+/// Sanity check on the matrix itself: the Transients signal must make
+/// libvorbis pick short blocks (mode 0 in libvorbis's 2-mode setup; the
+/// mode number is bit 1 of an audio packet's first byte).
+#[test]
+fn oracle_parity_transients_signal_uses_short_blocks() {
+    for (rate, ch) in [(44100, 1), (48000, 2)] {
+        let samples = Signal::Transients.generate(rate, ch);
+        let out = oracle_encode_q(&samples, rate, ch, 0.5);
+        let audio = &ogg_packets(&out)[3..];
+        let short = audio
+            .iter()
+            .filter(|p| !p.is_empty() && p[0] & 0b10 == 0)
+            .count();
+        assert!(
+            short >= 20,
+            "{rate} Hz x{ch}: only {short}/{} short blocks",
+            audio.len()
+        );
+    }
+}
+
+/// Regression: Q5 digital silence packs into 1-byte packets, so libogg
+/// force-flushes pages at 255 segments (ogg_stream_flush_i `vals==255`).
+/// lewtoff's page accounting used to carry its byte/packet counters across
+/// those forced flushes and cut a short page once ~4096 cumulative packets
+/// (~95 s at 44.1 kHz) had gone by. 120 s of silence crosses that point.
+#[test]
+fn oracle_parity_long_silence_mono44() {
+    assert_parity_oracle(
+        &vec![0i16; 44100 * 120],
+        SampleRate::Hz44100,
+        Channels::Mono,
+    );
+}
+
+/// Same condition on a stereo 48 kHz stream (~4096 packets after ~87 s).
+#[test]
+fn oracle_parity_long_silence_stereo48() {
+    let stereo = vec![0i16; 48000 * 2 * 100];
+    assert_parity_oracle(&stereo, SampleRate::Hz48000, Channels::Stereo);
+}

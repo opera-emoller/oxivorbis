@@ -132,6 +132,16 @@ cargo nextest run --features oracle parity_    # parity vs oracle-encoder + ogge
 just parity                                    # parity for serial AND parallel paths
 ```
 
+Quality-parameterized parity lives in `tests/parity.rs` as the
+`oracle_parity_q::<quality>::<config>::<signal>` matrix: one
+base_quality per libvorbis template interval (-0.05, 0.05 … 0.95, 1.0,
+plus 0.5) × 44.1/48 kHz × mono/stereo × silence / sine / ramp /
+noise+tone / 10 s transients. Only q5 runs today; the rest are
+`#[ignore = "pending quality wiring"]` until lewtoff accepts a quality
+(see `tests/common/mod.rs`). Run them with `--run-ignored=all`. The
+corpus sweep takes the quality via `CORPUS_QUALITY` (default 0.5), e.g.
+`just corpus 100 "" 0.3`.
+
 CI (`.github/workflows/ci.yml`) installs `vorbis-tools`, builds the
 oracle from the vendored sources, and runs both passes on Ubuntu, plus a `wasm32-unknown-unknown`
 build to lock in target portability.
