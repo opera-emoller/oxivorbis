@@ -31,7 +31,6 @@ use crate::headers::{write_comment_header, write_id_header_with, write_setup_pac
 use crate::lpc::{lpc_from_data, lpc_predict};
 use crate::mapping0::{BlockMode, MappingScratch, mapping0_forward};
 use crate::ogg_pages::OggStreamWriter;
-use crate::psy::{VorbisLookPsy, vp_psy_init};
 use crate::setup::{EncoderSetup, encoder_setup_for};
 use crate::window::{BlockSizes, apply_window_bs};
 use crate::{Channels, SampleRate};
@@ -191,8 +190,6 @@ type PassC = (Vec<(u64, bool)>, Pending<Vec<Vec<u8>>>);
 
 pub(crate) struct EncoderCore {
     setup: Arc<EncoderSetup>,
-    /// `psy_look[blocktype]`: impulse, padding, transition, long.
-    psy_looks: Arc<[VorbisLookPsy; 4]>,
     bs: BlockSizes,
     ch: usize,
     short_mode: usize,
@@ -306,17 +303,7 @@ impl EncoderCore {
             .position(|m| m.blockflag)
             .expect("setup must contain a long-block mode");
 
-        // ci->psy_param[0..4]: impulse / padding (n2 = bs0/2), transition /
-        // long (n2 = bs1/2).
         let gi = &cfg.psy_global;
-        let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
-        let psy_looks = Arc::new([
-            vp_psy_init(vi_impulse, gi, bs.short_half(), rate_hz),
-            vp_psy_init(vi_padding, gi, bs.short_half(), rate_hz),
-            vp_psy_init(vi_transition, gi, bs.long_half(), rate_hz),
-            vp_psy_init(vi_long, gi, bs.long_half(), rate_hz),
-        ]);
-
         let mut ogg = OggStreamWriter::new(serial);
         {
             let mut w = BitWriter::new();
@@ -353,7 +340,6 @@ impl EncoderCore {
         let minenergy = gi.preecho_minenergy;
 
         Self {
-            psy_looks,
             bs,
             ch,
             short_mode,
@@ -811,7 +797,7 @@ impl EncoderCore {
         let mut w = BitWriter::new();
         mapping0_forward(
             &win,
-            &self.psy_looks[block.blocktype as usize],
+            &self.setup.psy_looks[block.blocktype as usize],
             &self.setup.cfg.psy_global,
             &mut self.ampmax,
             &mut self.floor_states,
@@ -891,14 +877,7 @@ impl EncoderCore {
             .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
             .collect();
         let input_ampmax = self.chain_ampmax(&jobs, &local_max);
-        let packets = analyze_batch(
-            &self.setup,
-            &self.psy_looks,
-            &self.floor_seed,
-            self.ch,
-            &jobs,
-            &input_ampmax,
-        );
+        let packets = analyze_batch(&self.setup, &self.floor_seed, self.ch, &jobs, &input_ampmax);
         for (job, packet) in jobs.iter().zip(&packets) {
             self.ogg
                 .write_packet(packet, job.granulepos, job.eos, false);
@@ -910,7 +889,7 @@ impl EncoderCore {
     #[cfg(feature = "parallel")]
     fn chain_ampmax(&mut self, jobs: &[BlockJob], local_max: &[f32]) -> Vec<f32> {
         let gi = &self.setup.cfg.psy_global;
-        let rate = self.psy_looks[0].rate;
+        let rate = self.setup.psy_looks[0].rate;
         let mut input_ampmax = Vec::with_capacity(jobs.len());
         let mut prev = self.ampmax;
         for (job, &m) in jobs.iter().zip(local_max) {
@@ -940,12 +919,10 @@ impl EncoderCore {
             let meta = jobs.iter().map(|j| (j.granulepos, j.eos)).collect();
             let (tx, rx) = channel();
             let setup = Arc::clone(&self.setup);
-            let psy_looks = Arc::clone(&self.psy_looks);
             let floor_seed = Arc::clone(&self.floor_seed);
             let ch = self.ch;
             rayon::spawn(move || {
-                let packets =
-                    analyze_batch(&setup, &psy_looks, &floor_seed, ch, &jobs, &input_ampmax);
+                let packets = analyze_batch(&setup, &floor_seed, ch, &jobs, &input_ampmax);
                 let _ = tx.send(packets);
             });
             self.pass_c.push_back((meta, Pending::new(rx)));
@@ -1029,7 +1006,6 @@ fn with_scratch<R>(ch: usize, f: impl FnOnce(&mut MappingScratch) -> R) -> R {
 #[cfg(feature = "parallel")]
 fn analyze_batch(
     setup: &EncoderSetup,
-    psy_looks: &[VorbisLookPsy; 4],
     floor_seed: &[Floor1State],
     ch: usize,
     jobs: &[BlockJob],
@@ -1037,6 +1013,7 @@ fn analyze_batch(
 ) -> Vec<Vec<u8>> {
     use rayon::prelude::*;
     let gi = &setup.cfg.psy_global;
+    let psy_looks = &setup.psy_looks;
     let setup = &setup.setup;
     jobs.par_iter()
         .zip(input_ampmax.par_iter())

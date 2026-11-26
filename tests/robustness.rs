@@ -228,6 +228,51 @@ fn last_granule(pages: &[u8]) -> Option<u64> {
     last
 }
 
+/// The per-(rate, channels, quality) setup cache (codebooks, psy lookups)
+/// under contention: 32 threads released together, each encoding at
+/// settings from a pool of 24 keys (three times the cache capacity, so
+/// entries are evicted and rebuilt concurrently), must match encodes
+/// made one at a time.
+#[test]
+fn setup_cache_is_thread_safe() {
+    let mut keys = Vec::new();
+    for (rate, channels) in CONFIGS {
+        for q in [-1.0f32, 0.0, 2.5, 5.0, 7.7, 10.0] {
+            keys.push((rate, channels, q));
+        }
+    }
+    let pcm = music(11_025, 6); // 0.25 s stereo; mono uses its first half
+    let enc = |&(rate, channels, q): &(SampleRate, Channels, f32)| {
+        let frames = pcm.len() / 2;
+        let input = if channels == Channels::Mono {
+            &pcm[..frames]
+        } else {
+            &pcm[..]
+        };
+        let opts = Options::default().with_quality(Quality::new(q).unwrap());
+        lewtoff::encode(input, rate, channels, &opts)
+    };
+    let want: Vec<Vec<u8>> = keys.iter().map(enc).collect();
+    let threads = 32;
+    let barrier = std::sync::Barrier::new(threads);
+    std::thread::scope(|s| {
+        for t in 0..threads {
+            let (keys, want, enc, barrier) = (&keys, &want, &enc, &barrier);
+            s.spawn(move || {
+                barrier.wait();
+                for i in 0..keys.len() {
+                    let k = (t * 7 + i * 5) % keys.len();
+                    assert!(
+                        enc(&keys[k]) == want[k],
+                        "thread {t}: key {:?} differs",
+                        keys[k]
+                    );
+                }
+            });
+        }
+    });
+}
+
 /// With `parallel`, how far `write`'s output trails the input must not
 /// grow with the thread count: an encoder sized for a 64-thread pool
 /// still returns pages within ~16 s of audio (the batch cap; 3 batches of

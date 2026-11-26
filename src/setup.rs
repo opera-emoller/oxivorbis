@@ -330,22 +330,27 @@ fn unpack_mapping(
 
 use std::sync::{Arc, Mutex};
 
+use crate::psy::{VorbisLookPsy, vp_psy_init};
 use crate::quality::{QualityConfig, quality_config};
 
 /// Everything quality-dependent the encoder needs that does not depend on
-/// the input samples: the derived parameters, the setup header packet, and
-/// its parsed form.
+/// the input samples: the derived parameters, the setup header packet, its
+/// parsed form, and the psychoacoustic lookups. All of it is immutable
+/// once built, so one instance is shared by every encode with the same key.
 pub(crate) struct EncoderSetup {
     pub cfg: QualityConfig,
     /// Complete setup header packet (starts with `\x05vorbis`).
     pub packet: Vec<u8>,
     pub setup: CodecSetup,
+    /// `psy_look[blocktype]` (`vp_psy_init` of `ci->psy_param[0..4]`):
+    /// impulse and padding at n = bs0/2, transition and long at bs1/2.
+    pub psy_looks: [VorbisLookPsy; 4],
 }
 
 /// Number of distinct (rate, channels, quality) setups kept alive. Building
-/// one costs a few hundred microseconds (codebook unpacking dominates);
-/// the cache keeps repeated encodes of short files at the same settings
-/// from paying it every call.
+/// one costs about a millisecond (the psy tone curves and codebook
+/// unpacking dominate); the cache keeps repeated encodes of short files at
+/// the same settings from paying it every call.
 const CACHE_CAP: usize = 8;
 
 type CacheKey = (u32, usize, u32);
@@ -365,10 +370,24 @@ fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> Encoder
     );
     let setup = unpack_setup(&generated.packet, channels, &generated.params)
         .expect("generated setup header failed to parse");
+    let gi = &cfg.psy_global;
+    let bs = crate::window::BlockSizes {
+        short: cfg.blocksizes[0],
+        long: cfg.blocksizes[1],
+    };
+    let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
+    let rate = rate as i64;
+    let psy_looks = [
+        vp_psy_init(vi_impulse, gi, bs.short_half(), rate),
+        vp_psy_init(vi_padding, gi, bs.short_half(), rate),
+        vp_psy_init(vi_transition, gi, bs.long_half(), rate),
+        vp_psy_init(vi_long, gi, bs.long_half(), rate),
+    ];
     EncoderSetup {
         cfg,
         packet: generated.packet,
         setup,
+        psy_looks,
     }
 }
 
