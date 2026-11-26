@@ -123,20 +123,23 @@ fn psy_compute_mask_determinism() {
 
     let actual_bytes: Vec<u8> = mask.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let expected_path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/psy/mask_default.bin");
-
-    if !expected_path.exists() {
-        // First run: write the expected file and pass
-        std::fs::write(&expected_path, &actual_bytes).expect("failed to write expected bytes");
-        eprintln!("Wrote {} bytes to {:?}", actual_bytes.len(), expected_path);
+    // A committed lewtoff snapshot (not an oracle vector): it pins the mask
+    // bits across hosts, including wasm, and catches unintended changes.
+    // Parity of the psy layer itself is covered end to end by the oracle
+    // tests. The file is compiled in, so a missing snapshot fails the build
+    // instead of passing silently. Re-bless deliberately with
+    // LEWTOFF_BLESS=1 (native only).
+    let expected_bytes: &[u8] = include_bytes!("vectors/psy/mask_default.bin");
+    if std::env::var_os("LEWTOFF_BLESS").is_some() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/vectors/psy/mask_default.bin");
+        std::fs::write(&path, &actual_bytes).expect("failed to write expected bytes");
+        eprintln!("blessed {} bytes to {}", actual_bytes.len(), path.display());
         return;
     }
-
-    let expected_bytes = std::fs::read(&expected_path).expect("failed to read expected bytes");
     assert_eq!(
         actual_bytes.as_slice(),
-        expected_bytes.as_slice(),
+        expected_bytes,
         "psy mask output differs from committed expected bytes — cross-platform determinism failure"
     );
 }
