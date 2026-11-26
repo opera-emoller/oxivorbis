@@ -44,7 +44,7 @@ lw_sha256_check() {
     }
     local listed actual
     listed="$(awk '{print $2}' "$dir/SHA256SUMS" | LC_ALL=C sort)"
-    actual="$(cd "$dir" && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort)"
+    actual="$(cd "$dir" && find . -type f ! -name SHA256SUMS ! -name .DS_Store | sed 's|^\./||' | LC_ALL=C sort)"
     if [ "$listed" != "$actual" ]; then
         echo "$(basename "$0"): file list of $dir differs from its SHA256SUMS:" >&2
         diff <(echo "$listed") <(echo "$actual") >&2 || true
