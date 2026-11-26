@@ -20,7 +20,7 @@
 
 use crate::mdct::mdct_forward_envelope;
 use crate::psy::VorbisInfoPsyGlobal;
-use crate::window::{LONG_BLOCK, SHORT_BLOCK};
+use crate::window::BlockSizes;
 
 pub const VE_PRE: usize = 16;
 pub const VE_WIN: usize = 4;
@@ -557,7 +557,18 @@ mod tests {
 /// PADDING (returns false). Long blocks don't use this — their type is
 /// determined by lW/nW.
 pub fn short_is_impulse(marks: &[bool], curmark: i64, center_w: i64) -> bool {
-    let bs0 = SHORT_BLOCK as i64;
+    short_is_impulse_bs(BlockSizes::BS_256_2048, marks, curmark, center_w)
+}
+
+/// [`short_is_impulse`] for an arbitrary blocksize pair (the scan window is
+/// `centerW ± bs.short/2`).
+pub(crate) fn short_is_impulse_bs(
+    bs: BlockSizes,
+    marks: &[bool],
+    curmark: i64,
+    center_w: i64,
+) -> bool {
+    let bs0 = bs.short as i64;
     let step = ENV_SEARCHSTEP as i64;
     let begin_w = center_w - bs0 / 4 - bs0 / 4;
     let end_w = center_w + bs0 / 4 + bs0 / 4;
@@ -581,15 +592,23 @@ pub fn short_is_impulse(marks: &[bool], curmark: i64, center_w: i64) -> bool {
 /// either 1 (no transient detected past the leading-edge ampbuf-init noise)
 /// or 2 (transient detected before testW=2176).
 pub fn n_short_blocks_at_start(marks: &[bool]) -> usize {
-    // libvorbis _ve_envelope_search: cursor starts at bs1/2 = 1024 (mark
-    // index 16). testW for the first decision = centerW + bs[0]/4 + bs[1]/2
-    // + bs[0]/4 = 1024 + 64 + 1024 + 64 = 2176 → mark index 34. So only
-    // marks at index 16 ≤ i < 34 inform the first-block decision.
+    n_short_blocks_at_start_bs(BlockSizes::BS_256_2048, marks)
+}
+
+/// [`n_short_blocks_at_start`] for an arbitrary blocksize pair.
+pub(crate) fn n_short_blocks_at_start_bs(bs: BlockSizes, marks: &[bool]) -> usize {
+    // libvorbis _ve_envelope_search: cursor starts at bs1/2 (1024 → mark
+    // index 16 for 256/2048). testW for the first decision = centerW +
+    // bs[0]/4 + bs[1]/2 + bs[0]/4 (= 1024 + 64 + 1024 + 64 = 2176 → mark
+    // index 34 for 256/2048; 2048 + 128 + 2048 + 128 = 4352 → 68 for
+    // 512/4096). So only marks at cursor_idx ≤ i < test_idx inform the
+    // first-block decision.
     //
     // The ampbuf-init noise only marks indices 0 and 1, which sit below the
     // cursor floor and thus never contribute to a decision.
-    let cursor_idx = 1024 / ENV_SEARCHSTEP; // = 16
-    let test_idx = 2176 / ENV_SEARCHSTEP; // = 34
+    let center_w = bs.long / 2;
+    let cursor_idx = center_w / ENV_SEARCHSTEP;
+    let test_idx = (center_w + bs.short / 4 + bs.long / 2 + bs.short / 4) / ENV_SEARCHSTEP;
     let scan_end = test_idx.min(marks.len());
     for i in cursor_idx..scan_end {
         if marks[i] {
@@ -615,8 +634,27 @@ pub fn next_w(
     center_w: i64,
     w: i32,
 ) -> (i32, i64, i64) {
-    let bs0 = SHORT_BLOCK as i64;
-    let bs1 = LONG_BLOCK as i64;
+    next_w_bs(
+        BlockSizes::BS_256_2048,
+        marks,
+        cursor,
+        curmark_in,
+        center_w,
+        w,
+    )
+}
+
+/// [`next_w`] for an arbitrary blocksize pair.
+pub(crate) fn next_w_bs(
+    bs: BlockSizes,
+    marks: &[bool],
+    cursor: i64,
+    curmark_in: i64,
+    center_w: i64,
+    w: i32,
+) -> (i32, i64, i64) {
+    let bs0 = bs.short as i64;
+    let bs1 = bs.long as i64;
     let step = ENV_SEARCHSTEP as i64;
     let test_w = center_w + (if w == 1 { bs1 } else { bs0 }) / 4 + bs1 / 2 + bs0 / 4;
 
@@ -657,12 +695,21 @@ pub fn full_w_pattern(marks: &[bool], n_samples: i64) -> Vec<i32> {
 /// position (in env-mark space) — needed for `_ve_envelope_mark` IMPULSE
 /// vs PADDING decisions.
 pub fn full_w_pattern_with_curmark(marks: &[bool], n_samples: i64) -> (Vec<i32>, Vec<i64>) {
-    let bs0 = SHORT_BLOCK as i64;
-    let bs1 = LONG_BLOCK as i64;
+    full_w_pattern_with_curmark_bs(BlockSizes::BS_256_2048, marks, n_samples)
+}
+
+/// [`full_w_pattern_with_curmark`] for an arbitrary blocksize pair.
+pub(crate) fn full_w_pattern_with_curmark_bs(
+    bs: BlockSizes,
+    marks: &[bool],
+    n_samples: i64,
+) -> (Vec<i32>, Vec<i64>) {
+    let bs0 = bs.short as i64;
+    let bs1 = bs.long as i64;
 
     // Initial state mirrors libvorbis init:
-    //   v->W = 0, v->lW = 0, v->nW = 0, v->centerW = bs1/2 = 1024
-    //   ve->cursor = bs1/2 = 1024, ve->curmark = 0 (calloc'd init)
+    //   v->W = 0, v->lW = 0, v->nW = 0, v->centerW = bs1/2 (1024 / 2048)
+    //   ve->cursor = bs1/2, ve->curmark = 0 (calloc'd init)
     let mut center_w: i64 = bs1 / 2;
     let mut cursor: i64 = bs1 / 2;
     let mut curmark: i64 = 0;
@@ -678,7 +725,7 @@ pub fn full_w_pattern_with_curmark(marks: &[bool], n_samples: i64) -> (Vec<i32>,
         // no upcoming mark), default to long (= what libvorbis settles on
         // once data accumulates). At true EOS the last block becomes short
         // via the same default — see how libvorbis sets nW=0 at eofflag.
-        let (next, new_cursor, new_curmark) = next_w(marks, cursor, curmark, center_w, w);
+        let (next, new_cursor, new_curmark) = next_w_bs(bs, marks, cursor, curmark, center_w, w);
         cursor = new_cursor;
         curmark = new_curmark;
         let nw = if next == -1 { 1 } else { next };
@@ -720,15 +767,26 @@ pub fn full_w_pattern_with_curmark(marks: &[bool], n_samples: i64) -> (Vec<i32>,
 /// has been fed and the blockout drain has run as far as it can without
 /// `eofflag` being set. This is the value libvorbis stores in `v->eofflag`.
 pub fn simulate_eofflag(marks: &[bool], total_audio: i64, chunk_size: i64) -> i64 {
-    let bs0 = SHORT_BLOCK as i64;
-    let bs1 = LONG_BLOCK as i64;
+    simulate_eofflag_bs(BlockSizes::BS_256_2048, marks, total_audio, chunk_size)
+}
+
+/// [`simulate_eofflag`] for an arbitrary blocksize pair.
+pub(crate) fn simulate_eofflag_bs(
+    bs: BlockSizes,
+    marks: &[bool],
+    total_audio: i64,
+    chunk_size: i64,
+) -> i64 {
+    let bs0 = bs.short as i64;
+    let bs1 = bs.long as i64;
     let step = ENV_SEARCHSTEP as i64;
     let ve_win = VE_WIN as i64;
 
     let mut pcm_current: i64 = bs1 / 2; // libvorbis init
     let mut samples_fed: i64 = 0;
     let mut preextrapolated = false;
-    let preextrap_threshold: i64 = bs1 / 2 + bs1; // 3072
+    // centerW + blocksizes[1] (3072 for 256/2048, 6144 for 512/4096)
+    let preextrap_threshold: i64 = bs1 / 2 + bs1;
 
     let center_w: i64 = bs1 / 2; // always reset to bs1/2 after each emit
     let mut cursor: i64 = bs1 / 2;

@@ -29,8 +29,9 @@ const NEGINF: f32 = -9999.0_f32;
 
 /// Upper bound on `VorbisLookPsy::total_octave_lines` — used to size the
 /// stack-allocated seed scratch in `vp_tonemask`. Observed max for the Q5
-/// supported input space is 777 (long block at 44.1kHz); 1024 gives some
-/// headroom and matches the long-block half-spectrum size.
+/// supported input space is 777 (long block at 44.1kHz, n=1024); the q-1
+/// long block (n=2048) reaches 841 at 44.1kHz, so 1024 still has headroom.
+/// (n-sized scratch uses `window::MAX_LONG_HALF` instead.)
 const MAX_OCTAVE_LINES: usize = 1024;
 
 /// Q5 normal_partition is 32; older 16-partition layouts also fit. Used for
@@ -901,14 +902,14 @@ fn max_seeds(p: &VorbisLookPsy, seed: &mut [f32], flr: &mut [f32]) {
 // ---------------------------------------------------------------------------
 
 fn bark_noise_hybridmp(n: usize, b: &[i64], f: &[f32], noise: &mut [f32], offset: f32, fixed: i32) {
-    // Stack-allocated prefix-sum scratch (n <= LONG_HALF=1024). Avoids the
-    // 5 × vec![0.0; n] heap allocs that would otherwise fire twice per
-    // long block (in vp_noisemask).
-    let mut big_n_arr = [0.0_f32; crate::window::LONG_HALF];
-    let mut big_x_arr = [0.0_f32; crate::window::LONG_HALF];
-    let mut big_xx_arr = [0.0_f32; crate::window::LONG_HALF];
-    let mut big_y_arr = [0.0_f32; crate::window::LONG_HALF];
-    let mut big_xy_arr = [0.0_f32; crate::window::LONG_HALF];
+    // Stack-allocated prefix-sum scratch (n <= MAX_LONG_HALF = 2048, the
+    // q-1 long block). Avoids the 5 × vec![0.0; n] heap allocs that would
+    // otherwise fire twice per long block (in vp_noisemask).
+    let mut big_n_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
+    let mut big_x_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
+    let mut big_xx_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
+    let mut big_y_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
+    let mut big_xy_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
     let big_n = &mut big_n_arr[..n];
     let big_x = &mut big_x_arr[..n];
     let big_xx = &mut big_xx_arr[..n];
@@ -1182,7 +1183,8 @@ fn bark_noise_hybridmp(n: usize, b: &[i64], f: &[f32], noise: &mut [f32], offset
 
 pub fn vp_noisemask(p: &VorbisLookPsy, logmdct: &[f32], logmask: &mut [f32]) {
     let n = p.n;
-    let mut work_arr = [0.0_f32; MAX_OCTAVE_LINES];
+    // n-sized (not octave-line-sized) scratch: up to 2048 at q-1.
+    let mut work_arr = [0.0_f32; crate::window::MAX_LONG_HALF];
     let work = &mut work_arr[..n];
 
     bark_noise_hybridmp(n, &p.bark, logmdct, logmask, 140.0, -1);
