@@ -80,23 +80,34 @@ job-collection vec adds a few microseconds per call you don't need.
 
 ## How parity is enforced
 
-`tests/parity.rs` shells out to `tools/oracle-encoder/oracle-encoder` —
-a small C program that statically links the libvorbis 1.3.7 sources
-vendored at `tools/debug-libvorbis-dump/vendored-libvorbis/`, compiled
-with `-O0 -ffp-contract=off -std=c99` so the bytes are deterministic
-across hosts.
+`tests/parity.rs` (behind the `oracle` feature) byte-diffs lewtoff's
+output against two reference encoders:
 
-Build the oracle once after cloning:
+- **`oracle_parity_*`** — the authoritative tests. They shell out to
+  `tools/oracle-encoder/oracle-encoder`, a small C program that
+  statically links the libvorbis 1.3.7 sources vendored at
+  `tools/debug-libvorbis-dump/vendored-libvorbis/`, compiled with
+  `-O0 -ffp-contract=off -std=gnu99` so the bytes are deterministic
+  across hosts. Covers silence, a 440 Hz sine, and a full-range ramp.
+- **`parity_*`** — the same comparison against the system `oggenc`
+  (vorbis-tools), i.e. whatever libvorbis your package manager ships.
+  Only the silence cases are enabled: packaged libvorbis builds are
+  optimized and may use FMA, so tone-rich input (sine, ramp) can drift
+  from the `-O0` reference. Those cases are `#[ignore]`d with a pointer
+  to their `oracle_parity_*` counterparts.
+
+Install the prerequisites and build the oracle once after cloning:
 
 ```sh
-sudo apt install libogg-dev    # or: brew install libogg
+sudo apt install libogg-dev vorbis-tools    # or: brew install libogg vorbis-tools
 ./tools/oracle-encoder/build.sh
 ```
 
 Then:
 
 ```sh
-cargo nextest run --features oracle parity_
+cargo nextest run --features oracle parity_    # matches both parity_* and oracle_parity_*
+just parity                                    # same, for serial AND parallel paths
 ```
 
 For the `corpus_parity_sweep` test, symlink your audio corpus at
@@ -108,19 +119,21 @@ cargo nextest run --features oracle --no-tests=warn corpus_parity_sweep -- --inc
 
 The directory is gitignored; the sweep walks it recursively and accepts
 `.wav`, `.mp3`, `.ogg`, `.flac`, `.m4a`, `.aif`, and `.aiff`. Files are
-decoded via `ffmpeg` to s16le 44.1kHz stereo before encoding. Set
+decoded via `ffmpeg` (so it must be on `PATH`) to s16le 44.1kHz stereo,
+then encoded by both lewtoff and the in-tree oracle-encoder and compared
+byte-for-byte. Set
 `CORPUS_LIMIT=N` to test only the first N files for a quick smoke run.
 
 ## Tests
 
 ```sh
 cargo nextest run                              # unit + integration
-cargo nextest run --features oracle parity_    # parity vs oracle
+cargo nextest run --features oracle parity_    # parity vs oracle-encoder + oggenc
 just parity                                    # parity for serial AND parallel paths
 ```
 
-CI (`.github/workflows/ci.yml`) builds the oracle from the vendored
-sources and runs both passes on Ubuntu, plus a `wasm32-unknown-unknown`
+CI (`.github/workflows/ci.yml`) installs `vorbis-tools`, builds the
+oracle from the vendored sources, and runs both passes on Ubuntu, plus a `wasm32-unknown-unknown`
 build to lock in target portability.
 
 ## Why this works

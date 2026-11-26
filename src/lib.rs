@@ -61,14 +61,14 @@ pub enum Channels {
 
 /// Encode interleaved `i16` PCM into an Ogg Vorbis bitstream at quality Q5.
 ///
-/// Output is byte-for-byte identical to `ffmpeg -c:a libvorbis -q:a 5` for the
-/// supported input space (see crate docs / `README.md`).
+/// Output is byte-for-byte identical to libvorbis 1.3.7 at `-q 5` (built without
+/// FMA contraction) for the supported input space (see crate docs / `README.md`).
 pub fn encode(samples: &[i16], rate: SampleRate, channels: Channels) -> Vec<u8> {
     crate::encode::encode_impl(samples, rate, channels)
 }
 
 /// Like [`encode`] but uses the given stream serial number.
-/// Exposed for parity tests so the test can match the serial that ffmpeg chose.
+/// Exposed for parity tests so the test can match the serial the reference encoder chose.
 #[doc(hidden)]
 pub fn encode_with_serial(
     samples: &[i16],
@@ -81,7 +81,7 @@ pub fn encode_with_serial(
 
 /// Like [`encode_with_serial`] but also accepts vendor and encoder_tag strings
 /// to embed in the comment header.  Pass `None` to use compile-time defaults.
-/// Exposed for parity tests so the test can mirror the exact ffmpeg version in CI.
+/// Exposed for parity tests so the test can mirror the reference encoder's comment header.
 #[doc(hidden)]
 pub fn encode_with_serial_and_meta(
     samples: &[i16],
