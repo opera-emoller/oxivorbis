@@ -1,9 +1,11 @@
 /*
  * oracle-encoder — own-built libvorbis Q5 encoder, pinned compile flags.
  *
- * Reads i16 LE PCM (interleaved) from stdin, writes Ogg Vorbis to stdout.
- * Args: <rate> <channels> [base_quality]   e.g. ./oracle-encoder 44100 1
+ * Reads interleaved PCM from stdin, writes Ogg Vorbis to stdout.
+ * Args: <rate> <channels> [base_quality [format]]   e.g. ./oracle-encoder 44100 1
  *       base_quality: libvorbis -0.1..1.0 scale (q-1..q10), default 0.5.
+ *       format: s16 (default; i16 LE, fed as sample/32768.0f) or f32
+ *               (f32 LE, fed to vorbis_analysis_buffer unchanged).
  *
  * Static-linked against ~/Documents/src/libvorbis/lib (all .c files) with:
  *     -O0 -ffp-contract=off -std=c99
@@ -33,35 +35,58 @@ static void die(const char *msg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3 && argc != 4)
-        die("usage: oracle-encoder <rate> <channels> [base_quality]");
+    if (argc < 3 || argc > 5)
+        die("usage: oracle-encoder <rate> <channels> [base_quality [s16|f32]]");
     long rate = atol(argv[1]);
     int channels = atoi(argv[2]);
     if (rate <= 0 || channels < 1 || channels > 2) die("invalid rate/channels");
     /* Optional libvorbis base_quality (-0.1..1.0 == q-1..q10); default q5. */
     float quality = 0.5f;
-    if (argc == 4) {
+    if (argc >= 4) {
         char *end = NULL;
         quality = strtof(argv[3], &end);
         if (end == argv[3] || *end != '\0' || quality < -0.1f || quality > 1.0f)
             die("invalid base_quality (expected -0.1..1.0)");
     }
 
-    /* Read all i16 PCM from stdin. */
-    size_t cap = 1 << 16;
-    int16_t *samples = malloc(cap * sizeof(int16_t));
-    size_t total = 0;
+    /* Optional input format; default s16 keeps the original usage. */
+    int is_f32 = 0;
+    if (argc == 5) {
+        if (strcmp(argv[4], "f32") == 0) is_f32 = 1;
+        else if (strcmp(argv[4], "s16") != 0) die("invalid format (expected s16 or f32)");
+    }
+    size_t sample_size = is_f32 ? sizeof(float) : sizeof(int16_t);
+
+    /* Read all PCM bytes from stdin. */
+    size_t cap = 1 << 17;
+    unsigned char *raw = malloc(cap);
+    size_t nbytes = 0;
     for (;;) {
-        if (total + READ_CHUNK > cap) {
+        if (nbytes + 4096 > cap) {
             cap *= 2;
-            samples = realloc(samples, cap * sizeof(int16_t));
+            raw = realloc(raw, cap);
         }
-        ssize_t got = read(0, samples + total, READ_CHUNK * sizeof(int16_t));
+        ssize_t got = read(0, raw + nbytes, 4096);
         if (got < 0) die("read failed");
         if (got == 0) break;
-        total += got / sizeof(int16_t);
+        nbytes += (size_t)got;
     }
+    size_t total = nbytes / sample_size;
     long frames = (long)(total / channels);
+    /* Samples as libvorbis sees them (host is little-endian). */
+    float *samples = malloc((total ? total : 1) * sizeof(float));
+    for (size_t i = 0; i < total; i++) {
+        if (is_f32) {
+            float f;
+            memcpy(&f, raw + i * sizeof(float), sizeof(float));
+            samples[i] = f;
+        } else {
+            int16_t v;
+            memcpy(&v, raw + i * sizeof(int16_t), sizeof(int16_t));
+            samples[i] = v / 32768.0f;
+        }
+    }
+    free(raw);
 
     /* libvorbis init at the requested quality (default q5). */
     vorbis_info vi;
@@ -105,7 +130,7 @@ int main(int argc, char **argv) {
             float **buffer = vorbis_analysis_buffer(&vd, this_chunk);
             for (long i = 0; i < this_chunk; i++) {
                 for (int c = 0; c < channels; c++) {
-                    buffer[c][i] = samples[(fed + i) * channels + c] / 32768.0f;
+                    buffer[c][i] = samples[(fed + i) * channels + c];
                 }
             }
             vorbis_analysis_wrote(&vd, this_chunk);
