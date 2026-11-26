@@ -1393,6 +1393,29 @@ fn flag_lossless(
 // noise_normalize
 // ---------------------------------------------------------------------------
 
+/// C `rint` (round half to even, default rounding mode), bit-identical to
+/// `f64::round_ties_even`.
+///
+/// Baseline x86_64 (SSE2) has no round instruction, so `round_ties_even`
+/// becomes a software routine call that also keeps loops scalar. For
+/// |x| < 2^52, `(|x| + 2^52) - 2^52` is exactly |x| rounded half to even
+/// (the sum lands in [2^52, 2^53), where the ulp is 1, and 2^52 is even);
+/// copysign restores the sign (including -0). Larger |x|, infinities and
+/// NaN are returned unchanged, as `round_ties_even` does.
+#[inline(always)]
+pub(crate) fn rint(x: f64) -> f64 {
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "sse4.1")))]
+    {
+        const TWO52: f64 = 4_503_599_627_370_496.0;
+        let a = x.abs();
+        if a < TWO52 { ((a + TWO52) - TWO52).copysign(x) } else { x }
+    }
+    #[cfg(not(all(target_arch = "x86_64", not(target_feature = "sse4.1"))))]
+    {
+        x.round_ties_even()
+    }
+}
+
 fn noise_normalize(
     p: &VorbisLookPsy,
     limit: i32,
@@ -1420,7 +1443,7 @@ fn noise_normalize(
     // overload, rint rounds half-to-even; Rust's f32::sqrt/round differ).
     let (r1, q1, f1, o1) = (&r[..start], &q[..start], &f[..start], &mut out[..start]);
     let quant = |rv: f32, qv: f32, fv: f32| {
-        let s = ((qv / fv) as f64).sqrt().round_ties_even();
+        let s = rint(((qv / fv) as f64).sqrt());
         if rv < 0.0 { -(s as i32) } else { s as i32 }
     };
     match flags {
@@ -1454,7 +1477,7 @@ fn noise_normalize(
                 sort_buf[sort_len] = j;
                 sort_len += 1;
             } else {
-                let s = (ve as f64).sqrt().round_ties_even();
+                let s = rint((ve as f64).sqrt());
                 out[j] = if r[j] < 0.0 { -(s as i32) } else { s as i32 };
                 q[j] = out[j] as f32 * out[j] as f32 * f[j];
             }
@@ -1708,5 +1731,69 @@ fn pair_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
     } else {
         let (lo, hi) = v.split_at_mut(a);
         (&mut hi[0], &mut lo[b])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rint;
+
+    fn check(x: f64) {
+        let want = x.round_ties_even();
+        let got = rint(x);
+        assert!(
+            got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan()),
+            "rint({x:e}) = {got:e}, want {want:e}"
+        );
+    }
+
+    #[test]
+    fn rint_matches_round_ties_even() {
+        let two52 = 4_503_599_627_370_496.0_f64;
+        for x in [
+            0.0,
+            -0.0,
+            0.5,
+            1.5,
+            2.5,
+            -0.5,
+            -2.5,
+            0.49999999999999994,
+            two52,
+            two52 - 0.5,
+            two52 - 1.0,
+            two52 + 1.0,
+            2.0 * two52,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            check(x);
+            check(-x);
+            check(f64::from_bits(x.to_bits().wrapping_add(1)));
+            check(f64::from_bits(x.to_bits().wrapping_sub(1)));
+        }
+        // Halves and their neighbours across the magnitude range.
+        for k in 0..2000_u64 {
+            let h = k as f64 + 0.5;
+            for x in [h, h * 1024.0 + 0.5, h * 1e12 + 0.5] {
+                check(x);
+                check(-x);
+                check(f64::from_bits(x.to_bits() + 1));
+                check(f64::from_bits(x.to_bits() - 1));
+            }
+        }
+        // Pseudo-random bit patterns (xorshift), all exponents.
+        let mut s = 0x9e37_79b9_7f4a_7c15_u64;
+        for _ in 0..1_000_000 {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            check(f64::from_bits(s));
+            // and moderate magnitudes, where rounding actually happens
+            check(f64::from_bits((s & 0x800f_ffff_ffff_ffff) | ((1000 + (s >> 52) % 80) << 52)));
+        }
     }
 }

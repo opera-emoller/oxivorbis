@@ -559,8 +559,8 @@ fn fit_line(a: &[LsfitAcc], fits: usize, y0: &mut i32, y1: &mut i32, info: &Floo
             let b_coeff = (bn * xyb - xb * yb) / denom;
             // C's rint() rounds half-to-even (banker's rounding); f64::round() in
             // Rust rounds half-away-from-zero. Use round_ties_even to match C.
-            *y0 = (a_coeff + b_coeff * x0 as f64).round_ties_even() as i32;
-            *y1 = (a_coeff + b_coeff * x1 as f64).round_ties_even() as i32;
+            *y0 = crate::psy::rint(a_coeff + b_coeff * x0 as f64) as i32;
+            *y1 = crate::psy::rint(a_coeff + b_coeff * x1 as f64) as i32;
 
             // limit to our range!
             if *y0 > 1023 {
