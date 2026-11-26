@@ -2,7 +2,8 @@
  * oracle-encoder — own-built libvorbis Q5 encoder, pinned compile flags.
  *
  * Reads i16 LE PCM (interleaved) from stdin, writes Ogg Vorbis to stdout.
- * Args: <rate> <channels>     e.g. ./oracle-encoder 44100 1
+ * Args: <rate> <channels> [base_quality]   e.g. ./oracle-encoder 44100 1
+ *       base_quality: libvorbis -0.1..1.0 scale (q-1..q10), default 0.5.
  *
  * Static-linked against ~/Documents/src/libvorbis/lib (all .c files) with:
  *     -O0 -ffp-contract=off -std=c99
@@ -32,10 +33,19 @@ static void die(const char *msg) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) die("usage: oracle-encoder <rate> <channels>");
+    if (argc != 3 && argc != 4)
+        die("usage: oracle-encoder <rate> <channels> [base_quality]");
     long rate = atol(argv[1]);
     int channels = atoi(argv[2]);
     if (rate <= 0 || channels < 1 || channels > 2) die("invalid rate/channels");
+    /* Optional libvorbis base_quality (-0.1..1.0 == q-1..q10); default q5. */
+    float quality = 0.5f;
+    if (argc == 4) {
+        char *end = NULL;
+        quality = strtof(argv[3], &end);
+        if (end == argv[3] || *end != '\0' || quality < -0.1f || quality > 1.0f)
+            die("invalid base_quality (expected -0.1..1.0)");
+    }
 
     /* Read all i16 PCM from stdin. */
     size_t cap = 1 << 16;
@@ -53,11 +63,10 @@ int main(int argc, char **argv) {
     }
     long frames = (long)(total / channels);
 
-    /* libvorbis init at quality 5. */
+    /* libvorbis init at the requested quality (default q5). */
     vorbis_info vi;
     vorbis_info_init(&vi);
-    /* q5 == base_quality 0.5 (libvorbis maps -0.1..1.0 to q-1..q10). */
-    if (vorbis_encode_init_vbr(&vi, channels, rate, 0.5f) != 0)
+    if (vorbis_encode_init_vbr(&vi, channels, rate, quality) != 0)
         die("vorbis_encode_init_vbr failed");
 
     vorbis_comment vc;
