@@ -302,13 +302,18 @@ fn setup_tone_curves(
 
         // normalize curves; overlay ATH
         for j in 0..P_LEVELS {
-            let att =
-                curveatt_db[i] + 100.0 - (if j < 2 { 2 } else { j } as f32) * 10.0 - P_LEVEL_0;
+            // C: `curveatt_dB[i]+100.-(j<2?2:j)*10.-P_LEVEL_0` — the `100.`
+            // literal (and P_LEVEL_0 = `30.`) make the whole sum double; it
+            // is rounded to float once, when passed to attenuate_curve.
+            let att = (curveatt_db[i] as f64 + 100.0
+                - (if j < 2 { 2 } else { j }) as f64 * 10.0
+                - P_LEVEL_0 as f64) as f32;
             for k in 0..EHMER_MAX {
                 workc[i][j][k] += att;
             }
             athc[j].copy_from_slice(&ath);
-            let att2 = 100.0 - j as f32 * 10.0 - P_LEVEL_0;
+            // C: `+100.-j*10.f-P_LEVEL_0`, double as well (integral, so exact).
+            let att2 = (100.0 - (j as f32 * 10.0) as f64 - P_LEVEL_0 as f64) as f32;
             for k in 0..EHMER_MAX {
                 athc[j][k] += att2;
             }
