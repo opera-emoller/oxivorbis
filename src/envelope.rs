@@ -10,16 +10,16 @@
 //! libvorbis would emit for a given input. Numeric details (constants,
 //! orderings, decay value, +-99999 sentinels) are kept literal.
 //!
-//! Used by `encode.rs` to pre-compute the block-size sequence so the linear
-//! block loop matches libvorbis's streaming-model output.
+//! `encode.rs` drives [`EnvelopeLookup::step`] incrementally from its port
+//! of `_ve_envelope_search` / `_ve_envelope_mark`.
 #![allow(non_snake_case)]
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::items_after_test_module)]
-#![allow(dead_code)]
 
 use crate::mdct::mdct_forward_envelope;
 use crate::psy::VorbisInfoPsyGlobal;
+#[cfg(test)]
 use crate::window::BlockSizes;
 
 pub const VE_PRE: usize = 16;
@@ -32,6 +32,7 @@ pub const VE_MINSTRETCH: i32 = 2;
 pub const VE_MAXSTRETCH: i32 = 12;
 
 const ENV_WINLENGTH: usize = 128;
+#[cfg(test)]
 const ENV_SEARCHSTEP: usize = 64;
 
 #[derive(Clone)]
@@ -72,9 +73,6 @@ pub struct EnvelopeLookup {
     /// `filters[ch * VE_BANDS + band]` = state for that (channel, band).
     filters: Vec<FilterState>,
     stretch: i32,
-    /// Envelope marks per searchstep (= 64-sample window). True if a transient
-    /// was detected at that position.
-    pub marks: Vec<bool>,
 }
 
 impl EnvelopeLookup {
@@ -130,7 +128,6 @@ impl EnvelopeLookup {
             bands,
             filters,
             stretch: 0,
-            marks: Vec::new(),
         }
     }
 
@@ -389,13 +386,15 @@ fn todb(x: f32) -> f32 {
     (bits as f32) * 7.17711438e-7_f32 - 764.6161886_f32
 }
 
-/// Compute the envelope-mark vector for an entire stream.
+/// Compute the envelope-mark vector for an entire stream (test helper; the
+/// encoder computes marks incrementally with [`EnvelopeLookup::step`]).
 ///
 /// This runs `_ve_amp` over each 64-sample step of the input and returns a
 /// boolean per step: true if libvorbis would have set `mark[j]` at that step.
 /// The encoder uses these marks to decide block sizes per the libvorbis
 /// `_ve_envelope_search` rule.
-pub fn compute_marks(pcm_channels: &[Vec<f32>], gi: &VorbisInfoPsyGlobal) -> Vec<bool> {
+#[cfg(test)]
+pub(crate) fn compute_marks(pcm_channels: &[Vec<f32>], gi: &VorbisInfoPsyGlobal) -> Vec<bool> {
     let ch = pcm_channels.len();
     if ch == 0 {
         return Vec::new();
@@ -475,48 +474,6 @@ mod tests {
     }
 
     #[test]
-    fn ramp_full_pattern_has_midstream_shorts() {
-        use crate::encode::pre_extrap_for_test;
-        let n = 44100usize;
-        let raw_l: Vec<f32> = (0..n)
-            .map(|i| (((i * 2) % 65536) as i32 - 32768) as f32 / 32768.0)
-            .collect();
-        let raw_r: Vec<f32> = (0..n)
-            .map(|i| (((i * 2 + 1) % 65536) as i32 - 32768) as f32 / 32768.0)
-            .collect();
-        let pcm: Vec<Vec<f32>> = [&raw_l, &raw_r]
-            .iter()
-            .map(|raw| {
-                let mut buf = Vec::with_capacity(1024 + raw.len());
-                let pre = pre_extrap_for_test(&raw[..2112.min(raw.len())]);
-                let mut pre_rev = vec![0.0f32; 1024];
-                for k in 0..1024 {
-                    pre_rev[1024 - 1 - k] = pre[k];
-                }
-                buf.extend_from_slice(&pre_rev);
-                buf.extend_from_slice(raw);
-                buf
-            })
-            .collect();
-        let gi = make_q5_global();
-        let marks = compute_marks(&pcm, &gi);
-        // n_samples here is the audio buffer length (including the LPC
-        // pre-stream prefix that envelope detection saw).
-        let (pattern, _, _) =
-            full_w_pattern_with_curmark_bs(BlockSizes::BS_256_2048, &marks, pcm[0].len() as i64);
-        let n_short = pattern.iter().filter(|&&w| w == 0).count();
-        eprintln!(
-            "ramp pattern len={} n_short={} pattern={:?}",
-            pattern.len(),
-            n_short,
-            pattern
-        );
-        // Expect at least one mid-stream short cluster (= more than the 2
-        // initial short blocks).
-        assert!(n_short > 4, "ramp must have mid-stream short blocks");
-    }
-
-    #[test]
     fn ramp_two_short() {
         // libvorbis envelope detection runs on the pre-extrapolated PCM
         // buffer: 1024 LPC-predicted virtual samples (centerW) + audio. Mirror
@@ -561,43 +518,11 @@ mod tests {
     }
 }
 
-/// Reproduce libvorbis's `_ve_envelope_mark` for a short block.
-///
-/// For a short block at `center_w`, scan the marks vector in
-/// `[centerW - bs[0]/2, centerW + bs[0]/2)` = `[centerW-128, centerW+128)`.
-/// Any mark in that window → block is IMPULSE (returns true). No mark →
-/// PADDING (returns false). Long blocks don't use this — their type is
-/// determined by lW/nW. The scan window is `centerW ± bs.short/2` in
-/// general.
-pub(crate) fn short_is_impulse_bs(
-    bs: BlockSizes,
-    marks: &[bool],
-    curmark: i64,
-    center_w: i64,
-) -> bool {
-    let bs0 = bs.short as i64;
-    let step = ENV_SEARCHSTEP as i64;
-    let begin_w = center_w - bs0 / 4 - bs0 / 4;
-    let end_w = center_w + bs0 / 4 + bs0 / 4;
-    // libvorbis fast path: if a recently-set curmark falls in the range,
-    // immediately classify as IMPULSE.
-    if curmark >= begin_w && curmark < end_w {
-        return true;
-    }
-    let first = (begin_w / step).max(0) as usize;
-    let last = ((end_w / step).max(0) as usize).min(marks.len());
-    for i in first..last {
-        if marks[i] {
-            return true;
-        }
-    }
-    false
-}
-
 /// Count how many short blocks libvorbis would emit at the start of the
 /// stream. For our constrained input space (silence / sine / ramp), this is
 /// either 1 (no transient detected past the leading-edge ampbuf-init noise)
 /// or 2 (transient detected before testW=2176 for 256/2048).
+#[cfg(test)]
 pub(crate) fn n_short_blocks_at_start_bs(bs: BlockSizes, marks: &[bool]) -> usize {
     // libvorbis _ve_envelope_search: cursor starts at bs1/2 (1024 → mark
     // index 16 for 256/2048). testW for the first decision = centerW +
@@ -618,242 +543,4 @@ pub(crate) fn n_short_blocks_at_start_bs(bs: BlockSizes, marks: &[bool]) -> usiz
         }
     }
     1
-}
-
-/// Reproduce libvorbis's per-block nW decision from envelope marks.
-///
-/// Mirrors `_ve_envelope_search`: given the current `centerW`, current `W`
-/// and the cursor position, walk forward through marks to find the next
-/// mark in (centerW, testW). If found → nW=0 (short next). If testW reached
-/// first → nW=1 (long next). If neither (cursor runs out of marks) → nW=-1
-/// (insufficient data, defer).
-///
-/// Returns (nW, new_cursor). nW: 0=short, 1=long, -1=insufficient.
-pub(crate) fn next_w_bs(
-    bs: BlockSizes,
-    marks: &[bool],
-    cursor: i64,
-    curmark_in: i64,
-    center_w: i64,
-    w: i32,
-) -> (i32, i64, i64) {
-    let bs0 = bs.short as i64;
-    let bs1 = bs.long as i64;
-    let step = ENV_SEARCHSTEP as i64;
-    let test_w = center_w + (if w == 1 { bs1 } else { bs0 }) / 4 + bs1 / 2 + bs0 / 4;
-
-    let mut j = cursor;
-    // libvorbis: `while(j < ve->current - searchstep)` where
-    // `ve->current = last * searchstep` and `last = pcm_current/searchstep - VE_WIN`.
-    // marks vec is sized to n_steps + VE_POST + 1, so n_steps = len - VE_POST - 1.
-    // Cursor walks up to (n_steps - 1) * step inclusive.
-    let n_steps = marks.len() as i64 - VE_POST as i64 - 1;
-    let limit = n_steps * step;
-
-    while j < limit - step {
-        if j >= test_w {
-            return (1, j, curmark_in);
-        }
-        let idx = (j / step) as usize;
-        if idx < marks.len() && marks[idx] && j > center_w {
-            return (0, j, j);
-        }
-        j += step;
-    }
-    (-1, j, curmark_in)
-}
-
-/// Pre-compute the W-flag pattern for the entire stream.
-///
-/// Returns a Vec<i32> where each entry is the W flag (0=short, 1=long) for
-/// that block, advancing centerW per the libvorbis state machine.
-///
-/// `n_samples` includes any post-extrapolated tail (so blocks past EOS are
-/// also decided).
-///
-/// Also returns the per-block `curmark` position (in env-mark space) —
-/// needed for `_ve_envelope_mark` IMPULSE vs PADDING decisions — and the
-/// `nW` libvorbis computes for the final block (written into that block's
-/// header if it is long).
-///
-/// `marks` must cover the whole post-EOS buffer (pre-extrap + audio +
-/// post-extrap): with every sample present, a search that runs out of
-/// marks (`next_w_bs` == -1) can only happen after EOS, where
-/// `vorbis_analysis_blockout` sets `nW = 0`.
-pub(crate) fn full_w_pattern_with_curmark_bs(
-    bs: BlockSizes,
-    marks: &[bool],
-    n_samples: i64,
-) -> (Vec<i32>, Vec<i64>, i32) {
-    let bs0 = bs.short as i64;
-    let bs1 = bs.long as i64;
-
-    // Initial state mirrors libvorbis init:
-    //   v->W = 0, v->lW = 0, v->nW = 0, v->centerW = bs1/2 (1024 / 2048)
-    //   ve->cursor = bs1/2, ve->curmark = 0 (calloc'd init)
-    let mut center_w: i64 = bs1 / 2;
-    let mut cursor: i64 = bs1 / 2;
-    let mut curmark: i64 = 0;
-    let mut w: i32 = 0;
-
-    let mut pattern: Vec<i32> = Vec::new();
-    let mut curmarks: Vec<i64> = Vec::new();
-    pattern.push(0); // first block is always short (W=0 in init)
-    curmarks.push(curmark);
-
-    // vorbis_analysis_blockout ends the stream with the block whose centerW
-    // is >= eofflag. For empty input eofflag == centerW == bs1/2 already, so
-    // the very first block is also the last (libvorbis emits exactly one
-    // audio packet).
-    // Each blockout call runs the search (deciding this block's nW) before
-    // checking whether this block is the last one.
-    let search = |center_w: i64, w: i32, cursor: &mut i64, curmark: &mut i64| -> i32 {
-        let (next, new_cursor, new_curmark) = next_w_bs(bs, marks, *cursor, *curmark, center_w, w);
-        *cursor = new_cursor;
-        *curmark = new_curmark;
-        // bp == -1 with eofflag set: `v->nW = 0`.
-        if next == -1 { 0 } else { next }
-    };
-
-    if center_w >= n_samples {
-        let last_nw = search(center_w, w, &mut cursor, &mut curmark);
-        return (pattern, curmarks, last_nw);
-    }
-
-    loop {
-        let nw = search(center_w, w, &mut cursor, &mut curmark);
-
-        // Advance centerW by bs[W]/4 + bs[nW]/4.
-        let advance = (if w == 1 { bs1 } else { bs0 }) / 4 + (if nw == 1 { bs1 } else { bs0 }) / 4;
-        let new_center_w = center_w + advance;
-
-        // Emit the next block (with the new W flag).
-        pattern.push(nw);
-        curmarks.push(curmark);
-        center_w = new_center_w;
-        w = nw;
-
-        // Stop when centerW has advanced past the audio.
-        if center_w >= n_samples {
-            break;
-        }
-    }
-    let last_nw = search(center_w, w, &mut cursor, &mut curmark);
-
-    (pattern, curmarks, last_nw)
-}
-
-/// Faithful streaming-blockout simulation.
-///
-/// Mirrors libvorbis's `vorbis_analysis_blockout` chunk-by-chunk drain so we
-/// can derive the exact `pcm_current` libvorbis observes at EOS (i.e. the
-/// `eofflag` value captured inside `vorbis_analysis_wrote(v, 0)`). This is
-/// what post-extrap LPC training keys on.
-///
-/// Inputs:
-///   - `marks`: precomputed envelope marks over the full env_pcm buffer
-///     (pre-extrap + audio + post-extrap), in absolute coordinates.
-///   - `total_audio`: number of real audio samples (no pre/post-extrap).
-///   - `chunk_size`: PCM feed granularity. ffmpeg+libvorbis use 64.
-///
-/// Returns `pcm_current` at the moment EOS is signaled — i.e. after all audio
-/// has been fed and the blockout drain has run as far as it can without
-/// `eofflag` being set. This is the value libvorbis stores in `v->eofflag`.
-pub(crate) fn simulate_eofflag_bs(
-    bs: BlockSizes,
-    marks: &[bool],
-    total_audio: i64,
-    chunk_size: i64,
-) -> i64 {
-    let bs0 = bs.short as i64;
-    let bs1 = bs.long as i64;
-    let step = ENV_SEARCHSTEP as i64;
-    let ve_win = VE_WIN as i64;
-
-    let mut pcm_current: i64 = bs1 / 2; // libvorbis init
-    let mut samples_fed: i64 = 0;
-    let mut preextrapolated = false;
-    // centerW + blocksizes[1] (3072 for 256/2048, 6144 for 512/4096)
-    let preextrap_threshold: i64 = bs1 / 2 + bs1;
-
-    let center_w: i64 = bs1 / 2; // always reset to bs1/2 after each emit
-    let mut cursor: i64 = bs1 / 2;
-    let mut w: i32 = 0;
-
-    // Total accumulated movementW so we can index `marks` in absolute coords.
-    let mut total_shift: i64 = 0;
-
-    loop {
-        if samples_fed >= total_audio {
-            // EOS would be next. Return pcm_current as eofflag.
-            return pcm_current;
-        }
-        let chunk = chunk_size.min(total_audio - samples_fed);
-        pcm_current += chunk;
-        samples_fed += chunk;
-
-        if !preextrapolated {
-            if pcm_current > preextrap_threshold {
-                preextrapolated = true;
-            } else {
-                continue;
-            }
-        }
-
-        // Drain blocks (mirror vorbis_analysis_blockout loop)
-        loop {
-            // ve_envelope_search emulation:
-            //   first = ve->current/step (we don't track ve->current explicitly
-            //   since marks are precomputed; we only enforce the visibility
-            //   limit `last = pcm_current/step - VE_WIN` on the cursor walk).
-            let test_w = center_w + (if w == 1 { bs1 } else { bs0 }) / 4 + bs1 / 2 + bs0 / 4;
-            let last = pcm_current / step - ve_win;
-            let ve_current = last * step;
-
-            let mut j = cursor;
-            let mut search_result: i32 = -1;
-            let mut new_cursor = cursor;
-            while j < ve_current - step {
-                if j >= test_w {
-                    search_result = 1;
-                    break;
-                }
-                new_cursor = j;
-                let abs_idx = ((j + total_shift) / step) as usize;
-                if abs_idx < marks.len() && marks[abs_idx] && j > center_w {
-                    new_cursor = j;
-                    if j >= test_w {
-                        search_result = 1;
-                    } else {
-                        search_result = 0;
-                    }
-                    break;
-                }
-                j += step;
-            }
-            cursor = new_cursor;
-
-            // eofflag is 0 in this simulation (we return before signaling EOS).
-            // So bp == -1 means defer.
-            if search_result == -1 {
-                break;
-            }
-            let nw = search_result;
-
-            let bs_w = if w == 1 { bs1 } else { bs0 };
-            let bs_nw = if nw == 1 { bs1 } else { bs0 };
-            let center_next = center_w + bs_w / 4 + bs_nw / 4;
-            let blockbound = center_next + bs_nw / 2;
-            if pcm_current < blockbound {
-                break;
-            }
-
-            // Emit. Apply movementW shift (libvorbis "advance storage vectors").
-            let movement = center_next - bs1 / 2;
-            pcm_current -= movement;
-            cursor -= movement;
-            total_shift += movement;
-            w = nw;
-        }
-    }
 }

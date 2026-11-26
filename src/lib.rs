@@ -83,8 +83,6 @@ internal_mod!(ogg_pages);
 
 mod drft;
 mod encode;
-#[cfg(test)]
-mod encode_legacy;
 mod envelope;
 mod lpc;
 mod mapping0;

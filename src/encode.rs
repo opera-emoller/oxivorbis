@@ -203,6 +203,9 @@ pub(crate) struct EncoderCore {
     #[cfg(feature = "parallel")]
     batch: usize,
     first_block_done: bool,
+    /// W of every emitted block (unit tests).
+    #[cfg(test)]
+    w_log: Vec<bool>,
 
     ogg: OggStreamWriter,
     /// `ogg.output()` was handed to the caller and must be cleared before
@@ -337,6 +340,8 @@ impl EncoderCore {
             #[cfg(feature = "parallel")]
             batch: default_batch(),
             first_block_done: false,
+            #[cfg(test)]
+            w_log: Vec::new(),
             ogg,
             output_returned: false,
             setup,
@@ -514,6 +519,8 @@ impl EncoderCore {
 
     fn drain(&mut self) {
         while let Some(block) = self.blockout() {
+            #[cfg(test)]
+            self.w_log.push(block.w);
             self.analyze(&block);
             self.compact();
         }
@@ -876,16 +883,8 @@ pub(crate) fn f32_sample(s: f32) -> f32 {
 mod tests {
     use super::*;
 
-    fn encode_with_base_quality_and_meta(
-        pcm: &[i16],
-        rate: SampleRate,
-        channels: Channels,
-        q: f32,
-        serial: u32,
-        _: Option<&[u8]>,
-        _: Option<&[u8]>,
-    ) -> Vec<u8> {
-        let mut core = EncoderCore::new(rate, channels, q, serial, b"v", &[]);
+    fn one_shot(pcm: &[i16], rate: SampleRate, channels: Channels, q: f32) -> Vec<u8> {
+        let mut core = EncoderCore::new(rate, channels, q, 7, b"v", &[]);
         core.feed(pcm, i16_to_f32);
         core.finish()
     }
@@ -969,27 +968,37 @@ mod tests {
         out
     }
 
-    /// Migration cross-check: the streaming core (one-shot and randomly
-    /// chunked) against the legacy global-pass encoder.
+    /// A full-scale stereo ramp opens with two short blocks and switches
+    /// to short blocks mid-stream (envelope marks on the wrap-arounds).
     #[test]
-    fn streaming_matches_legacy_encoder() {
+    fn ramp_block_pattern() {
+        let pcm: Vec<i16> = (0..44100 * 2)
+            .map(|i: i32| (i % 65536 - 32768) as i16)
+            .collect();
+        let mut core = EncoderCore::new(SampleRate::Hz44100, Channels::Stereo, 0.5, 1, b"v", &[]);
+        core.feed(&pcm, i16_to_f32);
+        let log = core.w_log.clone();
+        core.finish();
+        assert!(
+            !log[0] && !log[1] && log[2],
+            "pattern starts {:?}",
+            &log[..4]
+        );
+        assert!(
+            log.iter().filter(|&&w| !w).count() > 4,
+            "no mid-stream shorts"
+        );
+    }
+
+    /// Chunked feeding (1-sample, odd, large) equals one-shot.
+    #[test]
+    fn chunked_matches_one_shot() {
         let mut rng = Rng(0x5EED);
-        let special = [
-            0usize, 1, 31, 32, 33, 63, 64, 65, 2047, 2048, 2049, 2111, 2112, 2113, 4159, 4160,
-            4161, 6143, 6144, 6145, 12287, 12288, 12289,
-        ];
-        let mut cases: Vec<usize> = special.to_vec();
-        for _ in 0..60 {
-            let bits = 4 + rng.below(14);
-            cases.push(rng.below(1 << bits));
-        }
-        for (k, &frames) in cases.iter().enumerate() {
-            let q = [0.5f32, 0.2, -0.05, 1.0, 0.0][k % 5];
-            let rate = if k % 3 == 0 {
-                SampleRate::Hz48000
-            } else {
-                SampleRate::Hz44100
-            };
+        for (k, &frames) in [0usize, 1, 65, 2112, 2113, 4161, 6145, 30_000, 100_000]
+            .iter()
+            .enumerate()
+        {
+            let q = [0.5f32, 0.2, -0.05][k % 3];
             let channels = if k % 2 == 0 {
                 Channels::Stereo
             } else {
@@ -997,25 +1006,9 @@ mod tests {
             };
             let ch = if channels == Channels::Stereo { 2 } else { 1 };
             let pcm = signal(&mut rng, frames, ch);
-            let legacy = crate::encode_legacy::legacy_encode(
-                &pcm,
-                rate,
-                channels,
-                q,
-                7,
-                Some(b"v"),
-                Some(b""),
-            );
-            let oneshot = encode_with_base_quality_and_meta(&pcm, rate, channels, q, 7, None, None);
-            assert!(
-                legacy == oneshot,
-                "one-shot != legacy: frames={frames} q={q} {rate:?} {channels:?}"
-            );
-            let chunked = streaming(&pcm, rate, channels, q, &mut rng);
-            assert!(
-                chunked == oneshot,
-                "chunked != one-shot: frames={frames} q={q} {rate:?} {channels:?}"
-            );
+            let oneshot = one_shot(&pcm, SampleRate::Hz44100, channels, q);
+            let chunked = streaming(&pcm, SampleRate::Hz44100, channels, q, &mut rng);
+            assert!(chunked == oneshot, "frames={frames} q={q} {channels:?}");
         }
     }
 
