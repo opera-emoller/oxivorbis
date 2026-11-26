@@ -32,8 +32,6 @@ pub(crate) struct Codebook {
     /// convention). u32::MAX means the entry is unused / has zero length.
     pub codewords: Vec<u32>,
     pub codeword_lengths: Vec<u8>,
-    /// Flattened `entries * dim` matrix of dequantized values, or None.
-    pub value_vectors: Option<Vec<f32>>,
     pub maptype: u8,
     /// Used by floor/residue encode for lattice VQ codebooks.
     pub quantvals: usize,
@@ -98,66 +96,6 @@ fn _book_maptype1_quantvals(entries: i64, dim: i64) -> i64 {
             vals += 1;
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// _book_unquantize: port of libvorbis _book_unquantize
-// (no sparsemap variant — we always pass NULL for encode)
-// ---------------------------------------------------------------------------
-
-#[allow(non_snake_case)]
-fn _book_unquantize(
-    maptype: u8,
-    entries: usize,
-    dim: usize,
-    q_min: u32,
-    q_delta: u32,
-    q_sequencep: u32,
-    quantlist: &[u32],
-) -> Vec<f32> {
-    let mindel = _float32_unpack(q_min);
-    let delta = _float32_unpack(q_delta);
-    let mut r = vec![0.0f32; entries * dim];
-
-    match maptype {
-        1 => {
-            let quantvals = _book_maptype1_quantvals(entries as i64, dim as i64) as usize;
-            let mut count = 0usize;
-            for j in 0..entries {
-                let mut last = 0.0f32;
-                let mut indexdiv = 1usize;
-                for k in 0..dim {
-                    let index = (j / indexdiv) % quantvals;
-                    let val = quantlist[index] as f32;
-                    let val = val.abs() * delta + mindel + last;
-                    if q_sequencep != 0 {
-                        last = val;
-                    }
-                    r[count * dim + k] = val;
-                    indexdiv *= quantvals;
-                }
-                count += 1;
-            }
-        }
-        2 => {
-            let mut count = 0usize;
-            for j in 0..entries {
-                let mut last = 0.0f32;
-                for k in 0..dim {
-                    let val = quantlist[j * dim + k] as f32;
-                    let val = val.abs() * delta + mindel + last;
-                    if q_sequencep != 0 {
-                        last = val;
-                    }
-                    r[count * dim + k] = val;
-                }
-                count += 1;
-            }
-        }
-        _ => {}
-    }
-
-    r
 }
 
 // ---------------------------------------------------------------------------
@@ -241,17 +179,21 @@ fn _make_words(lengths: &[u8], n: usize) -> Option<Vec<u32>> {
 // ---------------------------------------------------------------------------
 
 /// Unpack one codebook from the bit stream. Returns the codebook.
+///
+/// libogg's `oggpack_read` returns -1 on a read past the end, which is how
+/// the C code detects EOF (`if(num==-1)goto _eofout;`). [`BitReader`]
+/// reports that through [`BitReader::overran`]; an all-ones value read
+/// from real data is valid (e.g. a 5-bit length of `0x1F` is length 32).
 pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookError> {
     // sync pattern 0x564342 (24 bits)
     let sync = r.read(24);
-    if sync != 0x56_4342 {
+    if r.overran() || sync != 0x56_4342 {
         return Err(CodebookError::BadSync);
     }
 
     let dim = r.read(16) as usize;
     let entries = r.read(24) as usize;
-    // EOF sentinel in C is -1 (all bits set), which as u32 = 0x00FF_FFFF for 24 bits
-    if entries == 0x00FF_FFFF {
+    if r.overran() {
         return Err(CodebookError::Eof);
     }
 
@@ -265,52 +207,36 @@ pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookErr
 
     if ordered == 0 {
         // unordered
-        let unused = r.read(1);
-        if unused != 0 {
+        let sparse = r.read(1) != 0;
+        for len in length_list.iter_mut() {
             // sparse: each entry tagged with a used bit
-            for i in 0..entries {
-                let used = r.read(1);
-                if used != 0 {
-                    let num = r.read(5);
-                    if num == 0x1F {
-                        // EOF sentinel
-                        return Err(CodebookError::Eof);
-                    }
-                    length_list[i] = (num + 1) as u8;
-                } else {
-                    length_list[i] = 0;
-                }
-            }
-        } else {
-            // dense: all entries used
-            for i in 0..entries {
+            if !sparse || r.read(1) != 0 {
                 let num = r.read(5);
-                if num == 0x1F {
+                if r.overran() {
                     return Err(CodebookError::Eof);
                 }
-                length_list[i] = (num + 1) as u8;
+                *len = (num + 1) as u8;
             }
         }
     } else {
         // ordered: run-length encoded by length
         let mut length = r.read(5) as usize + 1;
-        if length == 0 {
+        if r.overran() {
             return Err(CodebookError::Eof);
         }
         let mut i = 0usize;
         while i < entries {
-            let bits = ov_ilog((entries - i) as u32);
-            let num = r.read(bits) as usize;
-            // C checks `if(num==-1) goto _eofout;` on the signed return value
-            // of oggpack_read; our BitReader treats past-end as all-ones, so
-            // the bound check below catches that case (num would be larger
-            // than entries - i).
-            if length > 32 || num > entries - i {
+            let num = r.read(ov_ilog((entries - i) as u32)) as usize;
+            // C also rejects more codewords of one length than that many
+            // bits can hold: (num-1) >> (length-1) > 1.
+            if r.overran()
+                || length > 32
+                || num > entries - i
+                || (num > 0 && (num - 1) >> (length - 1) > 1)
+            {
                 return Err(CodebookError::Eof);
             }
-            for j in 0..num {
-                length_list[i + j] = length as u8;
-            }
+            length_list[i..i + num].fill(length as u8);
             i += num;
             length += 1;
         }
@@ -319,70 +245,47 @@ pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookErr
     // mapping type (4 bits)
     let maptype = r.read(4) as u8;
 
-    match maptype {
-        0 => {
-            // no mapping
-            let codewords = make_codewords(&length_list, entries);
-            Ok(Codebook {
-                entries,
-                dim,
-                codewords,
-                codeword_lengths: length_list,
-                value_vectors: None,
-                maptype: 0,
-                quantvals: 0,
-                minval: 0,
-                delta: 0,
-            })
-        }
+    let (quantvals, minval, delta) = match maptype {
+        0 => (0, 0, 0),
         1 | 2 => {
             let q_min = r.read(32);
             let q_delta = r.read(32);
-            let q_quant = r.read(4) as usize + 1;
-            let q_sequencep = r.read(1);
+            let q_quant = r.read(4) + 1;
+            let _q_sequencep = r.read(1);
 
             let quantvals_count = match maptype {
                 1 => _book_maptype1_quantvals(entries as i64, dim as i64) as usize,
-                2 => entries * dim,
-                _ => unreachable!(),
+                _ => entries * dim,
             };
-
-            let mut quantlist = vec![0u32; quantvals_count];
-            for i in 0..quantvals_count {
-                quantlist[i] = r.read(q_quant as u32);
+            // The quantized values themselves only matter for decoding
+            // (`_book_unquantize`); the encoder needs just minval / delta.
+            for _ in 0..quantvals_count {
+                r.read(q_quant);
             }
-
-            let value_vectors = _book_unquantize(
-                maptype,
-                entries,
-                dim,
-                q_min,
-                q_delta,
-                q_sequencep,
-                &quantlist,
-            );
+            if r.overran() {
+                return Err(CodebookError::Eof);
+            }
 
             let quantvals = _book_maptype1_quantvals(entries as i64, dim as i64) as usize;
             // libvorbis sharedbook.c uses (int)rint(...) here; rint is half-to-even.
             let minval = _float32_unpack(q_min).round_ties_even() as i32;
             let delta = _float32_unpack(q_delta).round_ties_even() as i32;
-
-            let codewords = make_codewords(&length_list, entries);
-
-            Ok(Codebook {
-                entries,
-                dim,
-                codewords,
-                codeword_lengths: length_list,
-                value_vectors: Some(value_vectors),
-                maptype,
-                quantvals,
-                minval,
-                delta,
-            })
+            (quantvals, minval, delta)
         }
-        _ => Err(CodebookError::BadMaptype),
-    }
+        _ => return Err(CodebookError::BadMaptype),
+    };
+
+    let codewords = make_codewords(&length_list, entries);
+    Ok(Codebook {
+        entries,
+        dim,
+        codewords,
+        codeword_lengths: length_list,
+        maptype,
+        quantvals,
+        minval,
+        delta,
+    })
 }
 
 /// Build the codeword table for encode (identical to vorbis_book_init_encode's
@@ -457,7 +360,6 @@ mod tests {
         assert_eq!(book.entries, 4);
         assert_eq!(book.dim, 1);
         assert_eq!(book.maptype, 0);
-        assert!(book.value_vectors.is_none());
         assert_eq!(book.codeword_lengths, vec![1, 2, 3, 3]);
         // codewords should be valid (not all-max)
         assert_ne!(book.codewords[0], u32::MAX);
@@ -545,7 +447,6 @@ mod tests {
             dim: 1,
             codewords: vec![0],
             codeword_lengths: vec![1],
-            value_vectors: None,
             maptype: 0,
             quantvals: 0,
             minval: 0,
@@ -565,5 +466,85 @@ mod tests {
         let delta = _float32_unpack(1611661312u32);
         assert!((mindel - (-3.0f32)).abs() < 0.01, "mindel={mindel}");
         assert!((delta - 1.0f32).abs() < 0.01, "delta={delta}");
+    }
+
+    /// Header of an unordered, dense book with `entries` entries.
+    fn unordered_dense(w: &mut BitWriter, entries: u32) {
+        w.write(0x564342, 24);
+        w.write(1, 16); // dim
+        w.write(entries, 24);
+        w.write(0, 1); // unordered
+        w.write(0, 1); // dense
+    }
+
+    /// A 5-bit length field of 0x1F is length 32, not EOF (C only treats
+    /// oggpack_read's -1 as EOF).
+    #[test]
+    fn length_field_0x1f_is_length_32() {
+        let mut w = BitWriter::new();
+        unordered_dense(&mut w, 2);
+        w.write(0, 5); // length 1
+        w.write(0x1F, 5); // length 32
+        w.write(0, 4); // maptype 0
+        let bytes = w.into_bytes();
+        let book = unpack_codebook(&mut BitReader::new(&bytes)).expect("valid book");
+        assert_eq!(book.codeword_lengths, vec![1, 32]);
+    }
+
+    /// Running out of data mid-book is EOF, in every branch.
+    #[test]
+    fn truncated_book_is_eof() {
+        // Unordered: the stream ends after the header (and its padding).
+        let mut w = BitWriter::new();
+        unordered_dense(&mut w, 40);
+        let bytes = w.into_bytes();
+        let r = unpack_codebook(&mut BitReader::new(&bytes));
+        assert!(matches!(r, Err(CodebookError::Eof)), "{:?}", r.err());
+
+        // Ordered: stream ends before the first run count.
+        let mut w = BitWriter::new();
+        w.write(0x564342, 24);
+        w.write(1, 16);
+        w.write(1000, 24);
+        w.write(1, 1); // ordered
+        w.write(4, 5); // starting length 5
+        let bytes = w.into_bytes();
+        let r = unpack_codebook(&mut BitReader::new(&bytes));
+        assert!(matches!(r, Err(CodebookError::Eof)), "{:?}", r.err());
+
+        // Mapped: stream ends inside the quantized value list.
+        let mut w = BitWriter::new();
+        unordered_dense(&mut w, 1);
+        w.write(0, 5);
+        w.write(1, 4); // maptype 1
+        w.write(0, 32);
+        w.write(0, 32);
+        w.write(7, 4); // 8-bit values, none written
+        w.write(0, 1);
+        let bytes = w.into_bytes();
+        let r = unpack_codebook(&mut BitReader::new(&bytes));
+        assert!(matches!(r, Err(CodebookError::Eof)), "{:?}", r.err());
+    }
+
+    /// Ordered books may not claim more codewords of one length than
+    /// `length` bits can distinguish: C's `(num-1)>>(length-1) > 1`.
+    #[test]
+    fn ordered_rejects_overfull_length() {
+        let book = |first_len: u32, count: u32| {
+            let mut w = BitWriter::new();
+            w.write(0x564342, 24);
+            w.write(1, 16);
+            w.write(count, 24);
+            w.write(1, 1); // ordered
+            w.write(first_len - 1, 5);
+            w.write(count, ov_ilog(count));
+            w.write(0, 4); // maptype 0
+            let bytes = w.into_bytes();
+            unpack_codebook(&mut BitReader::new(&bytes)).map(|b| b.codeword_lengths)
+        };
+        assert_eq!(book(1, 2).unwrap(), vec![1, 1]);
+        assert!(matches!(book(1, 3), Err(CodebookError::Eof)));
+        assert_eq!(book(2, 4).unwrap(), vec![2; 4]);
+        assert!(matches!(book(2, 5), Err(CodebookError::Eof)));
     }
 }

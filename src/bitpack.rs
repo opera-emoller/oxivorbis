@@ -106,6 +106,14 @@ impl<'a> BitReader<'a> {
         acc
     }
 
+    /// A read has run past the end of the buffer: where libogg's
+    /// `oggpack_read` would have returned -1. The value of such a read is
+    /// meaningless (all-ones fill), so check this rather than the value; an
+    /// all-ones value read from real data is valid.
+    pub fn overran(&self) -> bool {
+        self.bit_pos > self.bytes.len() * 8
+    }
+
     /// Read `bits` bits and sign-extend to `i32`.
     #[cfg(test)]
     pub fn read_signed(&mut self, bits: u32) -> i32 {
