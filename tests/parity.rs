@@ -683,3 +683,107 @@ fn oracle_parity_long_silence_stereo48() {
     let stereo = vec![0i16; 48000 * 2 * 100];
     assert_parity_oracle(&stereo, SampleRate::Hz48000, Channels::Stereo);
 }
+
+// --- Short-input sweep ---
+
+/// Frame counts for the short-input sweep: every length 0..=130 (0 = empty
+/// input, a single audio packet in libvorbis), every 7th
+/// up to 2100, and the bs1 (2048) boundary.
+fn short_input_lengths() -> Vec<usize> {
+    let mut v: Vec<usize> = (0..=130).collect();
+    v.extend((137..=2100).step_by(7));
+    v.extend([2047, 2048, 2049]);
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Seeded noise + tone so the LPC pre/post extrapolation has real content.
+fn short_input_signal(frames: usize, rate: u32, channels: u16) -> Vec<i16> {
+    let mut rng = XorShift32(0xC0FF_EE11);
+    let tau = 2.0 * std::f32::consts::PI;
+    let mut out = Vec::with_capacity(frames * channels as usize);
+    for i in 0..frames {
+        let t = i as f32 / rate as f32;
+        for c in 0..channels {
+            let tone = f32::sin(tau * (440.0 + 220.0 * c as f32) * t) * 9000.0;
+            out.push((tone + rng.next_f32() * 3000.0) as i16);
+        }
+    }
+    out
+}
+
+/// Inputs shorter than bs1 used to diverge: libvorbis trains the EOS
+/// post-extrapolation LPC on its own buffer, which for short streams still
+/// starts with the bs1/2 pre-extrapolated samples. Collects every failing
+/// length so a regression report shows the whole pattern.
+fn run_short_input_sweep(
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+    range: std::ops::RangeInclusive<usize>,
+) {
+    let mut failures = Vec::new();
+    for frames in short_input_lengths()
+        .into_iter()
+        .filter(|f| range.contains(f))
+    {
+        let samples = short_input_signal(frames, rate_hz(rate), channel_count(channels));
+        let oracle_bytes = oracle_encode_q(
+            &samples,
+            rate_hz(rate),
+            channel_count(channels),
+            base_quality,
+        );
+        let serial = extract_serial(&oracle_bytes);
+        let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
+        let lewtoff_bytes = common::lewtoff_encode_q(
+            &samples,
+            rate,
+            channels,
+            base_quality,
+            serial,
+            Some(&vendor),
+            Some(&encoder_tag),
+        );
+        if lewtoff_bytes != oracle_bytes {
+            failures.push(frames);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "base_quality {base_quality}: {} lengths diverged: {failures:?}",
+        failures.len()
+    );
+}
+
+/// `oracle_parity_short_input::<config>_<quality>::<length range>` — split
+/// so nextest runs the ~430 lengths per config/quality in parallel.
+mod oracle_parity_short_input {
+    use super::*;
+
+    macro_rules! sweep {
+        ($name:ident, $rate:expr, $ch:expr, $q:expr) => {
+            mod $name {
+                use super::*;
+                #[test]
+                fn upto_130() {
+                    run_short_input_sweep($rate, $ch, $q, 0..=130);
+                }
+                #[test]
+                fn upto_1100() {
+                    run_short_input_sweep($rate, $ch, $q, 131..=1100);
+                }
+                #[test]
+                fn upto_2100() {
+                    run_short_input_sweep($rate, $ch, $q, 1101..=2100);
+                }
+            }
+        };
+    }
+
+    sweep!(mono44_q5, SampleRate::Hz44100, Channels::Mono, 0.5);
+    sweep!(stereo48_q5, SampleRate::Hz48000, Channels::Stereo, 0.5);
+    sweep!(mono44_q2, SampleRate::Hz44100, Channels::Mono, 0.2);
+    sweep!(stereo48_q2, SampleRate::Hz48000, Channels::Stereo, 0.2);
+}

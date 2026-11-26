@@ -720,6 +720,14 @@ pub(crate) fn full_w_pattern_with_curmark_bs(
     pattern.push(0); // first block is always short (W=0 in init)
     curmarks.push(curmark);
 
+    // vorbis_analysis_blockout ends the stream with the block whose centerW
+    // is >= eofflag. For empty input eofflag == centerW == bs1/2 already, so
+    // the very first block is also the last (libvorbis emits exactly one
+    // audio packet).
+    if center_w >= n_samples {
+        return (pattern, curmarks);
+    }
+
     loop {
         // Decide next block's W. If next_w returns -1 (insufficient data /
         // no upcoming mark), default to long (= what libvorbis settles on

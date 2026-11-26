@@ -94,7 +94,8 @@ pub(crate) fn pre_extrap_for_test(pcm: &[f32]) -> [f32; CENTER_W] {
 
 #[cfg(test)]
 pub(crate) fn post_extrap_for_test(pcm: &[f32]) -> Vec<f32> {
-    postextrapolate_channel_with_n(pcm, LONG_BLOCK.min(pcm.len()))
+    let pre = [0.0f32; CENTER_W];
+    postextrapolate_channel(&pre, pcm, pcm.len())
 }
 
 /// Port of libvorbis post-stream LPC extrapolation (block.c lines 487-527).
@@ -106,39 +107,46 @@ pub(crate) fn post_extrap_for_test(pcm: &[f32]) -> Vec<f32> {
 const LPC_ORDER_POST: usize = 32;
 const POST_EXTRAPOLATE_LEN: usize = LONG_BLOCK * 3; // libvorbis blocksizes[1]*3 = 6144
 
-/// Post-extrapolate the audio with an explicit LPC training-data length.
+/// Post-extrapolate one channel the way libvorbis does at
+/// `vorbis_analysis_wrote(0)`.
 ///
-/// libvorbis sets `n = min(eofflag, blocksizes[1])` where `eofflag` is the
-/// remaining buffered audio at the time `vorbis_analysis_wrote(0)` is called.
-/// For long streams the buffer is always >= 2048 leftover, so n=2048; for
-/// short streams (where the encoder drained nearly all of the audio before
-/// EOS), n equals whatever's left in the buffer — which is less than 2048.
-fn postextrapolate_channel_with_n(pcm: &[f32], n_train: usize) -> Vec<f32> {
-    let eofflag = pcm.len();
+/// libvorbis works on its own analysis buffer `pcm[0..eofflag]`, where
+/// `eofflag = pcm_current` is what is left after the pre-EOS block drains.
+/// That buffer is the tail of the virtual stream
+/// `[pre-extrapolated centerW samples] ++ audio`: for short inputs (nothing
+/// or little drained yet) it still starts inside the LPC pre-extrapolated
+/// region. The predictor is trained on `pcm[eofflag-n..eofflag]` with
+/// `n = min(eofflag, blocksizes[1])`, primed with the last 32 samples, and
+/// the whole thing is skipped (zero-fill) when `eofflag <= 64`.
+///
+/// `pre[k]` is the pre-extrapolated sample at virtual index `-(k+1)`
+/// (the layout `preextrapolate_channel` returns).
+fn postextrapolate_channel(pre: &[f32], audio: &[f32], eofflag: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; POST_EXTRAPOLATE_LEN];
-
     if eofflag <= LPC_ORDER_POST * 2 {
         return out; // libvorbis falls back to zero-fill (memset)
     }
-
-    let n_train = n_train.min(eofflag);
+    let n_train = eofflag.min(LONG_BLOCK);
+    // Materialize the last n_train samples of [pre ++ audio].
+    let total = pre.len() + audio.len();
+    debug_assert!(n_train <= total);
+    let mut buf = Vec::with_capacity(n_train);
+    for v in (total - n_train)..total {
+        buf.push(if v < pre.len() {
+            pre[pre.len() - 1 - v]
+        } else {
+            audio[v - pre.len()]
+        });
+    }
     let mut lpc_coeffs = [0.0f32; LPC_ORDER_POST];
-    lpc_from_data(
-        &pcm[eofflag - n_train..eofflag],
-        &mut lpc_coeffs,
-        n_train,
-        LPC_ORDER_POST,
-    );
-
-    let prime: Vec<f32> = pcm[eofflag - LPC_ORDER_POST..eofflag].to_vec();
+    lpc_from_data(&buf, &mut lpc_coeffs, n_train, LPC_ORDER_POST);
     lpc_predict(
         &lpc_coeffs,
-        &prime,
+        &buf[n_train - LPC_ORDER_POST..],
         LPC_ORDER_POST,
         &mut out,
         POST_EXTRAPOLATE_LEN,
     );
-
     out
 }
 
@@ -318,14 +326,14 @@ pub(crate) fn encode_with_base_quality_and_meta(
     // includes post-extrapolated samples after EOS. The post-extrap LPC
     // training window is `min(eofflag, blocksizes[1])` where eofflag is
     // pcm_current at vorbis_analysis_wrote(0) — i.e. the residual buffer
-    // after pre-EOS drains. For long streams that's always == 2048; for
-    // short streams it's smaller, and using the wrong n_train produces
-    // diverging post-extrap samples → diverging envelope marks at the very
-    // end of the stream. We resolve the chicken-and-egg (eofflag depends on
-    // marks via `simulate_eofflag`, marks depend on env_pcm post-extrap
-    // which depends on eofflag) by iterating to a fixed point. In practice
-    // 2 passes suffice (long streams converge in 1 since n_train clamps to
-    // 2048 either way).
+    // after pre-EOS drains, which is the tail of [pre-extrap ++ audio] (see
+    // `postextrapolate_channel`). Getting eofflag wrong produces diverging
+    // post-extrap samples → diverging envelope marks at the very end of the
+    // stream. We resolve the chicken-and-egg (eofflag depends on marks via
+    // `simulate_eofflag`, marks depend on env_pcm post-extrap which depends
+    // on eofflag) by iterating to a fixed point. In practice 2 passes
+    // suffice (long streams converge in 1 since n_train clamps to bs1
+    // either way).
     // Pre-extrapolation fires once pcm_current - centerW > blocksizes[1],
     // i.e. after blocksizes[1] + one 64-sample analysis chunk (2112 for the
     // 2048-sample long block of q0..q10).
@@ -334,42 +342,61 @@ pub(crate) fn encode_with_base_quality_and_meta(
     let pre_per_channel: Vec<[f32; CENTER_W]> = (0..ch)
         .map(|c| preextrapolate_channel(&pcm_channels[c][..lpc_train_end]))
         .collect();
-    let build_env_pcm = |n_train: usize| -> Vec<Vec<f32>> {
+    let build_post = |eofflag: usize| -> Vec<Vec<f32>> {
+        (0..ch)
+            .map(|c| postextrapolate_channel(&pre_per_channel[c], &pcm_channels[c], eofflag))
+            .collect()
+    };
+    let build_env_pcm = |post: &[Vec<f32>]| -> Vec<Vec<f32>> {
         let mut env_pcm: Vec<Vec<f32>> = Vec::with_capacity(ch);
         for c in 0..ch {
-            let post = postextrapolate_channel_with_n(&pcm_channels[c], n_train);
             let mut buf = Vec::with_capacity(CENTER_W + total_samples + POST_EXTRAPOLATE_LEN);
             for k in 0..CENTER_W {
                 buf.push(pre_per_channel[c][CENTER_W - 1 - k]);
             }
             buf.extend_from_slice(&pcm_channels[c]);
-            buf.extend_from_slice(&post);
+            buf.extend_from_slice(&post[c]);
             env_pcm.push(buf);
         }
         env_pcm
     };
+    // The post-extrapolation depends on eofflag only through
+    // n = min(eofflag, bs1) and the `eofflag > 2*order` guard.
+    let post_key = |eofflag: usize| (eofflag.min(LONG_BLOCK), eofflag > LPC_ORDER_POST * 2);
 
-    let mut n_train_env = LONG_BLOCK.min(total_samples);
-    let (block_w, env_marks, block_curmarks): (Vec<i32>, Vec<bool>, Vec<i64>) = loop {
-        let env_pcm = build_env_pcm(n_train_env);
+    // Initial guess: nothing drained before EOS (eofflag = centerW + audio);
+    // exact for short inputs, and long inputs clamp to n = bs1 anyway.
+    let mut eofflag_lpc = CENTER_W + total_samples;
+    let mut iterations = 0;
+    let (block_w, env_marks, block_curmarks, post_predicted) = loop {
+        let post = build_post(eofflag_lpc);
+        let env_pcm = build_env_pcm(&post);
         let marks = crate::envelope::compute_marks(&env_pcm, gi);
         // Re-derive eofflag using these marks; if it implies a different
-        // n_train, rebuild env_pcm (and thus the marks) once more.
+        // post-extrapolation, rebuild env_pcm (and thus the marks).
         let eof_candidate =
             crate::envelope::simulate_eofflag(&marks, total_samples as i64, ANALYSIS_CHUNK as i64)
                 as usize;
-        let n_train_next = LONG_BLOCK.min(eof_candidate);
-        if n_train_next == n_train_env {
+        iterations += 1;
+        if post_key(eof_candidate) == post_key(eofflag_lpc) || iterations >= 8 {
+            debug_assert!(post_key(eof_candidate) == post_key(eofflag_lpc));
+            eofflag_lpc = eof_candidate;
             // libvorbis terminates emission at v->centerW >= v->eofflag.
             // eofflag is the END OF REAL AUDIO position. In env_pcm coords
             // that's CENTER_W (pre-extrap) + total_samples; post-extrap
             // content extends the marks array but doesn't extend eofflag.
             let n_eof = (CENTER_W + total_samples) as i64;
             let (pattern, curmarks) = crate::envelope::full_w_pattern_with_curmark(&marks, n_eof);
-            break (pattern, marks, curmarks);
+            break (pattern, marks, curmarks, post);
         }
-        n_train_env = n_train_next;
+        eofflag_lpc = eof_candidate;
     };
+    if crate::debug_flag!("LW_DEBUG_EOFFLAG") {
+        eprintln!(
+            "R_EOFFLAG eofflag_lpc={} total_samples={} iterations={}",
+            eofflag_lpc, total_samples, iterations
+        );
+    }
 
     // Map W-flag sequence to per-block sample positions (block_start). Each
     // block reads `bs[W]/2` "current half" samples starting at block_start.
@@ -495,33 +522,6 @@ pub(crate) fn encode_with_base_quality_and_meta(
         // win_bufs[c].prev_short[SHORT_HALF-1-k] = prestream[k]
         win_bufs[c].set_prestream(&prestream[..SHORT_HALF]);
     }
-
-    // Post-stream LPC extrapolation (port of libvorbis EOS handling in block.c
-    // lines 487-527). Predict POST_EXTRAPOLATE_LEN samples beyond total_samples
-    // so the last data block + flush block see LPC-predicted continuations
-    // rather than a hard zero discontinuity.
-    //
-    // libvorbis: `n = min(eofflag, blocksizes[1])` where eofflag is the
-    // remainder of audio in pcm[] at the moment `vorbis_analysis_wrote(0)`
-    // is called. For long streams that's always >= bs[1]=2048; for short
-    // streams (where the encoder drained nearly all of the audio in the
-    // streaming pre-EOS phase), the remainder is whatever didn't fit
-    // another block. Simulate that here: walk the W pattern, decrement a
-    // "virtual pcm_current" by each block's advance, stop when the
-    // remainder is too small for the next block's blockbound.
-    let eofflag_lpc =
-        crate::envelope::simulate_eofflag(&env_marks, total_samples as i64, ANALYSIS_CHUNK as i64)
-            as usize;
-    let n_train_post = LONG_BLOCK.min(eofflag_lpc);
-    if crate::debug_flag!("LW_DEBUG_EOFFLAG") {
-        eprintln!(
-            "R_EOFFLAG eofflag_lpc={} n_train={} total_samples={}",
-            eofflag_lpc, n_train_post, total_samples
-        );
-    }
-    let post_predicted: Vec<Vec<f32>> = (0..ch)
-        .map(|c| postextrapolate_channel_with_n(&pcm_channels[c], n_train_post))
-        .collect();
 
     // Per-block analysis state. Under `feature = "parallel"`, blocks are
     // collected into a Vec<BlockJob> and processed via Rayon; under default
