@@ -8,6 +8,12 @@
 # This makes the produced binary's output bit-deterministic across hosts:
 # no FMA contraction, no aggressive inlining that might reorder f32 ops.
 #
+# Every translation unit is also compiled with `-include stable_qsort.h`,
+# which redirects qsort() to a stable merge sort (stable_qsort.c).
+# libvorbis's noise normalization (psy.c, q0..q3) sorts with ties, and
+# libc qsort tie order differs between hosts (glibc: stable merge sort;
+# macOS: not). The vendored .c files are left untouched.
+#
 # Run from anywhere (the script resolves relative paths). Requires:
 #   - clang or gcc
 #   - libogg headers + library (homebrew on macOS, libogg-dev on Debian/Ubuntu)
@@ -45,6 +51,7 @@ done
 
 SRCS=(
     "$SCRIPT_DIR/main.c"
+    "$SCRIPT_DIR/stable_qsort.c"
     "$VEND/analysis.c"
     "$VEND/bitrate.c"
     "$VEND/block.c"
@@ -72,6 +79,7 @@ SRCS=(
 OUT="$SCRIPT_DIR/oracle-encoder"
 echo "build.sh: $CC $CFLAGS -> $OUT"
 $CC $CFLAGS \
+    -include "$SCRIPT_DIR/stable_qsort.h" \
     -I"$VEND/include" \
     -I"$VEND" \
     $OGG_INC \
