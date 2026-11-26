@@ -1,13 +1,17 @@
 //! Minimal Ogg page/packet parser for localizing the first divergence.
+//! Also used by tools/parity-diff (via `#[path]`).
 
 #[derive(Debug, Clone)]
 pub struct Page {
     pub offset: usize,
     pub header_len: usize,
     pub body_len: usize,
+    pub version: u8,
     pub flags: u8,
     pub granule: i64,
+    pub serial: u32,
     pub seqno: u32,
+    pub crc: u32,
     pub lacing: Vec<u8>,
 }
 
@@ -39,14 +43,38 @@ pub fn parse_pages(b: &[u8]) -> Result<Vec<Page>, String> {
             offset: off,
             header_len,
             body_len,
+            version: b[off + 4],
             flags: b[off + 5],
             granule: i64::from_le_bytes(b[off + 6..off + 14].try_into().unwrap()),
+            serial: u32::from_le_bytes(b[off + 14..off + 18].try_into().unwrap()),
             seqno: u32::from_le_bytes(b[off + 18..off + 22].try_into().unwrap()),
+            crc: u32::from_le_bytes(b[off + 22..off + 26].try_into().unwrap()),
             lacing,
         });
         off += header_len + body_len;
     }
     Ok(pages)
+}
+
+/// Ogg page CRC (polynomial 0x04c11db7, MSB-first, init 0) of page `p`,
+/// computed with its CRC field treated as zero.
+pub fn crc_of_page(b: &[u8], p: &Page) -> u32 {
+    let mut crc = 0u32;
+    for (i, &byte) in b[p.offset..p.offset + p.header_len + p.body_len]
+        .iter()
+        .enumerate()
+    {
+        let byte = if (22..26).contains(&i) { 0 } else { byte };
+        crc ^= (byte as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
 }
 
 pub fn packets(b: &[u8], pages: &[Page]) -> Vec<Packet> {
@@ -196,6 +224,15 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         opk.len(),
         lpk.len()
     );
+    let bad_crc = lp
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| crc_of_page(lw, p) != p.crc)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    if !bad_crc.is_empty() {
+        s += &format!("\nlewtoff pages with a bad CRC: {bad_crc:?}");
+    }
     let n = opk.len().min(lpk.len());
     let first_pkt = (0..n)
         .find(|&i| opk[i].data != lpk[i].data)
@@ -272,17 +309,27 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         let np = op.len().min(lp.len());
         let first_page = (0..np).find(|&k| {
             let (a, b) = (&op[k], &lp[k]);
-            a.granule != b.granule || a.flags != b.flags || a.lacing != b.lacing
+            a.version != b.version
+                || a.granule != b.granule
+                || a.flags != b.flags
+                || a.seqno != b.seqno
+                || a.serial != b.serial
+                || a.crc != b.crc
+                || a.lacing != b.lacing
         });
         match first_page {
             Some(k) => {
                 s += &format!(
-                    "\npackets identical; framing differs at page {k}: oracle granule={} flags={:#x} segs={} | lewtoff granule={} flags={:#x} segs={}",
+                    "\npackets identical; framing differs at page {k}: oracle granule={} flags={:#x} seqno={} crc={:#010x} segs={} | lewtoff granule={} flags={:#x} seqno={} crc={:#010x} segs={}",
                     op[k].granule,
                     op[k].flags,
+                    op[k].seqno,
+                    op[k].crc,
                     op[k].lacing.len(),
                     lp[k].granule,
                     lp[k].flags,
+                    lp[k].seqno,
+                    lp[k].crc,
                     lp[k].lacing.len()
                 )
             }

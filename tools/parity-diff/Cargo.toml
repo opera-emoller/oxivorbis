@@ -7,6 +7,3 @@ publish = false
 [[bin]]
 name = "parity-diff"
 path = "src/main.rs"
-
-[dependencies]
-ogg = "0.9"
