@@ -964,218 +964,209 @@ fn bark_noise_hybridmp(n: usize, b: &[i64], f: &[f32], noise: &mut [f32], offset
         }
     }
 
-    let mut i = 0usize;
-    let mut x = 0.0_f32;
-    // Loops 2-3 share big_a/big_b/big_d/r (loop 3 reads them after loop 2 exits).
-    // Scope the locals here so they don't get spilled to function-scope memory.
+    let pre = Prefix {
+        n: big_n,
+        x: big_x,
+        xx: big_xx,
+        y: big_y,
+        xy: big_xy,
+    };
+
+    // libvorbis runs three loops over i (x = i as float throughout; x += 1
+    // from 0 is exact): while the bark window's lo is below 0 (mirrored),
+    // while it lies inside [0, n), then the remainder extrapolates the last
+    // A/B/D. The loop bounds depend only on `b`, so they are found first;
+    // each body is element-wise in i and runs HYB_LANES at a time with
+    // per-lane gathers (every lane does the scalar ops in scalar order).
+    let lohi = |i: usize| (b[i] >> 16, (b[i] & 0xffff) as usize);
+    let mut e2 = 0;
+    while e2 < n {
+        let (lo, hi) = lohi(e2);
+        if lo >= 0 || lo.unsigned_abs() as usize >= n || hi >= n {
+            break;
+        }
+        e2 += 1;
+    }
+    let mut e3 = e2;
+    while e3 < n {
+        let (lo, hi) = lohi(e3);
+        if lo < 0 || lo as usize >= n || hi >= n {
+            break;
+        }
+        e3 += 1;
+    }
+    let mirrored = |i: usize| {
+        let (lo, hi) = lohi(i);
+        (lo.unsigned_abs() as usize, hi)
+    };
+    let inside = |i: usize| {
+        let (lo, hi) = lohi(i);
+        (lo as usize, hi)
+    };
     {
-        let mut big_a = 0.0_f32;
-        let mut big_b = 0.0_f32;
-        let mut big_d = 1.0_f32;
-        let mut r = 0.0_f32;
-
-        while i < n {
-            let lo = b[i] >> 16;
-            let hi = (b[i] & 0xffff) as usize;
-
-            if lo >= 0 || (-lo) as usize >= n {
-                break;
-            }
-            if hi >= n {
-                break;
-            }
-
-            let nlo = (-lo) as usize;
-            let tn = big_n[hi] + big_n[nlo];
-            let tx = big_x[hi] - big_x[nlo];
-            let txx = big_xx[hi] + big_xx[nlo];
-            let ty = big_y[hi] + big_y[nlo];
-            let txy = big_xy[hi] - big_xy[nlo];
-
-            big_a = ty * txx - tx * txy;
-            big_b = tn * txy - tx * ty;
-            big_d = tn * txx - tx * tx;
-            r = (big_a + x * big_b) / big_d;
-            if r < 0.0 {
-                r = 0.0;
-            }
-
-            noise[i] = r - offset;
-            i += 1;
-            x += 1.0;
-        }
-
-        while i < n {
-            let lo = b[i] >> 16;
-            let hi = (b[i] & 0xffff) as usize;
-
-            if lo < 0 || lo as usize >= n {
-                break;
-            }
-            if hi >= n {
-                break;
-            }
-
-            let tn = big_n[hi] - big_n[lo as usize];
-            let tx = big_x[hi] - big_x[lo as usize];
-            let txx = big_xx[hi] - big_xx[lo as usize];
-            let ty = big_y[hi] - big_y[lo as usize];
-            let txy = big_xy[hi] - big_xy[lo as usize];
-
-            big_a = ty * txx - tx * txy;
-            big_b = tn * txy - tx * ty;
-            big_d = tn * txx - tx * tx;
-            r = (big_a + x * big_b) / big_d;
-
-            if (12..=16).contains(&i) && crate::debug_flag!("LW_DEBUG_BNH") {
-                eprintln!(
-                    "LW_BNH i={} lo={} hi={} x={:.1} tn={:.6} tx={:.6} txx={:.6} ty={:.6} txy={:.6} A={:.6} B={:.6} D={:.6} R={:.6} noise={:.6} offset={:.6}",
-                    i,
-                    lo,
-                    hi,
-                    x,
-                    tn,
-                    tx,
-                    txx,
-                    ty,
-                    txy,
-                    big_a,
-                    big_b,
-                    big_d,
-                    r,
-                    r - offset,
-                    offset
-                );
-            }
-            if (i == 118 || i == 127) && crate::debug_flag!("LW_DEBUG_BNH118") {
-                eprintln!(
-                    "LW_BNH i={} lo={} hi={} x={} tn={}(0x{:08x}) ty={}(0x{:08x}) txx={}(0x{:08x}) tx={}(0x{:08x}) txy={}(0x{:08x}) A={}(0x{:08x}) B={}(0x{:08x}) D={}(0x{:08x}) R={}(0x{:08x})",
-                    i,
-                    lo,
-                    hi,
-                    x,
-                    tn,
-                    tn.to_bits(),
-                    ty,
-                    ty.to_bits(),
-                    txx,
-                    txx.to_bits(),
-                    tx,
-                    tx.to_bits(),
-                    txy,
-                    txy.to_bits(),
-                    big_a,
-                    big_a.to_bits(),
-                    big_b,
-                    big_b.to_bits(),
-                    big_d,
-                    big_d.to_bits(),
-                    r,
-                    r.to_bits(),
-                );
-            }
-
-            if r < 0.0 {
-                r = 0.0;
-            }
-
-            noise[i] = r - offset;
-            i += 1;
-            x += 1.0;
-        }
-
-        while i < n {
-            r = (big_a + x * big_b) / big_d;
-            if r < 0.0 {
-                r = 0.0;
-            }
-            noise[i] = r - offset;
-            i += 1;
-            x += 1.0;
-        }
-    } // end loops 2-3 scope
+        let set = |_: f32, r: f32| {
+            let r = if r < 0.0 { 0.0 } else { r };
+            r - offset
+        };
+        hyb_run(&pre, 0, e2, true, mirrored, noise, set);
+        hyb_run(&pre, e2, e3, false, inside, noise, set);
+        let (big_a, big_b, big_d) = if e3 > e2 {
+            let (lo, hi) = inside(e3 - 1);
+            pre.abd(hi, lo, false)
+        } else if e2 > 0 {
+            let (lo, hi) = mirrored(e2 - 1);
+            pre.abd(hi, lo, true)
+        } else {
+            (0.0, 0.0, 1.0)
+        };
+        hyb_tail(e3, n, big_a, big_b, big_d, noise, set);
+    }
 
     if fixed <= 0 {
         return;
     }
 
-    i = 0;
-    x = 0.0;
-    // Loops 4-5-6 also share big_a/b/d/r the same way.
-    {
-        let mut big_a = 0.0_f32;
-        let mut big_b = 0.0_f32;
-        let mut big_d = 1.0_f32;
-        let mut r = 0.0_f32;
+    // Fixed-width window: hi = i + fixed/2, lo = hi - fixed. Same three
+    // loops; the first runs while hi < n and lo < 0, the second while
+    // hi < n (lo >= 0 from then on).
+    let half = fixed as usize / 2;
+    let fixed = fixed as usize;
+    let e5 = n.saturating_sub(half).min(fixed - half);
+    let e6 = e5.max(n.saturating_sub(half));
+    let mirrored = |i: usize| (fixed - (i + half), i + half);
+    let inside = |i: usize| (i + half - fixed, i + half);
+    let lower = |old: f32, r: f32| if r - offset < old { r - offset } else { old };
+    hyb_run(&pre, 0, e5, true, mirrored, noise, lower);
+    hyb_run(&pre, e5, e6, false, inside, noise, lower);
+    let (big_a, big_b, big_d) = if e6 > e5 {
+        let (lo, hi) = inside(e6 - 1);
+        pre.abd(hi, lo, false)
+    } else if e5 > 0 {
+        let (lo, hi) = mirrored(e5 - 1);
+        pre.abd(hi, lo, true)
+    } else {
+        (0.0, 0.0, 1.0)
+    };
+    hyb_tail(e6, n, big_a, big_b, big_d, noise, lower);
+}
 
-        while i < n {
-            let hi = i + fixed as usize / 2;
-            let lo = hi as i64 - fixed as i64;
+/// Prefix sums of bark_noise_hybridmp's weighted least-squares terms.
+struct Prefix<'a> {
+    n: &'a [f32],
+    x: &'a [f32],
+    xx: &'a [f32],
+    y: &'a [f32],
+    xy: &'a [f32],
+}
 
-            if hi >= n {
-                break;
-            }
-            if lo >= 0 {
-                break;
-            }
+/// Lane count for bark_noise_hybridmp's element-wise loops (one 128-bit
+/// vector on SSE2 and NEON).
+const HYB_LANES: usize = 4;
 
-            let nlo = (-lo) as usize;
-            let tn = big_n[hi] + big_n[nlo];
-            let tx = big_x[hi] - big_x[nlo];
-            let txx = big_xx[hi] + big_xx[nlo];
-            let ty = big_y[hi] + big_y[nlo];
-            let txy = big_xy[hi] - big_xy[nlo];
-
-            big_a = ty * txx - tx * txy;
-            big_b = tn * txy - tx * ty;
-            big_d = tn * txx - tx * tx;
-            r = (big_a + x * big_b) / big_d;
-
-            if r - offset < noise[i] {
-                noise[i] = r - offset;
-            }
-            i += 1;
-            x += 1.0;
+impl Prefix<'_> {
+    /// Window sums over (lo, hi]. `mirrored`: the window starts below 0 and
+    /// `lo` is the mirrored index, so N/XX/Y add and X/XY subtract, exactly
+    /// as libvorbis writes it.
+    #[inline(always)]
+    fn sums(&self, hi: usize, lo: usize, mirrored: bool) -> [f32; 5] {
+        if mirrored {
+            [
+                self.n[hi] + self.n[lo],
+                self.x[hi] - self.x[lo],
+                self.xx[hi] + self.xx[lo],
+                self.y[hi] + self.y[lo],
+                self.xy[hi] - self.xy[lo],
+            ]
+        } else {
+            [
+                self.n[hi] - self.n[lo],
+                self.x[hi] - self.x[lo],
+                self.xx[hi] - self.xx[lo],
+                self.y[hi] - self.y[lo],
+                self.xy[hi] - self.xy[lo],
+            ]
         }
+    }
 
-        while i < n {
-            let hi = i + fixed as usize / 2;
-            let lo = hi as i64 - fixed as i64;
+    #[inline(always)]
+    fn abd(&self, hi: usize, lo: usize, mirrored: bool) -> (f32, f32, f32) {
+        let [tn, tx, txx, ty, txy] = self.sums(hi, lo, mirrored);
+        abd(tn, tx, txx, ty, txy)
+    }
+}
 
-            if hi >= n {
-                break;
+#[inline(always)]
+fn abd(tn: f32, tx: f32, txx: f32, ty: f32, txy: f32) -> (f32, f32, f32) {
+    let big_a = ty * txx - tx * txy;
+    let big_b = tn * txy - tx * ty;
+    let big_d = tn * txx - tx * tx;
+    (big_a, big_b, big_d)
+}
+
+/// `noise[i] = op(noise[i], (A + x*B) / D)` for i in [start, end), x = i,
+/// with A/B/D from the window `idx(i) = (lo, hi)`.
+#[inline(always)]
+fn hyb_run(
+    pre: &Prefix,
+    start: usize,
+    end: usize,
+    mirrored: bool,
+    idx: impl Fn(usize) -> (usize, usize),
+    noise: &mut [f32],
+    op: impl Fn(f32, f32) -> f32,
+) {
+    let mut i = start;
+    while i + HYB_LANES <= end {
+        let mut t = [[0.0_f32; HYB_LANES]; 5];
+        for l in 0..HYB_LANES {
+            let (lo, hi) = idx(i + l);
+            let s = pre.sums(hi, lo, mirrored);
+            for k in 0..5 {
+                t[k][l] = s[k];
             }
-            if lo < 0 {
-                break;
-            }
-
-            let tn = big_n[hi] - big_n[lo as usize];
-            let tx = big_x[hi] - big_x[lo as usize];
-            let txx = big_xx[hi] - big_xx[lo as usize];
-            let ty = big_y[hi] - big_y[lo as usize];
-            let txy = big_xy[hi] - big_xy[lo as usize];
-
-            big_a = ty * txx - tx * txy;
-            big_b = tn * txy - tx * ty;
-            big_d = tn * txx - tx * tx;
-            r = (big_a + x * big_b) / big_d;
-
-            if r - offset < noise[i] {
-                noise[i] = r - offset;
-            }
-            i += 1;
-            x += 1.0;
         }
-
-        while i < n {
-            r = (big_a + x * big_b) / big_d;
-            if r - offset < noise[i] {
-                noise[i] = r - offset;
-            }
-            i += 1;
-            x += 1.0;
+        let mut r = [0.0_f32; HYB_LANES];
+        for l in 0..HYB_LANES {
+            let (a, b, d) = abd(t[0][l], t[1][l], t[2][l], t[3][l], t[4][l]);
+            r[l] = (a + (i + l) as f32 * b) / d;
         }
-    } // end loops 4-6 scope
+        let dst: &mut [f32; HYB_LANES] = (&mut noise[i..i + HYB_LANES]).try_into().unwrap();
+        for l in 0..HYB_LANES {
+            dst[l] = op(dst[l], r[l]);
+        }
+        i += HYB_LANES;
+    }
+    while i < end {
+        let (lo, hi) = idx(i);
+        let (a, b, d) = pre.abd(hi, lo, mirrored);
+        noise[i] = op(noise[i], (a + i as f32 * b) / d);
+        i += 1;
+    }
+}
+
+/// libvorbis's trailing loop: extrapolate the last fit for i in [start, end).
+#[inline(always)]
+fn hyb_tail(
+    start: usize,
+    end: usize,
+    a: f32,
+    b: f32,
+    d: f32,
+    noise: &mut [f32],
+    op: impl Fn(f32, f32) -> f32,
+) {
+    let mut i = start;
+    while i + HYB_LANES <= end {
+        let dst: &mut [f32; HYB_LANES] = (&mut noise[i..i + HYB_LANES]).try_into().unwrap();
+        for (l, v) in dst.iter_mut().enumerate() {
+            *v = op(*v, (a + (i + l) as f32 * b) / d);
+        }
+        i += HYB_LANES;
+    }
+    while i < end {
+        noise[i] = op(noise[i], (a + i as f32 * b) / d);
+        i += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------
