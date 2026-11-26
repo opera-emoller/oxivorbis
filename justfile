@@ -181,15 +181,23 @@ regen-quality-tables:
     ./tools/oracle-encoder/dump_quality_tables > src/tables/quality.rs
     cargo fmt --all
 
-# Build the table generator and write src/tables/*.rs.
+# Regenerate src/tables/{trig,drft,window}.rs (MDCT, FFT and window tables
+# for 128/256/512/2048/4096) by dumping libvorbis's runtime tables from the
+# vendored sources (tools/oracle-encoder/dsp_oracle) and embedding them
+# bit-for-bit. No Rust-side cos/sin, so the result is host-independent.
 regen-tables:
-    cargo run --bin gen-tables
-
-# Regenerate src/tables/trig.rs from a fresh run of tools/gen-tables.
-# Must be run on a canonical host (macOS arm64) for byte-identical reproducibility.
-regen-trig-table:
-    cargo run -p gen-tables
+    ./tools/oracle-encoder/build_dsp_oracle.sh
+    mkdir -p /tmp/lewtoff-dsp-tables
+    ./tools/oracle-encoder/dsp_oracle tables /tmp/lewtoff-dsp-tables
+    cargo run -p gen-tables -- /tmp/lewtoff-dsp-tables
     cargo fmt --all
+
+# Regenerate tools/oracle-encoder/dsp_manifest.txt: libvorbis hashes of the
+# DSP tables and of mdct/drft/window outputs on seeded input, checked by the
+# always-on `dsp_manifest_*` unit tests.
+regen-dsp-manifest:
+    ./tools/oracle-encoder/build_dsp_oracle.sh
+    ./tools/oracle-encoder/dsp_oracle manifest > tools/oracle-encoder/dsp_manifest.txt
 
 # Regenerate tests/vectors/mdct/*.bin from libvorbis 1.3.7.
 # Requires ~/Documents/src/libvorbis cloned and clang on PATH.

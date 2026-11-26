@@ -18,8 +18,6 @@
 /tools/debug-libvorbis-dump/corpus_harness.dSYM/
 /tools/debug-libvorbis-dump/ramp_harness
 /tools/debug-libvorbis-dump/ramp_harness.dSYM/
-/tools/oracle-encoder/dump_window_tables
-/tools/oracle-encoder/dump_window_tables.dSYM/
 /tools/oracle-encoder/dump_quality_tables
 /tools/oracle-encoder/dump_params
 
@@ -31,3 +29,5 @@
 /tools/oracle-encoder/oracle-encoder
 /tools/oracle-encoder/oracle-encoder.dSYM/
 .claude/worktrees/
+/tools/oracle-encoder/dsp_oracle
+/tools/oracle-encoder/dsp_oracle.dSYM/

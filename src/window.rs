@@ -2,9 +2,14 @@
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::explicit_counter_loop)]
+// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
+// yet; the fixed-size wrappers still are. Drop once call sites switch.
+#![cfg_attr(not(test), allow(dead_code))]
 //!
 //! Port of libvorbis `lib/window.c` `_vorbis_apply_window` supporting both
-//! long (n=2048) and short (n=256) blocks and their transitions.
+//! blocksize pairs the 44.1/48 kHz templates use — 256/2048 (q0..q10) and
+//! 512/4096 (q-1, `blocksize_short_44[0]`/`blocksize_long_44[0]`) — and all
+//! long/short transitions.
 //!
 //! Window transition logic:
 //!   _vorbis_apply_window(d, winno, blocksizes, lW, W, nW):
@@ -18,16 +23,12 @@
 //!     - d[rightbegin..rightend] *= windowNW[rn/2-1..0] (reversed)
 //!     - d[rightend..n] = 0
 //!
-//! For Q5 (blocksizes[0]=256, blocksizes[1]=2048):
-//!   winno[0] = ilog(256)-7 = 1 → vwin[1] = vwin128 (128 values, our WIN_HALF_256)
-//!   winno[1] = ilog(2048)-7 = 4 → vwin[4] = vwin1024 (1024 values, our WIN_HALF_2048)
-//!
-//! LIMITATION: Only supports the "first block short, all subsequent long"
-//! pattern. No transient detection. Suitable for non-transient test corpora
-//! (silence, sine, ramp). Real-world audio with attacks would require full
-//! transient detection from libvorbis vorbis_analysis_blockout.
+//! `winno[i] = ov_ilog(blocksizes[i]) - 7` (block.c:207), and `vwin[k]` is
+//! the half-window for blocksize `2^(k+7)` holding `bs/2` floats: vwin256
+//! (128 floats, `WIN_HALF_256`), vwin512 (`WIN_HALF_512`), vwin2048
+//! (`WIN_HALF_2048`), vwin4096 (`WIN_HALF_4096`). See [`window_half`].
 
-use crate::tables::window::{WIN_HALF_256, WIN_HALF_2048};
+use crate::tables::window::{WIN_HALF_256, WIN_HALF_512, WIN_HALF_2048, WIN_HALF_4096};
 
 pub(crate) const LONG_BLOCK: usize = 2048;
 pub(crate) const SHORT_BLOCK: usize = 256;
@@ -37,24 +38,91 @@ pub(crate) const SHORT_HALF: usize = SHORT_BLOCK / 2; // 128
 pub(crate) const BLOCK_SIZE: usize = LONG_BLOCK;
 pub(crate) const HALF_BLOCK: usize = LONG_HALF;
 
-/// Apply _vorbis_apply_window for a block of size `n`.
+/// Largest long block over all supported blocksize pairs (q-1: 4096).
+pub(crate) const MAX_LONG_BLOCK: usize = 4096;
+/// Largest long half-block (q-1: 2048). Also the largest psy `n`.
+pub(crate) const MAX_LONG_HALF: usize = MAX_LONG_BLOCK / 2;
+/// Largest short block over all supported blocksize pairs (q-1: 512).
+pub(crate) const MAX_SHORT_BLOCK: usize = 512;
+/// Largest short half-block (q-1: 256).
+pub(crate) const MAX_SHORT_HALF: usize = MAX_SHORT_BLOCK / 2;
+
+/// A `ci->blocksizes[0..2]` pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BlockSizes {
+    /// `blocksizes[0]`
+    pub short: usize,
+    /// `blocksizes[1]`
+    pub long: usize,
+}
+
+impl BlockSizes {
+    /// 44.1/48 kHz templates at q0..q10 (`blocksize_*_44[1..]`).
+    pub(crate) const BS_256_2048: BlockSizes = BlockSizes {
+        short: 256,
+        long: 2048,
+    };
+    /// 44.1/48 kHz templates at q-1 (template index 0, `base_quality < 0`).
+    pub(crate) const BS_512_4096: BlockSizes = BlockSizes {
+        short: 512,
+        long: 4096,
+    };
+
+    /// `blocksizes[W]` for `W = is_long`.
+    #[inline]
+    pub(crate) const fn get(self, is_long: bool) -> usize {
+        if is_long { self.long } else { self.short }
+    }
+
+    #[inline]
+    pub(crate) const fn short_half(self) -> usize {
+        self.short / 2
+    }
+
+    #[inline]
+    pub(crate) const fn long_half(self) -> usize {
+        self.long / 2
+    }
+
+    /// Samples between the start of a long block's right half (`centerW`)
+    /// and the short-overlap region that hands off to a following short
+    /// block; equivalently the length of the un-windowed middle section
+    /// `[leftend..long/2)` of a long block entered from a short one
+    /// (`long/4 - short/4`: 448 for 256/2048, 896 for 512/4096).
+    #[inline]
+    pub(crate) const fn long_short_gap(self) -> usize {
+        self.long / 4 - self.short / 4
+    }
+}
+
+/// libvorbis `vwin[ov_ilog(bs) - 7]`: the rising half-window (`bs/2` floats)
+/// for blocksize `bs`. Panics unless `bs` is 256, 512, 2048 or 4096.
+pub(crate) fn window_half(bs: usize) -> &'static [f32] {
+    match bs {
+        256 => &WIN_HALF_256,
+        512 => &WIN_HALF_512,
+        2048 => &WIN_HALF_2048,
+        4096 => &WIN_HALF_4096,
+        _ => panic!("window: unsupported blocksize {bs}"),
+    }
+}
+
+/// `_vorbis_apply_window(d, winno, blocksizes, lW, W, nW)` for `d` of
+/// length `bs.get(w)`.
 ///
-/// `lW`: is the previous block long? (false=short, true=long)
-/// `w`: is the current block long? (false=short, true=long)
-/// `nW`: is the next block long? (false=short, true=long)
-///
-/// For short blocks (W=0), lW and nW are forced to 0 regardless.
-/// The `d` slice must have length n.
-fn apply_window(d: &mut [f32], lw: bool, w: bool, nw: bool) {
+/// `lw`/`w`/`nw`: is the previous/current/next block long? For short blocks
+/// (`w == false`) `lw` and `nw` are forced to short, as in libvorbis.
+pub(crate) fn apply_window_bs(d: &mut [f32], bs: BlockSizes, lw: bool, w: bool, nw: bool) {
     let lw = if w { lw } else { false };
     let nw = if w { nw } else { false };
 
-    let n = if w { LONG_BLOCK } else { SHORT_BLOCK };
-    let ln = if lw { LONG_BLOCK } else { SHORT_BLOCK };
-    let rn = if nw { LONG_BLOCK } else { SHORT_BLOCK };
+    let n = bs.get(w);
+    let ln = bs.get(lw);
+    let rn = bs.get(nw);
+    debug_assert_eq!(d.len(), n);
 
-    let window_lw: &[f32] = if lw { &WIN_HALF_2048 } else { &WIN_HALF_256 };
-    let window_nw: &[f32] = if nw { &WIN_HALF_2048 } else { &WIN_HALF_256 };
+    let window_lw = window_half(ln);
+    let window_nw = window_half(rn);
 
     let leftbegin = n / 4 - ln / 4;
     let leftend = leftbegin + ln / 2;
@@ -84,68 +152,93 @@ fn apply_window(d: &mut [f32], lw: bool, w: bool, nw: bool) {
 
 /// Holds state for windowing between blocks.
 pub(crate) struct WindowingBuffer {
-    /// Previous 1024 samples (long block overlap buffer).
-    prev_long: [f32; LONG_HALF],
-    /// Previous 128 samples (short block overlap buffer).
-    prev_short: [f32; SHORT_HALF],
+    bs: BlockSizes,
+    /// Previous `bs.long/2` samples (long block overlap buffer); only the
+    /// first `bs.long_half()` entries are used.
+    prev_long: [f32; MAX_LONG_HALF],
+    /// Previous `bs.short/2` samples (short block overlap buffer); only the
+    /// first `bs.short_half()` entries are used.
+    prev_short: [f32; MAX_SHORT_HALF],
     /// Was the previous block a long block?
     prev_is_long: bool,
 }
 
 impl WindowingBuffer {
+    /// Buffer for the 256/2048 blocksize pair (q0..q10).
     pub(crate) fn new() -> Self {
+        Self::with_blocksizes(BlockSizes::BS_256_2048)
+    }
+
+    /// Buffer for an arbitrary supported blocksize pair.
+    pub(crate) fn with_blocksizes(bs: BlockSizes) -> Self {
+        assert!(bs.long <= MAX_LONG_BLOCK && bs.short <= MAX_SHORT_BLOCK);
         Self {
-            prev_long: [0.0f32; LONG_HALF],
-            prev_short: [0.0f32; SHORT_HALF],
+            bs,
+            prev_long: [0.0f32; MAX_LONG_HALF],
+            prev_short: [0.0f32; MAX_SHORT_HALF],
             prev_is_long: false,
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn blocksizes(&self) -> BlockSizes {
+        self.bs
     }
 
     /// Set the pre-stream extrapolated samples for the short block's left half.
     /// `prestream[i]` = virtual sample at -(i+1) (index 0 = sample just before stream start).
     /// These are placed in `prev_short` in reversed order:
-    /// `prev_short[SHORT_HALF - 1 - i] = prestream[i]`
-    /// so that `prev_short[SHORT_HALF-1]` = sample at -1 (closest to stream start).
+    /// `prev_short[short_half - 1 - i] = prestream[i]`
+    /// so that `prev_short[short_half-1]` = sample at -1 (closest to stream start).
+    /// At most `short_half` (128 or 256) samples are used.
     pub(crate) fn set_prestream(&mut self, prestream: &[f32]) {
-        let len = prestream.len().min(SHORT_HALF);
+        let sh = self.bs.short_half();
+        let len = prestream.len().min(sh);
         for i in 0..len {
-            self.prev_short[SHORT_HALF - 1 - i] = prestream[i];
+            self.prev_short[sh - 1 - i] = prestream[i];
         }
     }
 
-    /// Produce a windowed long (2048-sample) block.
+    /// Produce a windowed long block into `out` (length `bs.long`).
     ///
-    /// `current` is the next LONG_HALF = 1024 PCM samples.
-    /// `pre_current`: for the short→long transition (lw=false), the 448 PCM samples
-    ///   immediately preceding `current` in the stream. These fill the un-windowed
-    ///   middle section `[leftend..LONG_HALF]` = `[576..1024]` of the analysis frame,
-    ///   matching libvorbis's continuous PCM buffer. Pass `None` for long→long transitions.
+    /// `current` is the next `bs.long/2` PCM samples.
+    /// `pre_current`: for the short→long transition (lw=false), the
+    ///   `bs.long_short_gap()` PCM samples immediately preceding `current` in
+    ///   the stream (448 for 256/2048, 896 for 512/4096). These fill the
+    ///   un-windowed middle section `[leftend..long/2]` of the analysis
+    ///   frame, matching libvorbis's continuous PCM buffer. Ignored (pass
+    ///   `None`) for long→long transitions.
     /// `nw_is_long`: is the next block long?
-    pub(crate) fn push_long_block(
+    pub(crate) fn push_long_block_into(
         &mut self,
-        current: &[f32; LONG_HALF],
+        current: &[f32],
         pre_current: Option<&[f32]>,
         nw_is_long: bool,
-    ) -> [f32; LONG_BLOCK] {
+        out: &mut [f32],
+    ) {
+        let bs = self.bs;
+        let lh = bs.long_half();
+        let sh = bs.short_half();
+        assert_eq!(current.len(), lh, "push_long_block: current must be long/2");
+        assert_eq!(out.len(), bs.long, "push_long_block: out must be long");
         let lw = self.prev_is_long;
-        let mut out = [0.0f32; LONG_BLOCK];
+        out.fill(0.0);
 
         if lw {
             // prev was long: copy prev_long into left half
-            out[..LONG_HALF].copy_from_slice(&self.prev_long);
+            out[..lh].copy_from_slice(&self.prev_long[..lh]);
         } else {
             // prev was short: center the short overlap in the left half.
-            // leftbegin = 2048/4 - 256/4 = 512 - 64 = 448
-            // leftend   = 448 + 128 = 576
-            // The overlap region from the short block occupies [448..576].
-            let leftbegin = LONG_BLOCK / 4 - SHORT_BLOCK / 4; // 448
-            let leftend = leftbegin + SHORT_HALF; // 576
-            out[leftbegin..leftend].copy_from_slice(&self.prev_short);
-            // The region [576..1024] is NOT zeroed by the Vorbis window function;
-            // libvorbis's continuous PCM buffer has real samples there.
-            // Fill it from `pre_current` (the 448 samples before `current`).
+            // leftbegin = long/4 - short/4 (448 / 896)
+            // leftend   = leftbegin + short/2 (576 / 1152)
+            let leftbegin = bs.long_short_gap();
+            let leftend = leftbegin + sh;
+            out[leftbegin..leftend].copy_from_slice(&self.prev_short[..sh]);
+            // The region [leftend..long/2] is NOT zeroed by the Vorbis window
+            // function; libvorbis's continuous PCM buffer has real samples
+            // there. Fill it from `pre_current`.
             if let Some(pre) = pre_current {
-                let mid_len = LONG_HALF - leftend; // 448
+                let mid_len = lh - leftend;
                 let fill_len = pre.len().min(mid_len);
                 out[leftend..leftend + fill_len].copy_from_slice(&pre[..fill_len]);
             }
@@ -153,46 +246,71 @@ impl WindowingBuffer {
         }
 
         // Right half: current samples
-        out[LONG_HALF..].copy_from_slice(current);
+        out[lh..].copy_from_slice(current);
 
         // Apply the transition window
-        apply_window(&mut out, lw, true, nw_is_long);
+        apply_window_bs(out, bs, lw, true, nw_is_long);
 
         // Update state
-        self.prev_long.copy_from_slice(current);
+        self.prev_long[..lh].copy_from_slice(current);
         self.prev_is_long = true;
 
         // For a long-to-short transition (nw_is_long=false), the next short
-        // block needs prev_short populated from the appropriate samples
-        // straddling the next centerW. centerW advances by LONG_BLOCK/4 +
-        // SHORT_BLOCK/4 = 576 samples, so the next short's left half (128
-        // samples) is current[448..576].
+        // block needs prev_short populated from the samples straddling the
+        // next centerW. centerW advances by long/4 + short/4, so the next
+        // short's left half (short/2 samples) is
+        // current[long/4 - short/4 ..][..short/2].
         if !nw_is_long {
-            let leftbegin = LONG_BLOCK / 4 - SHORT_BLOCK / 4; // 448
-            self.prev_short
-                .copy_from_slice(&current[leftbegin..leftbegin + SHORT_HALF]);
+            let leftbegin = bs.long_short_gap();
+            self.prev_short[..sh].copy_from_slice(&current[leftbegin..leftbegin + sh]);
         }
+    }
 
+    /// Produce a windowed short block into `out` (length `bs.short`).
+    ///
+    /// `current` is the next `bs.short/2` PCM samples.
+    pub(crate) fn push_short_block_into(&mut self, current: &[f32], out: &mut [f32]) {
+        let bs = self.bs;
+        let sh = bs.short_half();
+        assert_eq!(
+            current.len(),
+            sh,
+            "push_short_block: current must be short/2"
+        );
+        assert_eq!(out.len(), bs.short, "push_short_block: out must be short");
+
+        // Build un-windowed short block: [prev_short | current]
+        out[..sh].copy_from_slice(&self.prev_short[..sh]);
+        out[sh..].copy_from_slice(current);
+
+        // Apply window: W=0 → lW=0, nW=0 (forced by _vorbis_apply_window)
+        apply_window_bs(out, bs, false, false, false);
+
+        // Update state
+        self.prev_short[..sh].copy_from_slice(current);
+        self.prev_is_long = false;
+    }
+
+    /// Fixed-size wrapper of [`Self::push_long_block_into`] for the
+    /// 256/2048 pair.
+    pub(crate) fn push_long_block(
+        &mut self,
+        current: &[f32; LONG_HALF],
+        pre_current: Option<&[f32]>,
+        nw_is_long: bool,
+    ) -> [f32; LONG_BLOCK] {
+        debug_assert_eq!(self.bs, BlockSizes::BS_256_2048);
+        let mut out = [0.0f32; LONG_BLOCK];
+        self.push_long_block_into(current, pre_current, nw_is_long, &mut out);
         out
     }
 
-    /// Produce a windowed short (256-sample) block.
-    ///
-    /// `current` is the next SHORT_HALF = 128 PCM samples.
+    /// Fixed-size wrapper of [`Self::push_short_block_into`] for the
+    /// 256/2048 pair.
     pub(crate) fn push_short_block(&mut self, current: &[f32; SHORT_HALF]) -> [f32; SHORT_BLOCK] {
+        debug_assert_eq!(self.bs, BlockSizes::BS_256_2048);
         let mut out = [0.0f32; SHORT_BLOCK];
-
-        // Build un-windowed 256-sample block: [prev_short | current]
-        out[..SHORT_HALF].copy_from_slice(&self.prev_short);
-        out[SHORT_HALF..].copy_from_slice(current);
-
-        // Apply window: W=0 → lW=0, nW=0 (forced by _vorbis_apply_window)
-        apply_window(&mut out, false, false, false);
-
-        // Update state
-        self.prev_short.copy_from_slice(current);
-        self.prev_is_long = false;
-
+        self.push_short_block_into(current, &mut out);
         out
     }
 
@@ -202,10 +320,145 @@ impl WindowingBuffer {
     }
 }
 
+/// Test helpers shared by the DSP modules: deterministic input and the
+/// libvorbis ground-truth manifest produced by
+/// `tools/oracle-encoder/dsp_oracle manifest` (see that file for details).
+#[cfg(test)]
+pub(crate) mod dsp_oracle {
+    const MANIFEST: &str = include_str!("../tools/oracle-encoder/dsp_manifest.txt");
+
+    /// Same LCG + float mapping as `lcg_fill` in dsp_oracle.c (exact in f32).
+    pub(crate) fn lcg_input(n: usize, seed: u32) -> Vec<f32> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((s >> 8) as f32 / 8388608.0 - 1.0) * 0.5
+            })
+            .collect()
+    }
+
+    fn fnv(bytes: impl Iterator<Item = u8>) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    pub(crate) fn hash_f32(v: &[f32]) -> u64 {
+        fnv(v.iter().flat_map(|x| x.to_bits().to_le_bytes()))
+    }
+
+    pub(crate) fn hash_u32(v: &[u32]) -> u64 {
+        fnv(v.iter().flat_map(|x| x.to_le_bytes()))
+    }
+
+    /// Assert that manifest entry `name` has `count` elements hashing to `hash`.
+    pub(crate) fn assert_manifest(name: &str, count: usize, hash: u64) {
+        let line = MANIFEST
+            .lines()
+            .find(|l| l.split_whitespace().next() == Some(name))
+            .unwrap_or_else(|| panic!("{name} missing from dsp_manifest.txt"));
+        let mut it = line.split_whitespace().skip(1);
+        let want_count: usize = it.next().unwrap().parse().unwrap();
+        let want_hash = u64::from_str_radix(it.next().unwrap(), 16).unwrap();
+        assert_eq!(count, want_count, "{name}: element count");
+        assert_eq!(
+            hash, want_hash,
+            "{name}: Rust output differs from libvorbis (hash {hash:016x} vs {want_hash:016x})"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::dsp_oracle::{assert_manifest, hash_f32, lcg_input};
     use super::*;
     use crate::tables::window::SIN_WINDOW_2048;
+
+    #[test]
+    fn dsp_manifest_window_tables_match_libvorbis() {
+        for bs in [256, 512, 2048, 4096] {
+            let w = window_half(bs);
+            assert_eq!(w.len(), bs / 2);
+            assert_manifest(&format!("table.vwin.{bs}"), bs / 2, hash_f32(w));
+        }
+    }
+
+    #[test]
+    fn dsp_manifest_apply_window_matches_libvorbis() {
+        for bs in [BlockSizes::BS_256_2048, BlockSizes::BS_512_4096] {
+            for w in [false, true] {
+                for lw in [false, true] {
+                    for nw in [false, true] {
+                        let n = bs.get(w);
+                        let seed = 31337 + (w as u32) * 4 + (lw as u32) * 2 + nw as u32;
+                        let mut d = lcg_input(n, seed);
+                        apply_window_bs(&mut d, bs, lw, w, nw);
+                        let name = format!(
+                            "window.{}_{}.lW{}_W{}_nW{}",
+                            bs.short, bs.long, lw as u8, w as u8, nw as u8
+                        );
+                        assert_manifest(&name, n, hash_f32(&d));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Model of libvorbis's continuous PCM buffer: block `i` (size
+    /// `n_i = blocksizes[W_i]`, centre `c_i`) is `x[c_i - n_i/2 .. c_i +
+    /// n_i/2]` windowed with `(W_{i-1}, W_i, W_{i+1})`, and
+    /// `c_{i+1} = c_i + n_i/4 + n_{i+1}/4`. `WindowingBuffer`, fed the way
+    /// encode.rs feeds it, must reproduce that bit-for-bit for both pairs.
+    fn check_stream_model(bs: BlockSizes) {
+        let pattern = [0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0];
+        let origin = bs.long; // room before c_0 for the first block's left half
+        let x = lcg_input(origin + bs.long * pattern.len(), 4242 + bs.long as u32);
+        let mut buf = WindowingBuffer::with_blocksizes(bs);
+        let mut c = origin;
+        let prestream: Vec<f32> = (0..bs.short_half()).map(|k| x[c - 1 - k]).collect();
+        buf.set_prestream(&prestream);
+
+        for i in 0..pattern.len() - 1 {
+            let w = pattern[i] == 1;
+            let lw = i > 0 && pattern[i - 1] == 1;
+            let nw = pattern[i + 1] == 1;
+            let n = bs.get(w);
+
+            let mut want = x[c - n / 2..c + n / 2].to_vec();
+            apply_window_bs(&mut want, bs, lw, w, nw);
+
+            let mut got = vec![f32::NAN; n];
+            if w {
+                let gap = bs.long_short_gap();
+                let pre = if lw { None } else { Some(&x[c - gap..c]) };
+                buf.push_long_block_into(&x[c..c + n / 2], pre, nw, &mut got);
+            } else {
+                buf.push_short_block_into(&x[c..c + n / 2], &mut got);
+            }
+            for k in 0..n {
+                assert_eq!(
+                    got[k].to_bits(),
+                    want[k].to_bits(),
+                    "{bs:?} block {i} (lW={lw} W={w} nW={nw}) sample {k}"
+                );
+            }
+            c += n / 4 + bs.get(nw) / 4;
+        }
+    }
+
+    #[test]
+    fn windowing_buffer_matches_stream_model_256_2048() {
+        check_stream_model(BlockSizes::BS_256_2048);
+    }
+
+    #[test]
+    fn windowing_buffer_matches_stream_model_512_4096() {
+        check_stream_model(BlockSizes::BS_512_4096);
+    }
 
     #[test]
     fn windowing_all_ones_gives_window_values() {

@@ -2,14 +2,23 @@
 // Variable names, loop structure, and indexing match the C source exactly.
 // Only the forward transform is needed; no backward path.
 //
-// For n=256 and n=2048 (both pure powers of 2) the factorizations only produce
-// radix-2 and radix-4 factors, so dradfg (generic radix) is never reached.
+// Supported sizes are the Vorbis blocksizes 256/2048 and 512/4096 (libvorbis
+// inits one drft per blocksize, block.c `drft_init(&b->fft_look[i],
+// ci->blocksizes[i])`). All are powers of two whose factorizations only
+// produce radix-2 and radix-4 factors, so dradfg (generic radix) is never
+// reached.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_range_loop)]
 #![allow(non_snake_case)]
+// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
+// yet; the fixed-size wrappers still are. Drop once call sites switch.
+#![cfg_attr(not(test), allow(dead_code))]
 
-use crate::tables::drft::{DRFT_SPLIT_256, DRFT_SPLIT_2048, DRFT_TRIG_256, DRFT_TRIG_2048};
+use crate::tables::drft::{
+    DRFT_SPLIT_256, DRFT_SPLIT_512, DRFT_SPLIT_2048, DRFT_SPLIT_4096, DRFT_WA_256, DRFT_WA_512,
+    DRFT_WA_2048, DRFT_WA_4096,
+};
 use crate::window::{LONG_BLOCK, SHORT_BLOCK};
 
 // ---------------------------------------------------------------------------
@@ -221,8 +230,10 @@ fn drftf1(n: usize, c: &mut [f32], ch: &mut [f32], wa: &[f32], ifac: &[i32]) {
             }
             let _ = std::fs::write("/tmp/lewtoff-debug/r_drftf1_in.bin", &bytes);
 
+            // C dumps 2n floats of `trigcache + n`; only the first n are
+            // populated (we embed just those), so zero-pad to the C layout.
             let mut wabytes = Vec::with_capacity(2 * n * 4);
-            for v in wa.iter().take(2 * n) {
+            for v in wa.iter().chain(std::iter::repeat(&0.0f32)).take(2 * n) {
                 wabytes.extend_from_slice(&v.to_le_bytes());
             }
             let _ = std::fs::write("/tmp/lewtoff-debug/r_drftf1_wa.bin", &wabytes);
@@ -301,25 +312,130 @@ fn drftf1(n: usize, c: &mut [f32], ch: &mut [f32], wa: &[f32], ifac: &[i32]) {
 // Public API: in-place real forward FFT matching libvorbis drft_forward.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn drft_forward_long(data: &mut [f32; LONG_BLOCK]) {
-    let n = LONG_BLOCK;
-    let mut ch = [0.0f32; LONG_BLOCK];
-    // trigcache layout: [0..n unused zeros][n..3n = wa used by drftf1]
-    // drft_forward passes trigcache+n as wa, which is DRFT_TRIG_2048[n..]
-    let wa = &DRFT_TRIG_2048[n..];
-    drftf1(n, data.as_mut_slice(), &mut ch, wa, &DRFT_SPLIT_2048);
+/// Twiddle table + factorization for one FFT size, as built by libvorbis
+/// `drft_init(n)`: `wa` is the populated part of `trigcache + n` (n floats;
+/// the rest of the C trigcache is zero or `ch` scratch), `split` is
+/// `splitcache`.
+pub(crate) struct DrftTables {
+    pub n: usize,
+    wa: &'static [f32],
+    split: &'static [i32; 32],
 }
 
+pub(crate) static DRFT_256: DrftTables = DrftTables {
+    n: 256,
+    wa: &DRFT_WA_256,
+    split: &DRFT_SPLIT_256,
+};
+pub(crate) static DRFT_512: DrftTables = DrftTables {
+    n: 512,
+    wa: &DRFT_WA_512,
+    split: &DRFT_SPLIT_512,
+};
+pub(crate) static DRFT_2048: DrftTables = DrftTables {
+    n: 2048,
+    wa: &DRFT_WA_2048,
+    split: &DRFT_SPLIT_2048,
+};
+pub(crate) static DRFT_4096: DrftTables = DrftTables {
+    n: 4096,
+    wa: &DRFT_WA_4096,
+    split: &DRFT_SPLIT_4096,
+};
+
+/// Largest supported FFT size (the q-1 long block).
+pub(crate) const DRFT_MAX_N: usize = 4096;
+
+/// Tables for FFT size `n`. Panics unless `n` is 256, 512, 2048 or 4096.
+pub(crate) fn drft_tables(n: usize) -> &'static DrftTables {
+    match n {
+        256 => &DRFT_256,
+        512 => &DRFT_512,
+        2048 => &DRFT_2048,
+        4096 => &DRFT_4096,
+        _ => panic!("drft: unsupported FFT size {n}"),
+    }
+}
+
+/// In-place real forward FFT of `data` (length `t.n`), bit-identical to
+/// libvorbis `drft_forward(&fft_look[W], data)`.
+pub(crate) fn drft_forward_with(t: &DrftTables, data: &mut [f32]) {
+    let n = t.n;
+    assert_eq!(data.len(), n, "drft: data length must equal FFT size");
+    // libvorbis uses trigcache[0..n] as the `ch` scratch; every element is
+    // written before it is read, so its contents never matter. Size the
+    // (zeroed) stack scratch to the call so short blocks stay cheap.
+    if n <= 512 {
+        let mut ch = [0.0f32; 512];
+        drftf1(n, data, &mut ch[..n], t.wa, t.split);
+    } else {
+        let mut ch = [0.0f32; DRFT_MAX_N];
+        drftf1(n, data, &mut ch[..n], t.wa, t.split);
+    }
+}
+
+/// [`drft_forward_with`] for `n = data.len()` (256, 512, 2048 or 4096).
+pub(crate) fn drft_forward_n(data: &mut [f32]) {
+    drft_forward_with(drft_tables(data.len()), data);
+}
+
+/// Fixed-size wrapper: the 2048-point (q0..q10 long block) FFT.
+pub(crate) fn drft_forward_long(data: &mut [f32; LONG_BLOCK]) {
+    drft_forward_with(&DRFT_2048, data);
+}
+
+/// Fixed-size wrapper: the 256-point (q0..q10 short block) FFT.
 pub(crate) fn drft_forward_short(data: &mut [f32; SHORT_BLOCK]) {
-    let n = SHORT_BLOCK;
-    let mut ch = [0.0f32; SHORT_BLOCK];
-    let wa = &DRFT_TRIG_256[n..];
-    drftf1(n, data.as_mut_slice(), &mut ch, wa, &DRFT_SPLIT_256);
+    drft_forward_with(&DRFT_256, data);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window::dsp_oracle::{assert_manifest, hash_f32, hash_u32, lcg_input};
+
+    #[test]
+    fn dsp_manifest_drft_tables_match_libvorbis() {
+        for n in [256, 512, 2048, 4096] {
+            let t = drft_tables(n);
+            assert_eq!(t.n, n);
+            // The C manifest hashes all 2n floats of `trigcache + n`; we
+            // embed the populated first n, the remainder is zero.
+            let mut wa2n = t.wa.to_vec();
+            wa2n.resize(2 * n, 0.0);
+            assert_manifest(&format!("table.drft_wa.{n}"), 2 * n, hash_f32(&wa2n));
+            let split: Vec<u32> = t.split.iter().map(|&v| v as u32).collect();
+            assert_manifest(&format!("table.drft_split.{n}"), 32, hash_u32(&split));
+        }
+    }
+
+    #[test]
+    fn dsp_manifest_drft_forward_matches_libvorbis() {
+        for n in [256usize, 512, 2048, 4096] {
+            for seed in 1u32..=3 {
+                let mut d = lcg_input(n, seed * 104729 + n as u32);
+                drft_forward_n(&mut d);
+                assert_manifest(&format!("drft.{n}.seed{seed}"), n, hash_f32(&d));
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_wrappers_match_generic() {
+        let inp = lcg_input(2048, 5);
+        let mut a: [f32; 2048] = inp.as_slice().try_into().unwrap();
+        drft_forward_long(&mut a);
+        let mut b = inp.clone();
+        drft_forward_n(&mut b);
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+
+        let inp = lcg_input(256, 6);
+        let mut a: [f32; 256] = inp.as_slice().try_into().unwrap();
+        drft_forward_short(&mut a);
+        let mut b = inp.clone();
+        drft_forward_n(&mut b);
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
 
     #[test]
     fn drft_short_dc_only() {

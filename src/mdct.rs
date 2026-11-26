@@ -1,16 +1,21 @@
-//! Forward MDCT for n=2048 and n=256, port of libvorbis 1.3.7 lib/mdct.c.
+//! Forward MDCT, port of libvorbis 1.3.7 lib/mdct.c.
 //!
-//! Tables come from src/tables/trig.rs. No runtime transcendentals.
+//! Sizes: 128 (envelope), 256/2048 (q0..q10 blocks), 512/4096 (q-1 blocks).
+//! Tables come from src/tables/trig.rs (dumped from libvorbis `mdct_init`).
+//! No runtime transcendentals.
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::identity_op)]
 #![allow(clippy::eq_op)]
 #![allow(clippy::excessive_precision)]
 #![allow(clippy::approx_constant)]
+// The size-generic entry points (512/4096 for q-1) are not wired into encode.rs
+// yet; the fixed-size wrappers still are. Drop once call sites switch.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::tables::trig::{
-    BITREV_128, BITREV_256, BITREV_2048, SCALE_128, SCALE_256, SCALE_2048, TRIG_128, TRIG_256,
-    TRIG_2048,
+    BITREV_128, BITREV_256, BITREV_512, BITREV_2048, BITREV_4096, SCALE_128, SCALE_256, SCALE_512,
+    SCALE_2048, SCALE_4096, TRIG_128, TRIG_256, TRIG_512, TRIG_2048, TRIG_4096,
 };
 
 // Constants from mdct.h (float mode)
@@ -20,6 +25,67 @@ const CPI1_8: f32 = 0.92387953251128675613_f32;
 
 const N: usize = 2048;
 const N2: usize = N / 2; // 1024
+
+/// Largest supported MDCT size (the q-1 long block).
+pub(crate) const MDCT_MAX_N: usize = 4096;
+
+/// One `mdct_lookup` (libvorbis `mdct_init(n)`): trig (n + n/4), bitrev
+/// (n/4), scale (4/n).
+pub(crate) struct MdctTables {
+    pub n: usize,
+    log2n: usize,
+    trig: &'static [f32],
+    bitrev: &'static [u32],
+    scale: f32,
+}
+
+pub(crate) static MDCT_128: MdctTables = MdctTables {
+    n: 128,
+    log2n: 7,
+    trig: &TRIG_128,
+    bitrev: &BITREV_128,
+    scale: SCALE_128,
+};
+pub(crate) static MDCT_256: MdctTables = MdctTables {
+    n: 256,
+    log2n: 8,
+    trig: &TRIG_256,
+    bitrev: &BITREV_256,
+    scale: SCALE_256,
+};
+pub(crate) static MDCT_512: MdctTables = MdctTables {
+    n: 512,
+    log2n: 9,
+    trig: &TRIG_512,
+    bitrev: &BITREV_512,
+    scale: SCALE_512,
+};
+pub(crate) static MDCT_2048: MdctTables = MdctTables {
+    n: 2048,
+    log2n: 11,
+    trig: &TRIG_2048,
+    bitrev: &BITREV_2048,
+    scale: SCALE_2048,
+};
+pub(crate) static MDCT_4096: MdctTables = MdctTables {
+    n: 4096,
+    log2n: 12,
+    trig: &TRIG_4096,
+    bitrev: &BITREV_4096,
+    scale: SCALE_4096,
+};
+
+/// Tables for MDCT size `n`. Panics unless `n` is 128, 256, 512, 2048 or 4096.
+pub(crate) fn mdct_tables(n: usize) -> &'static MdctTables {
+    match n {
+        128 => &MDCT_128,
+        256 => &MDCT_256,
+        512 => &MDCT_512,
+        2048 => &MDCT_2048,
+        4096 => &MDCT_4096,
+        _ => panic!("mdct: unsupported size {n}"),
+    }
+}
 
 /* Generic versions that accept a trig table slice */
 
@@ -328,24 +394,41 @@ fn mdct_bitreverse_g(trig: &[f32], bitrev: &[u32], n: usize, w: &mut [f32]) {
     }
 }
 
-fn mdct_forward_generic(
-    input: &[f32],
-    output: &mut [f32],
-    n: usize,
-    log2n: usize,
-    trig: &[f32],
-    bitrev: &[u32],
-    scale: f32,
-) {
+/// Forward MDCT of `input` (length `t.n`) into `output` (length `t.n / 2`),
+/// bit-identical to libvorbis `mdct_forward(&transform[W][0], in, out)`.
+pub(crate) fn mdct_forward_with(t: &MdctTables, input: &[f32], output: &mut [f32]) {
+    let n = t.n;
+    assert_eq!(input.len(), n, "mdct: input length must equal MDCT size");
+    assert_eq!(output.len(), n / 2, "mdct: output length must be n/2");
+    // Stack scratch sized to the call (avoids per-call heap alloc and keeps
+    // the frequent 128-point envelope MDCT from zeroing 16 KiB). Every
+    // element of `w` is written before it is read, so contents don't matter.
+    if n <= 256 {
+        let mut w = [0f32; 256];
+        mdct_forward_core(input, output, t, &mut w[..n]);
+    } else if n <= N {
+        let mut w = [0f32; N];
+        mdct_forward_core(input, output, t, &mut w[..n]);
+    } else {
+        let mut w = [0f32; MDCT_MAX_N];
+        mdct_forward_core(input, output, t, &mut w[..n]);
+    }
+}
+
+/// [`mdct_forward_with`] for `n = input.len()` (128, 256, 512, 2048 or 4096).
+pub(crate) fn mdct_forward_n(input: &[f32], output: &mut [f32]) {
+    mdct_forward_with(mdct_tables(input.len()), input, output);
+}
+
+fn mdct_forward_core(input: &[f32], output: &mut [f32], tab: &MdctTables, w: &mut [f32]) {
+    let n = tab.n;
+    let log2n = tab.log2n;
+    let trig = tab.trig;
+    let bitrev = tab.bitrev;
+    let scale = tab.scale;
     let n2 = n / 2;
     let n4 = n / 4;
     let n8 = n / 8;
-
-    // Stack-allocated scratch (n <= N=2048). Avoids per-call heap alloc;
-    // wastes some stack for short / envelope MDCTs but the absolute sizes
-    // are small.
-    let mut w_storage = [0f32; N];
-    let w = &mut w_storage[..n];
 
     let mut x0_idx: usize = n2 + n4;
     let mut x1_idx: usize = n2 + n4 + 1;
@@ -414,15 +497,82 @@ pub fn mdct_forward(input: &[f32; N], output: &mut [f32; N2]) {
     mdct_forward_long(input, output)
 }
 
+/// Fixed-size wrapper: the 2048-point (q0..q10 long block) MDCT.
 pub(crate) fn mdct_forward_long(input: &[f32; N], output: &mut [f32; N2]) {
-    mdct_forward_generic(input, output, N, 11, &TRIG_2048, &BITREV_2048, SCALE_2048);
+    mdct_forward_with(&MDCT_2048, input, output);
 }
 
+/// Fixed-size wrapper: the 256-point (q0..q10 short block) MDCT.
 pub(crate) fn mdct_forward_short(input: &[f32; 256], output: &mut [f32; 128]) {
-    mdct_forward_generic(input, output, 256, 8, &TRIG_256, &BITREV_256, SCALE_256);
+    mdct_forward_with(&MDCT_256, input, output);
 }
 
-/// MDCT for envelope detection (n=128, used by `_ve_amp`).
+/// MDCT for envelope detection (n=128, used by `_ve_amp`; fixed in libvorbis
+/// regardless of blocksizes).
 pub(crate) fn mdct_forward_envelope(input: &[f32; 128], output: &mut [f32; 64]) {
-    mdct_forward_generic(input, output, 128, 7, &TRIG_128, &BITREV_128, SCALE_128);
+    mdct_forward_with(&MDCT_128, input, output);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::window::dsp_oracle::{assert_manifest, hash_f32, hash_u32, lcg_input};
+
+    #[test]
+    fn dsp_manifest_mdct_tables_match_libvorbis() {
+        for n in [128, 256, 512, 2048, 4096] {
+            let t = mdct_tables(n);
+            assert_eq!(t.n, n);
+            assert_eq!(1usize << t.log2n, n);
+            assert_manifest(
+                &format!("table.mdct_trig.{n}"),
+                t.trig.len(),
+                hash_f32(t.trig),
+            );
+            assert_manifest(
+                &format!("table.mdct_bitrev.{n}"),
+                t.bitrev.len(),
+                hash_u32(t.bitrev),
+            );
+            assert_manifest(&format!("table.mdct_scale.{n}"), 1, hash_f32(&[t.scale]));
+        }
+    }
+
+    #[test]
+    fn dsp_manifest_mdct_forward_matches_libvorbis() {
+        for n in [128usize, 256, 512, 2048, 4096] {
+            for seed in 1u32..=3 {
+                let input = lcg_input(n, seed * 7919 + n as u32);
+                let mut out = vec![0.0f32; n / 2];
+                mdct_forward_n(&input, &mut out);
+                assert_manifest(&format!("mdct.{n}.seed{seed}"), n / 2, hash_f32(&out));
+            }
+        }
+    }
+
+    /// The fixed-size wrappers the encoder calls today must stay
+    /// bit-identical to the generic entry point it will switch to.
+    #[test]
+    fn fixed_wrappers_match_generic() {
+        let inp = lcg_input(2048, 99);
+        let mut a = [0.0f32; 1024];
+        mdct_forward_long(inp.as_slice().try_into().unwrap(), &mut a);
+        let mut b = vec![0.0f32; 1024];
+        mdct_forward_n(&inp, &mut b);
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+
+        let inp = lcg_input(256, 98);
+        let mut a = [0.0f32; 128];
+        mdct_forward_short(inp.as_slice().try_into().unwrap(), &mut a);
+        let mut b = vec![0.0f32; 128];
+        mdct_forward_n(&inp, &mut b);
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+
+        let inp = lcg_input(128, 97);
+        let mut a = [0.0f32; 64];
+        mdct_forward_envelope(inp.as_slice().try_into().unwrap(), &mut a);
+        let mut b = vec![0.0f32; 64];
+        mdct_forward_n(&inp, &mut b);
+        assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+    }
 }
