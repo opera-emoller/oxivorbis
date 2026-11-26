@@ -65,6 +65,7 @@ version = "0.0.0"
 name = "lewtoff"
 version = "0.1.0"
 dependencies = [
+ "lewtoff",
  "lewton",
  "ogg 0.9.2",
  "rayon",

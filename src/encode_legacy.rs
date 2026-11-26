@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use crate::bitpack::BitWriter;
-use crate::headers::{write_comment_header_with_strings, write_id_header_with, write_setup_packet};
+use crate::headers::{write_comment_header, write_id_header_with, write_setup_packet};
 use crate::lpc::{lpc_from_data, lpc_predict};
 use crate::mapping0;
 use crate::mapping0::{BlockMode, mapping0_forward};
@@ -377,7 +377,9 @@ pub(crate) fn legacy_encode(
     }
     {
         let mut w = BitWriter::new();
-        write_comment_header_with_strings(&mut w, vendor, encoder_tag);
+        let tag = encoder_tag.unwrap_or(b"");
+        let comments: Vec<&[u8]> = if tag.is_empty() { vec![] } else { vec![tag] };
+        write_comment_header(&mut w, vendor.unwrap_or(b"v"), &comments);
         ogg.write_packet(&w.into_bytes(), 0, false, false);
     }
     {

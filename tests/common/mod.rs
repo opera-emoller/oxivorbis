@@ -178,15 +178,9 @@ pub fn signal_i16(sig: Sig, frames: usize, ch: usize, rate: u32, seed: u64) -> V
 }
 
 pub fn rate_hz(rate: SampleRate) -> u32 {
-    match rate {
-        SampleRate::Hz44100 => 44100,
-        SampleRate::Hz48000 => 48000,
-    }
+    rate.hz()
 }
 
 pub fn ch_count(channels: Channels) -> usize {
-    match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    }
+    channels.count() as usize
 }

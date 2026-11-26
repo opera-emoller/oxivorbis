@@ -1,19 +1,57 @@
-//! lewtoff: pure-Rust Ogg Vorbis encoder, byte-identical to libvorbis 1.3.7
-//! (VBR, oggenc qualities -1..10).
+//! lewtoff: a pure-Rust Ogg Vorbis encoder whose audio packets are
+//! bit-identical to libvorbis 1.3.7 (VBR mode, oggenc qualities -1..10).
 //!
-//! See `README.md` for scope, design, and constraints. The crate intentionally
-//! has a tiny public surface — two functions and two enums — because the
-//! supported input space is closed by construction (no `Result` needed).
+//! Input is interleaved `i16` or `f32` PCM at 44.1 or 48 kHz, mono or
+//! stereo. Encode a whole buffer at once with [`encode`] / [`encode_f32`],
+//! or stream it through an [`Encoder`] in chunks of any size; both give the
+//! same bytes.
+//!
+//! # One-shot
+//!
+//! ```
+//! use lewtoff::{Channels, Options, Quality, SampleRate};
+//!
+//! let pcm = vec![0i16; 44100 * 2]; // 1 s of stereo silence
+//! let opts = Options::default()
+//!     .with_quality(Quality::new(6.5).unwrap())
+//!     .with_comment("TITLE", "Silence");
+//! let ogg = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+//! assert_eq!(&ogg[..4], b"OggS");
+//! ```
+//!
+//! # Streaming
+//!
+//! ```
+//! use lewtoff::{Channels, Encoder, Options, SampleRate};
+//!
+//! let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
+//! let mut ogg = Vec::new();
+//! for _ in 0..10 {
+//!     let chunk: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+//!     ogg.extend_from_slice(enc.write_f32(&chunk)); // pages completed so far
+//! }
+//! ogg.extend_from_slice(&enc.finish());
+//! assert_eq!(&ogg[..4], b"OggS");
+//! ```
+//!
+//! # Parity contract
+//!
+//! The audio packets, granule positions and page layout are bit-identical
+//! to libvorbis 1.3.7 (built without FMA contraction) fed the same samples
+//! through `vorbis_analysis_buffer` in 64-frame `vorbis_analysis_wrote`
+//! chunks. The header packets are identical given the same stream serial,
+//! vendor string and comments, which are set through [`Options`].
+//!
+//! See `README.md` for scope, design and how parity is tested.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 #[allow(dead_code)]
 mod tables;
 
 mod debug_dump;
-
-#[allow(dead_code)]
-mod setup_blob;
+pub(crate) use debug_dump::debug_flag;
 
 #[allow(dead_code)]
 mod codebook;
@@ -24,24 +62,27 @@ mod floor1;
 #[allow(dead_code)]
 mod residue;
 
-#[doc(hidden)]
-pub mod bitpack;
-
-#[doc(hidden)]
-pub mod headers;
-
-#[doc(hidden)]
-pub mod psy;
-
-#[doc(hidden)]
-pub mod mdct;
-
-#[doc(hidden)]
-pub mod ogg_pages;
+// Internals exposed only to this crate's tests and tools (`__internal`
+// feature; not part of the public API and not semver-covered).
+macro_rules! internal_mod {
+    ($name:ident) => {
+        #[cfg(feature = "__internal")]
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        pub mod $name;
+        #[cfg(not(feature = "__internal"))]
+        #[allow(dead_code)]
+        mod $name;
+    };
+}
+internal_mod!(bitpack);
+internal_mod!(headers);
+internal_mod!(psy);
+internal_mod!(mdct);
+internal_mod!(ogg_pages);
 
 mod drft;
-#[doc(hidden)]
-pub mod encode;
+mod encode;
 #[cfg(test)]
 mod encode_legacy;
 mod envelope;
@@ -53,16 +94,242 @@ mod setup_gen;
 mod setup_templates;
 mod window;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+use std::fmt;
+
+/// Input sample rate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SampleRate {
+    /// 44 100 Hz.
     Hz44100,
+    /// 48 000 Hz.
     Hz48000,
 }
 
+impl SampleRate {
+    /// The rate in Hz.
+    pub const fn hz(self) -> u32 {
+        match self {
+            SampleRate::Hz44100 => 44_100,
+            SampleRate::Hz48000 => 48_000,
+        }
+    }
+}
+
+/// Error for a sample rate or channel count lewtoff does not support.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Unsupported {
+    what: &'static str,
+    value: u32,
+}
+
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unsupported {} {}", self.what, self.value)
+    }
+}
+
+impl std::error::Error for Unsupported {}
+
+impl TryFrom<u32> for SampleRate {
+    type Error = Unsupported;
+    /// `44100` or `48000`.
+    fn try_from(hz: u32) -> Result<Self, Unsupported> {
+        match hz {
+            44_100 => Ok(SampleRate::Hz44100),
+            48_000 => Ok(SampleRate::Hz48000),
+            _ => Err(Unsupported {
+                what: "sample rate",
+                value: hz,
+            }),
+        }
+    }
+}
+
+/// Channel layout of the interleaved input.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Channels {
+    /// One channel.
     Mono,
+    /// Two channels, interleaved left, right.
     Stereo,
+}
+
+impl Channels {
+    /// Number of channels.
+    pub const fn count(self) -> u16 {
+        match self {
+            Channels::Mono => 1,
+            Channels::Stereo => 2,
+        }
+    }
+}
+
+impl TryFrom<u16> for Channels {
+    type Error = Unsupported;
+    /// `1` or `2`.
+    fn try_from(n: u16) -> Result<Self, Unsupported> {
+        match n {
+            1 => Ok(Channels::Mono),
+            2 => Ok(Channels::Stereo),
+            _ => Err(Unsupported {
+                what: "channel count",
+                value: n as u32,
+            }),
+        }
+    }
+}
+
+/// Encoding quality on oggenc's `-q` scale: -1.0 ..= 10.0, fractional
+/// values allowed. The default is [`Quality::Q5`].
+///
+/// The value is converted to libvorbis's `base_quality` exactly as oggenc
+/// 1.4.3 does (`(float)((double)q * 0.1)`), so `Quality::new(7.5)` picks
+/// the same libvorbis setup (and ID-header nominal bitrate) as
+/// `oggenc -q 7.5`. Qualities below 0 select libvorbis's q-1 template
+/// (512/4096-sample blocks).
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct Quality {
+    /// oggenc `-q` value.
+    q: f32,
+    /// libvorbis `base_quality` (-0.1..=1.0).
+    base: f32,
+}
+
+impl Quality {
+    /// Quality 5, oggenc's default.
+    pub const Q5: Quality = Quality { q: 5.0, base: 0.5 };
+
+    /// `q` on oggenc's `-q` scale. Returns `None` for NaN or anything
+    /// outside -1.0..=10.0.
+    pub fn new(q: f32) -> Option<Quality> {
+        if (-1.0..=10.0).contains(&q) {
+            Some(Quality {
+                q,
+                base: crate::encode::oggenc_base_quality(q),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// The oggenc-scale value this quality was created from.
+    pub fn get(self) -> f32 {
+        self.q
+    }
+
+    /// Quality from an exact libvorbis `base_quality` (-0.1..=1.0), for
+    /// parity tests that drive the oracle with that float.
+    #[cfg(feature = "__internal")]
+    #[doc(hidden)]
+    pub fn from_base_quality(base: f32) -> Option<Quality> {
+        if (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base) {
+            Some(Quality {
+                q: base * 10.0,
+                base,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn base(self) -> f32 {
+        self.base
+    }
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Quality::Q5
+    }
+}
+
+/// Stream serial used when [`Options::serial`] is `None`.
+pub const DEFAULT_SERIAL: u32 = 0x6C65_7774; // "lewt"
+
+/// Vendor string used when [`Options::vendor`] is `None`.
+pub const DEFAULT_VENDOR: &str = concat!("lewtoff ", env!("CARGO_PKG_VERSION"));
+
+/// Encoder settings.
+///
+/// `Options::default()` is quality 5, serial [`DEFAULT_SERIAL`], vendor
+/// [`DEFAULT_VENDOR`] and no comments, so output is deterministic. Build
+/// it with the `with_*` setters or by assigning fields:
+///
+/// ```
+/// use lewtoff::{Options, Quality};
+///
+/// let opts = Options::default()
+///     .with_quality(Quality::new(3.0).unwrap())
+///     .with_serial(42)
+///     .with_comment("ARTIST", "Someone");
+///
+/// let mut opts2 = Options::default();
+/// opts2.quality = Quality::new(3.0).unwrap();
+/// ```
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct Options {
+    /// Encoding quality.
+    pub quality: Quality,
+    /// Ogg stream serial number; `None` = [`DEFAULT_SERIAL`]. Streams
+    /// that are chained or multiplexed together need distinct serials.
+    pub serial: Option<u32>,
+    /// Comment-header vendor string; `None` = [`DEFAULT_VENDOR`].
+    pub vendor: Option<String>,
+    /// User comments (`("TITLE", "...")` etc.), written to the comment
+    /// header in order as `KEY=value`. Vorbis expects keys of printable
+    /// ASCII without `=`; they are written as given.
+    pub comments: Vec<(String, String)>,
+}
+
+impl Options {
+    /// Same as [`Options::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the quality.
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
+    }
+
+    /// Set the Ogg stream serial number.
+    pub fn with_serial(mut self, serial: u32) -> Self {
+        self.serial = Some(serial);
+        self
+    }
+
+    /// Set the comment-header vendor string.
+    pub fn with_vendor(mut self, vendor: impl Into<String>) -> Self {
+        self.vendor = Some(vendor.into());
+        self
+    }
+
+    /// Append a user comment `key=value`.
+    pub fn with_comment(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.comments.push((key.into(), value.into()));
+        self
+    }
+
+    fn core(&self, rate: SampleRate, channels: Channels) -> encode::EncoderCore {
+        let vendor = self.vendor.as_deref().unwrap_or(DEFAULT_VENDOR);
+        let comments: Vec<Vec<u8>> = self
+            .comments
+            .iter()
+            .map(|(k, v)| format!("{k}={v}").into_bytes())
+            .collect();
+        encode::EncoderCore::new(
+            rate,
+            channels,
+            self.quality.base(),
+            self.serial.unwrap_or(DEFAULT_SERIAL),
+            vendor.as_bytes(),
+            &comments,
+        )
+    }
 }
 
 /// Streaming Ogg Vorbis encoder.
@@ -73,110 +340,73 @@ pub enum Channels {
 /// the stream. Memory use is bounded (a few blocks of PCM) regardless of
 /// input length.
 ///
-/// The output is byte-for-byte what libvorbis 1.3.7 produces for the same
-/// samples, and it does not depend on how the input is split across
-/// `write` calls: any chunking (including chunks that split a stereo frame)
-/// gives the same bytes as the one-shot [`encode_with_quality`].
+/// The output does not depend on how the input is split across `write`
+/// calls: any chunking, including chunks that split a stereo frame, gives
+/// the same bytes as the one-shot [`encode`] / [`encode_f32`].
 ///
 /// ```
-/// use lewtoff::{Channels, Encoder, SampleRate};
+/// use lewtoff::{Channels, Encoder, Options, SampleRate};
 ///
-/// let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, 5.0);
+/// let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
 /// let mut ogg = Vec::new();
-/// for chunk in vec![0i16; 44100 * 2].chunks(4096) {
+/// for chunk in vec![0i16; 44100 * 2].chunks(4097) {
 ///     ogg.extend_from_slice(enc.write(chunk));
 /// }
 /// ogg.extend_from_slice(&enc.finish());
-/// assert_eq!(&ogg[..4], b"OggS");
+/// let pcm = vec![0i16; 44100 * 2];
+/// let one_shot = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+/// assert_eq!(ogg, one_shot);
 /// ```
 pub struct Encoder {
-    core: Box<crate::encode::EncoderCore>,
+    core: Box<encode::EncoderCore>,
 }
 
 impl Encoder {
-    /// New encoder at `quality` on oggenc's `-q` scale (-1..10, fractional
-    /// allowed), with a randomly chosen stream serial number.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `quality < -1` (see [`encode_with_quality`]).
-    pub fn new(rate: SampleRate, channels: Channels, quality: f32) -> Self {
-        Self::with_serial(rate, channels, quality, crate::encode::random_serial())
-    }
-
-    /// Like [`new`](Self::new) but with an explicit Ogg stream serial
-    /// number, for reproducible output or when several logical streams
-    /// must have distinct serials.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `quality < -1` (see [`encode_with_quality`]).
-    pub fn with_serial(rate: SampleRate, channels: Channels, quality: f32, serial: u32) -> Self {
-        Self::with_base_quality_and_meta(
-            rate,
-            channels,
-            oggenc_base_quality(quality),
-            serial,
-            None,
-            None,
-        )
-    }
-
-    /// Fully explicit constructor: libvorbis `base_quality` (-0.1..=1.0),
-    /// serial, and comment-header vendor / encoder tag (`None` = defaults).
-    /// Exposed for parity tests.
-    #[doc(hidden)]
-    pub fn with_base_quality_and_meta(
-        rate: SampleRate,
-        channels: Channels,
-        base_quality: f32,
-        serial: u32,
-        vendor: Option<&[u8]>,
-        encoder_tag: Option<&[u8]>,
-    ) -> Self {
+    /// New encoder for `rate` / `channels` with the given options. The
+    /// header pages are produced right away and returned by the first
+    /// `write` (or by `finish`).
+    pub fn new(rate: SampleRate, channels: Channels, options: &Options) -> Self {
         Self {
-            core: Box::new(crate::encode::EncoderCore::new(
-                rate,
-                channels,
-                base_quality,
-                serial,
-                vendor,
-                encoder_tag,
-            )),
+            core: Box::new(options.core(rate, channels)),
         }
     }
 
     /// Encode interleaved 16-bit samples. Returns the Ogg bytes (whole
-    /// pages) completed by this call, which may be empty. The first call
-    /// also returns the three header pages.
+    /// pages) completed by this call, which may be empty; the slice is
+    /// valid until the next call.
     ///
     /// Samples are scaled by `1/32768`, as libvorbis-based tools do. The
-    /// slice need not hold whole frames: an unpaired stereo sample is kept
-    /// until the next call.
+    /// slice need not hold whole frames: a trailing unpaired stereo sample
+    /// is carried over and paired with the first sample of the next call.
     pub fn write(&mut self, interleaved: &[i16]) -> &[u8] {
         self.core.begin_write();
-        self.core.feed(interleaved, crate::encode::i16_to_f32);
+        self.core.feed(interleaved, encode::i16_to_f32);
         self.core.take_output()
     }
 
     /// Encode interleaved `f32` samples, nominally in `-1.0..=1.0`. Returns
-    /// the Ogg bytes completed by this call, like [`write`](Self::write).
+    /// the Ogg bytes completed by this call, like [`write`](Self::write),
+    /// and carries a trailing unpaired stereo sample over the same way.
     ///
-    /// The samples go to the encoder unscaled, exactly as if passed to
+    /// Samples reach the encoder unscaled, exactly as if written to
     /// libvorbis's `vorbis_analysis_buffer`, and the output matches
-    /// libvorbis for any finite input (including values outside ±1.0,
-    /// subnormals and `-0.0`). Non-finite samples (NaN, ±infinity), which
-    /// libvorbis turns into a corrupt stream, are encoded as `0.0`.
+    /// libvorbis for finite input, including values outside ±1.0,
+    /// subnormals and `-0.0` (parity is tested up to ±10⁴; at absurd
+    /// magnitudes libvorbis's own float-to-int conversions are undefined,
+    /// but lewtoff still produces a valid stream). Non-finite samples
+    /// (NaN, ±infinity), which make libvorbis emit a corrupt stream, are
+    /// encoded as `0.0`.
     ///
     /// `write` and `write_f32` may be mixed; both feed the same stream.
     pub fn write_f32(&mut self, interleaved: &[f32]) -> &[u8] {
         self.core.begin_write();
-        self.core.feed(interleaved, crate::encode::f32_sample);
+        self.core.feed(interleaved, encode::f32_sample);
         self.core.take_output()
     }
 
-    /// Flush the remaining input, end the stream, and return the remaining
-    /// Ogg bytes. An unpaired trailing stereo sample is dropped.
+    /// Flush the remaining input, end the stream, and return the Ogg bytes
+    /// not yet returned by `write`. A stereo sample still waiting for its
+    /// pair is dropped.
     pub fn finish(self) -> Vec<u8> {
         self.core.finish()
     }
@@ -197,110 +427,60 @@ impl Encoder {
     }
 }
 
-/// Encode interleaved `i16` PCM into an Ogg Vorbis bitstream at quality Q5.
+/// Encode interleaved `i16` PCM into a complete Ogg Vorbis stream.
 ///
-/// Output is byte-for-byte identical to libvorbis 1.3.7 at `-q 5` (built without
-/// FMA contraction) for the supported input space (see crate docs / `README.md`).
-pub fn encode(samples: &[i16], rate: SampleRate, channels: Channels) -> Vec<u8> {
-    encode_with_serial(samples, rate, channels, crate::encode::random_serial())
+/// Same bytes as streaming the input through an [`Encoder`]. Samples are
+/// scaled by `1/32768`. In stereo input with an odd number of samples the
+/// last, unpaired sample is ignored.
+pub fn encode(pcm: &[i16], rate: SampleRate, channels: Channels, options: &Options) -> Vec<u8> {
+    let mut core = options.core(rate, channels);
+    core.feed(pcm, encode::i16_to_f32);
+    core.finish()
 }
 
-/// Encode interleaved `i16` PCM into an Ogg Vorbis bitstream at the given
-/// quality, on oggenc's `-q` scale (fractional values allowed).
-///
-/// Output is byte-for-byte identical to libvorbis 1.3.7 VBR mode at the
-/// same quality — i.e. what `oggenc -q <quality>` produces with an
-/// FMA-free libvorbis build. `quality` is converted to libvorbis's
-/// `base_quality` float exactly as oggenc does (`(float)(q * 0.1)`, see
-/// [`oggenc_base_quality`]); values above 10 are clamped to 10.
-///
-/// # Panics
-///
-/// Supported range is `-1.0..=10.0` (above 10 clamps to 10). Panics below
-/// -1, where libvorbis itself rejects the quality. `-1 <= quality < 0`
-/// selects libvorbis's q-1 template (512/4096-sample blocks).
-pub fn encode_with_quality(
-    samples: &[i16],
+/// Encode interleaved `f32` PCM (nominally `-1.0..=1.0`) into a complete
+/// Ogg Vorbis stream. See [`Encoder::write_f32`] for how samples are
+/// interpreted; in stereo input with an odd number of samples the last,
+/// unpaired sample is ignored.
+pub fn encode_f32(pcm: &[f32], rate: SampleRate, channels: Channels, options: &Options) -> Vec<u8> {
+    let mut core = options.core(rate, channels);
+    core.feed(pcm, encode::f32_sample);
+    core.finish()
+}
+
+// ---------------------------------------------------------------------------
+// Test entry points (`__internal` feature): exact libvorbis base_quality and
+// raw comment-header strings, as the parity tests copy them from the oracle.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "__internal")]
+fn internal_core(
     rate: SampleRate,
     channels: Channels,
-    quality: f32,
-) -> Vec<u8> {
-    crate::encode::encode_with_base_quality_and_meta(
-        samples,
-        rate,
-        channels,
-        oggenc_base_quality(quality),
-        crate::encode::random_serial(),
-        None,
-        None,
-    )
-}
-
-/// Encode interleaved `f32` PCM (nominally `-1.0..=1.0`) at the given
-/// quality on oggenc's `-q` scale. See [`Encoder::write_f32`] for how
-/// samples are interpreted and [`encode_with_quality`] for `quality`.
-///
-/// # Panics
-///
-/// Panics if `quality < -1`.
-pub fn encode_f32_with_quality(
-    samples: &[f32],
-    rate: SampleRate,
-    channels: Channels,
-    quality: f32,
-) -> Vec<u8> {
-    let mut enc = Encoder::new(rate, channels, quality);
-    enc.core.feed(samples, crate::encode::f32_sample);
-    enc.finish()
-}
-
-/// Map an oggenc `-q` value to the libvorbis `base_quality` float, bit for
-/// bit as vorbis-tools 1.4.3 does it: `((q as f32) as f64 * 0.1) as f32`,
-/// with `q > 10` clamped to 10. See the source comment for provenance.
-#[doc(hidden)]
-pub fn oggenc_base_quality(quality: f32) -> f32 {
-    crate::encode::oggenc_base_quality(quality)
-}
-
-/// Like [`encode`] but uses the given stream serial number.
-/// Exposed for parity tests so the test can match the serial the reference encoder chose.
-#[doc(hidden)]
-pub fn encode_with_serial(
-    samples: &[i16],
-    rate: SampleRate,
-    channels: Channels,
-    serial: u32,
-) -> Vec<u8> {
-    encode_with_serial_and_meta(samples, rate, channels, serial, None, None)
-}
-
-/// Like [`encode_with_serial`] but also accepts vendor and encoder_tag strings
-/// to embed in the comment header.  Pass `None` to use compile-time defaults.
-/// Exposed for parity tests so the test can mirror the reference encoder's comment header.
-#[doc(hidden)]
-pub fn encode_with_serial_and_meta(
-    samples: &[i16],
-    rate: SampleRate,
-    channels: Channels,
+    base_quality: f32,
     serial: u32,
     vendor: Option<&[u8]>,
     encoder_tag: Option<&[u8]>,
-) -> Vec<u8> {
-    crate::encode::encode_with_base_quality_and_meta(
-        samples,
+) -> encode::EncoderCore {
+    let comments: Vec<Vec<u8>> = encoder_tag
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_vec())
+        .into_iter()
+        .collect();
+    encode::EncoderCore::new(
         rate,
         channels,
-        crate::encode::Q5_BASE_QUALITY,
+        base_quality,
         serial,
-        vendor,
-        encoder_tag,
+        vendor.unwrap_or(DEFAULT_VENDOR.as_bytes()),
+        &comments,
     )
 }
 
-/// Fully explicit encode: libvorbis `base_quality` (-0.1..=1.0 scale, the
-/// value passed to `vorbis_encode_init_vbr`), stream serial, and comment
-/// header strings. Exposed for parity tests that drive the oracle with an
-/// exact base_quality float.
+/// One-shot encode at libvorbis `base_quality` with the given serial,
+/// vendor (`None` = default) and single raw comment (`None` or empty =
+/// none).
+#[cfg(feature = "__internal")]
 #[doc(hidden)]
 pub fn encode_with_base_quality_and_meta(
     samples: &[i16],
@@ -311,19 +491,13 @@ pub fn encode_with_base_quality_and_meta(
     vendor: Option<&[u8]>,
     encoder_tag: Option<&[u8]>,
 ) -> Vec<u8> {
-    crate::encode::encode_with_base_quality_and_meta(
-        samples,
-        rate,
-        channels,
-        base_quality,
-        serial,
-        vendor,
-        encoder_tag,
-    )
+    let mut core = internal_core(rate, channels, base_quality, serial, vendor, encoder_tag);
+    core.feed(samples, encode::i16_to_f32);
+    core.finish()
 }
 
-/// f32 counterpart of [`encode_with_base_quality_and_meta`], for parity
-/// tests.
+/// f32 counterpart of [`encode_with_base_quality_and_meta`].
+#[cfg(feature = "__internal")]
 #[doc(hidden)]
 pub fn encode_f32_with_base_quality_and_meta(
     samples: &[f32],
@@ -334,14 +508,64 @@ pub fn encode_f32_with_base_quality_and_meta(
     vendor: Option<&[u8]>,
     encoder_tag: Option<&[u8]>,
 ) -> Vec<u8> {
-    let mut enc = Encoder::with_base_quality_and_meta(
-        rate,
-        channels,
-        base_quality,
-        serial,
-        vendor,
-        encoder_tag,
-    );
-    enc.core.feed(samples, crate::encode::f32_sample);
-    enc.finish()
+    let mut core = internal_core(rate, channels, base_quality, serial, vendor, encoder_tag);
+    core.feed(samples, encode::f32_sample);
+    core.finish()
+}
+
+/// Q5 [`encode_with_base_quality_and_meta`].
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+pub fn encode_with_serial_and_meta(
+    samples: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    serial: u32,
+    vendor: Option<&[u8]>,
+    encoder_tag: Option<&[u8]>,
+) -> Vec<u8> {
+    encode_with_base_quality_and_meta(samples, rate, channels, 0.5, serial, vendor, encoder_tag)
+}
+
+/// Q5 encode with default vendor, no comments, and the given serial.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+pub fn encode_with_serial(
+    samples: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    serial: u32,
+) -> Vec<u8> {
+    encode_with_serial_and_meta(samples, rate, channels, serial, None, None)
+}
+
+/// Streaming counterpart of [`encode_with_base_quality_and_meta`].
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+pub fn encoder_with_base_quality_and_meta(
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+    serial: u32,
+    vendor: Option<&[u8]>,
+    encoder_tag: Option<&[u8]>,
+) -> Encoder {
+    Encoder {
+        core: Box::new(internal_core(
+            rate,
+            channels,
+            base_quality,
+            serial,
+            vendor,
+            encoder_tag,
+        )),
+    }
+}
+
+/// oggenc `-q` -> libvorbis `base_quality`, bit for bit as vorbis-tools
+/// 1.4.3: `((q as f32) as f64 * 0.1) as f32`, with `q > 10` clamped to 10.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+pub fn oggenc_base_quality(quality: f32) -> f32 {
+    encode::oggenc_base_quality(quality)
 }

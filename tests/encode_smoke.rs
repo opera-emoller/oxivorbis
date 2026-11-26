@@ -1,4 +1,4 @@
-use lewtoff::{Channels, SampleRate};
+use lewtoff::{Channels, Options, Quality, SampleRate};
 
 fn silence(n: usize) -> Vec<i16> {
     vec![0i16; n]
@@ -27,38 +27,68 @@ fn check_ogg(bytes: &[u8]) {
 
 #[test]
 fn encode_silence_mono44_does_not_panic() {
-    let bytes = lewtoff::encode(&silence(44100), SampleRate::Hz44100, Channels::Mono);
+    let bytes = lewtoff::encode(
+        &silence(44100),
+        SampleRate::Hz44100,
+        Channels::Mono,
+        &Options::default(),
+    );
     check_ogg(&bytes);
 }
 
 #[test]
 fn encode_silence_mono48_does_not_panic() {
-    let bytes = lewtoff::encode(&silence(48000), SampleRate::Hz48000, Channels::Mono);
+    let bytes = lewtoff::encode(
+        &silence(48000),
+        SampleRate::Hz48000,
+        Channels::Mono,
+        &Options::default(),
+    );
     check_ogg(&bytes);
 }
 
 #[test]
 fn encode_silence_stereo44_does_not_panic() {
-    let bytes = lewtoff::encode(&silence(44100 * 2), SampleRate::Hz44100, Channels::Stereo);
+    let bytes = lewtoff::encode(
+        &silence(44100 * 2),
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
     check_ogg(&bytes);
 }
 
 #[test]
 fn encode_silence_stereo48_does_not_panic() {
-    let bytes = lewtoff::encode(&silence(48000 * 2), SampleRate::Hz48000, Channels::Stereo);
+    let bytes = lewtoff::encode(
+        &silence(48000 * 2),
+        SampleRate::Hz48000,
+        Channels::Stereo,
+        &Options::default(),
+    );
     check_ogg(&bytes);
 }
 
 #[test]
 fn encode_sine_stereo44_does_not_panic() {
     let samples = sine_stereo(44100, 44100);
-    let bytes = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo);
+    let bytes = lewtoff::encode(
+        &samples,
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
     check_ogg(&bytes);
 }
 
 #[test]
 fn lewton_can_decode_our_silence_mono44() {
-    let bytes = lewtoff::encode(&silence(44100), SampleRate::Hz44100, Channels::Mono);
+    let bytes = lewtoff::encode(
+        &silence(44100),
+        SampleRate::Hz44100,
+        Channels::Mono,
+        &Options::default(),
+    );
     let cursor = std::io::Cursor::new(bytes);
     let mut reader =
         lewton::inside_ogg::OggStreamReader::new(cursor).expect("lewton failed to open stream");
@@ -85,7 +115,12 @@ fn lewton_can_decode_our_silence_mono44() {
 
 #[test]
 fn lewton_can_decode_our_silence_stereo44() {
-    let bytes = lewtoff::encode(&silence(44100 * 2), SampleRate::Hz44100, Channels::Stereo);
+    let bytes = lewtoff::encode(
+        &silence(44100 * 2),
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
     let cursor = std::io::Cursor::new(bytes);
     let mut reader =
         lewton::inside_ogg::OggStreamReader::new(cursor).expect("lewton failed to open stream");
@@ -111,17 +146,24 @@ fn oggenc_base_quality_bits() {
     assert_eq!(bits(9.303), 0x3f6e2825);
 }
 
+fn at(q: f32) -> Options {
+    Options::default().with_quality(Quality::new(q).unwrap())
+}
+
 #[test]
-fn encode_with_quality_q5_matches_encode_and_others_decode() {
+fn explicit_q5_matches_default_and_others_decode() {
     let samples = sine_stereo(44100, 44100);
-    // Same settings except the random serial (and therefore page CRCs).
-    let a = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo);
-    let b = lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, 5.0);
-    assert_eq!(a.len(), b.len());
+    let a = lewtoff::encode(
+        &samples,
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
+    let b = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(5.0));
+    assert_eq!(a, b);
     let mut prev_len = 0;
     for q in [-1.0f32, -0.5, 0.0, 2.5, 6.0, 10.0] {
-        let bytes =
-            lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, q);
+        let bytes = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(q));
         check_ogg(&bytes);
         assert!(bytes.len() > prev_len, "q{q} not larger than lower quality");
         prev_len = bytes.len();
@@ -136,7 +178,109 @@ fn encode_with_quality_q5_matches_encode_and_others_decode() {
 }
 
 #[test]
-#[should_panic(expected = "outside libvorbis's -0.1..=1.0")]
-fn encode_with_quality_rejects_below_q_minus_1() {
-    lewtoff::encode_with_quality(&silence(4410), SampleRate::Hz44100, Channels::Mono, -1.5);
+fn quality_range() {
+    assert_eq!(Quality::default(), Quality::Q5);
+    assert_eq!(Quality::Q5.get(), 5.0);
+    assert_eq!(Quality::new(7.25).unwrap().get(), 7.25);
+    for ok in [-1.0f32, -0.0, 0.0, 10.0] {
+        assert!(Quality::new(ok).is_some(), "{ok}");
+    }
+    for bad in [f32::NAN, -1.0001, 10.0001, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(Quality::new(bad).is_none(), "{bad}");
+    }
+}
+
+#[test]
+fn rate_and_channel_conversions() {
+    assert_eq!(SampleRate::try_from(44100), Ok(SampleRate::Hz44100));
+    assert_eq!(SampleRate::try_from(48000).unwrap().hz(), 48000);
+    assert!(SampleRate::try_from(22050).is_err());
+    assert_eq!(Channels::try_from(2u16), Ok(Channels::Stereo));
+    assert_eq!(Channels::Mono.count(), 1);
+    assert!(Channels::try_from(3u16).is_err());
+    assert_eq!(
+        Channels::try_from(0u16).unwrap_err().to_string(),
+        "unsupported channel count 0"
+    );
+}
+
+/// Default output is deterministic: fixed serial, lewtoff vendor, no
+/// comments.
+#[test]
+fn default_headers_are_deterministic() {
+    let pcm = sine_stereo(5000, 44100);
+    let a = lewtoff::encode(
+        &pcm,
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
+    let b = lewtoff::encode(
+        &pcm,
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
+    assert_eq!(a, b);
+    assert_eq!(
+        u32::from_le_bytes(a[14..18].try_into().unwrap()),
+        lewtoff::DEFAULT_SERIAL
+    );
+    let comment = comment_packet(&a);
+    let vendor = lewtoff::DEFAULT_VENDOR.as_bytes();
+    assert!(lewtoff::DEFAULT_VENDOR.starts_with("lewtoff "));
+    assert_eq!(&comment[7..11], (vendor.len() as u32).to_le_bytes());
+    assert_eq!(&comment[11..11 + vendor.len()], vendor);
+    assert_eq!(&comment[11 + vendor.len()..15 + vendor.len()], [0, 0, 0, 0]);
+}
+
+/// Serial, vendor and comments from `Options` land in the headers, in order.
+#[test]
+fn options_set_serial_vendor_and_comments() {
+    let pcm = sine_stereo(5000, 44100);
+    let opts = Options::default()
+        .with_serial(0xDEAD_BEEF)
+        .with_vendor("my vendor")
+        .with_comment("TITLE", "Tone")
+        .with_comment("ARTIST", "A=B");
+    let ogg = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+    assert_eq!(
+        u32::from_le_bytes(ogg[14..18].try_into().unwrap()),
+        0xDEAD_BEEF
+    );
+    let mut want = b"\x03vorbis".to_vec();
+    want.extend(9u32.to_le_bytes());
+    want.extend(b"my vendor");
+    want.extend(2u32.to_le_bytes());
+    for s in [&b"TITLE=Tone"[..], b"ARTIST=A=B"] {
+        want.extend((s.len() as u32).to_le_bytes());
+        want.extend(s);
+    }
+    want.push(1);
+    assert_eq!(comment_packet(&ogg), want);
+    // The audio itself is unaffected by header options.
+    let plain = lewtoff::encode(
+        &pcm,
+        SampleRate::Hz44100,
+        Channels::Stereo,
+        &Options::default(),
+    );
+    assert_eq!(audio_packets(&ogg), audio_packets(&plain));
+}
+
+fn packets(ogg: &[u8]) -> Vec<Vec<u8>> {
+    let mut r = ogg::PacketReader::new(std::io::Cursor::new(ogg.to_vec()));
+    let mut out = Vec::new();
+    while let Some(p) = r.read_packet().unwrap() {
+        out.push(p.data);
+    }
+    out
+}
+
+fn comment_packet(ogg: &[u8]) -> Vec<u8> {
+    packets(ogg).swap_remove(1)
+}
+
+fn audio_packets(ogg: &[u8]) -> Vec<Vec<u8>> {
+    packets(ogg).split_off(3)
 }

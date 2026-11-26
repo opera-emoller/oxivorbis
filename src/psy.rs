@@ -1565,18 +1565,28 @@ pub fn vp_couple_quantize_normalize(
                             flag[mi][j] = 1;
                             flag[ai][j] = 1;
 
+                            // Wrapping ops: only pathological (huge) input
+                            // overflows, and then like release builds / C.
                             let a = iwork[mi][i + j];
                             let b = iwork[ai][i + j];
-                            if a.abs() > b.abs() {
-                                iwork[ai][i + j] = if a > 0 { a - b } else { b - a };
+                            if a.wrapping_abs() > b.wrapping_abs() {
+                                iwork[ai][i + j] = if a > 0 {
+                                    a.wrapping_sub(b)
+                                } else {
+                                    b.wrapping_sub(a)
+                                };
                             } else {
-                                iwork[ai][i + j] = if b > 0 { a - b } else { b - a };
+                                iwork[ai][i + j] = if b > 0 {
+                                    a.wrapping_sub(b)
+                                } else {
+                                    b.wrapping_sub(a)
+                                };
                                 iwork[mi][i + j] = b;
                             }
 
-                            if iwork[ai][i + j] >= iwork[mi][i + j].abs() * 2 {
-                                iwork[ai][i + j] = -iwork[ai][i + j];
-                                iwork[mi][i + j] = -iwork[mi][i + j];
+                            if iwork[ai][i + j] >= iwork[mi][i + j].wrapping_abs().wrapping_mul(2) {
+                                iwork[ai][i + j] = iwork[ai][i + j].wrapping_neg();
+                                iwork[mi][i + j] = iwork[mi][i + j].wrapping_neg();
                             }
                         } else {
                             // lossy (point) coupling

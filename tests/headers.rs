@@ -2,6 +2,11 @@ use lewtoff::bitpack::BitWriter;
 use lewtoff::headers::{write_comment_header, write_id_header, write_setup_header};
 use lewtoff::{Channels, SampleRate};
 
+/// Comment-header strings of the ffmpeg-libvorbis encode the vectors were
+/// captured from.
+const LAVF_VENDOR: &[u8] = b"Lavf61.7.100";
+const LAVF_ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
+
 fn make_writer() -> BitWriter {
     BitWriter::new()
 }
@@ -61,7 +66,7 @@ fn id_header_stereo_48000_matches_ffmpeg() {
 #[test]
 fn comment_header_mono_44100_matches_ffmpeg() {
     let mut w = make_writer();
-    write_comment_header(&mut w);
+    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_mono44.bin");
     assert_eq!(
@@ -74,7 +79,7 @@ fn comment_header_mono_44100_matches_ffmpeg() {
 #[test]
 fn comment_header_mono_48000_matches_ffmpeg() {
     let mut w = make_writer();
-    write_comment_header(&mut w);
+    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_mono48.bin");
     assert_eq!(
@@ -87,7 +92,7 @@ fn comment_header_mono_48000_matches_ffmpeg() {
 #[test]
 fn comment_header_stereo_44100_matches_ffmpeg() {
     let mut w = make_writer();
-    write_comment_header(&mut w);
+    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_stereo44.bin");
     assert_eq!(
@@ -100,7 +105,7 @@ fn comment_header_stereo_44100_matches_ffmpeg() {
 #[test]
 fn comment_header_stereo_48000_matches_ffmpeg() {
     let mut w = make_writer();
-    write_comment_header(&mut w);
+    write_comment_header(&mut w, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/comment_stereo48.bin");
     assert_eq!(

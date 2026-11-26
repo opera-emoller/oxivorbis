@@ -10,4 +10,4 @@ name = "parity-fuzz"
 path = "src/main.rs"
 
 [dependencies]
-lewtoff = { path = "../.." }
+lewtoff = { path = "../..", features = ["__internal"] }

@@ -3,6 +3,11 @@ use lewtoff::headers::{write_comment_header, write_id_header, write_setup_header
 use lewtoff::ogg_pages::OggStreamWriter;
 use lewtoff::{Channels, SampleRate};
 
+/// Comment-header strings of the ffmpeg-libvorbis encode the vectors were
+/// captured from.
+const LAVF_VENDOR: &[u8] = b"Lavf61.7.100";
+const LAVF_ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
+
 fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<u8> {
     let mut w = OggStreamWriter::new(serial);
 
@@ -11,7 +16,7 @@ fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<
     w.write_packet(&bw.into_bytes(), 0, false, true);
 
     let mut bw = BitWriter::new();
-    write_comment_header(&mut bw);
+    write_comment_header(&mut bw, LAVF_VENDOR, &[LAVF_ENCODER_TAG]);
     w.write_packet(&bw.into_bytes(), 0, false, false);
 
     let mut bw = BitWriter::new();

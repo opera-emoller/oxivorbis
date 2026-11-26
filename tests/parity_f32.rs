@@ -9,7 +9,7 @@
 mod common;
 
 use common::{Rng, Sig, ch_count, rate_hz, signal_f32};
-use lewtoff::{Channels, Encoder, SampleRate};
+use lewtoff::{Channels, SampleRate};
 
 fn f32_bytes(samples: &[f32]) -> Vec<u8> {
     samples.iter().flat_map(|s| s.to_le_bytes()).collect()
@@ -49,8 +49,14 @@ fn lewtoff_f32(
             Some(&tag),
         );
     }
-    let mut enc =
-        Encoder::with_base_quality_and_meta(rate, channels, q, serial, Some(&vendor), Some(&tag));
+    let mut enc = lewtoff::encoder_with_base_quality_and_meta(
+        rate,
+        channels,
+        q,
+        serial,
+        Some(&vendor),
+        Some(&tag),
+    );
     let mut out = Vec::new();
     let mut rest = samples;
     for &n in chunks.iter().cycle() {

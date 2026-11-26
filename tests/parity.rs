@@ -52,14 +52,8 @@ fn oracle_encode(samples: &[i16], rate: u32, channels: u16, base_quality: Option
 }
 
 fn assert_parity_oracle(samples: &[i16], rate: SampleRate, channels: Channels) {
-    let rate_hz: u32 = match rate {
-        SampleRate::Hz44100 => 44100,
-        SampleRate::Hz48000 => 48000,
-    };
-    let ch: u16 = match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    };
+    let rate_hz: u32 = rate.hz();
+    let ch: u16 = channels.count();
     let oracle_bytes = oracle_encode_q5(samples, rate_hz, ch);
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
@@ -181,14 +175,8 @@ fn first_diff(a: &[u8], b: &[u8]) -> usize {
 }
 
 fn assert_parity(samples: &[i16], rate: SampleRate, channels: Channels) {
-    let rate_hz: u32 = match rate {
-        SampleRate::Hz44100 => 44100,
-        SampleRate::Hz48000 => 48000,
-    };
-    let ch: u16 = match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    };
+    let rate_hz: u32 = rate.hz();
+    let ch: u16 = channels.count();
 
     let oracle_bytes = oggenc_encode_q5(samples, rate_hz, ch);
     let serial = extract_serial(&oracle_bytes);
@@ -409,17 +397,11 @@ fn parity_dump_sine_files() {
 // --- Quality-parameterized oracle parity ---
 
 fn rate_hz(rate: SampleRate) -> u32 {
-    match rate {
-        SampleRate::Hz44100 => 44100,
-        SampleRate::Hz48000 => 48000,
-    }
+    rate.hz()
 }
 
 fn channel_count(channels: Channels) -> u16 {
-    match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    }
+    channels.count()
 }
 
 /// Oracle parity at an arbitrary libvorbis base_quality (-0.1..1.0).

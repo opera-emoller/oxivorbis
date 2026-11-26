@@ -2,19 +2,11 @@
 //!
 //! The three packets are byte-identical to what libvorbis 1.3.7 produces in
 //! VBR mode. The `write_id_header` / `write_setup_header` conveniences are the
-//! Q5 packets; the encoder uses the quality-generic [`write_id_header_with`] and
-//! [`write_setup_packet`].
+//! Q5 packets (for tests); the encoder uses the quality-generic
+//! [`write_id_header_with`] and [`write_setup_packet`].
 
 use crate::bitpack::BitWriter;
-use crate::setup_blob::{Q5_SETUP_MONO44, Q5_SETUP_MONO48, Q5_SETUP_STEREO44, Q5_SETUP_STEREO48};
 use crate::{Channels, SampleRate};
-
-/// Vendor string written by ffmpeg-libvorbis into the comment header.
-/// This is the libavformat identification string, not the libvorbis string.
-const VENDOR: &[u8] = b"Lavf61.7.100";
-
-/// User comment written by ffmpeg into the comment header.
-const ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
 
 /// Nominal bitrate for mono streams at Q5 (bits/sec).
 const BITRATE_NOMINAL_MONO: i32 = 96_000;
@@ -73,45 +65,27 @@ pub fn write_id_header_with(
     w.write(1, 1);
 }
 
-/// Write the Vorbis comment header packet (packet type 0x03).
+/// Write the Vorbis comment header packet (packet type 0x03): the vendor
+/// string, then each user comment (`KEY=value` bytes) in order.
 ///
-/// Per Vorbis I §4.2.3. Uses the provided vendor and encoder_tag strings
-/// so the comment header matches exactly the ffmpeg version on the current
-/// machine.  Pass `None` to use the compile-time defaults.
-pub fn write_comment_header_with_strings(
-    w: &mut BitWriter,
-    vendor: Option<&[u8]>,
-    encoder_tag: Option<&[u8]>,
-) {
-    let vendor = vendor.unwrap_or(VENDOR);
-    let encoder_tag = encoder_tag.unwrap_or(ENCODER_TAG);
-
+/// Per Vorbis I §4.2.3.
+pub fn write_comment_header<C: AsRef<[u8]>>(w: &mut BitWriter, vendor: &[u8], comments: &[C]) {
+    let write_str = |w: &mut BitWriter, s: &[u8]| {
+        w.write(s.len() as u32, 32);
+        for &b in s {
+            w.write(b as u32, 8);
+        }
+    };
     w.write(0x03, 8);
     for &b in b"vorbis" {
         w.write(b as u32, 8);
     }
-
-    w.write(vendor.len() as u32, 32);
-    for &b in vendor {
-        w.write(b as u32, 8);
+    write_str(w, vendor);
+    w.write(comments.len() as u32, 32);
+    for c in comments {
+        write_str(w, c.as_ref());
     }
-
-    if encoder_tag.is_empty() {
-        w.write(0, 32);
-    } else {
-        w.write(1, 32);
-        w.write(encoder_tag.len() as u32, 32);
-        for &b in encoder_tag {
-            w.write(b as u32, 8);
-        }
-    }
-
     w.write(1, 1);
-}
-
-/// Write the Vorbis comment header using compile-time vendor/encoder strings.
-pub fn write_comment_header(w: &mut BitWriter) {
-    write_comment_header_with_strings(w, None, None);
 }
 
 /// Write a complete, pre-built setup header packet (as produced by the
@@ -122,17 +96,9 @@ pub fn write_setup_packet(packet: &[u8], w: &mut BitWriter) {
     }
 }
 
-/// Write the Q5 Vorbis setup header packet (packet type 0x05).
-///
-/// The packet is the embedded Q5 setup blob byte-for-byte; it already
-/// starts with the 0x05 + "vorbis" sync sequence. The blob varies by
-/// both sample rate and channel count.
+/// Write the Q5 Vorbis setup header packet (packet type 0x05), as the
+/// encoder generates it for `rate` / `channels`.
 pub fn write_setup_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) {
-    let blob = match (rate, channels) {
-        (SampleRate::Hz44100, Channels::Mono) => Q5_SETUP_MONO44,
-        (SampleRate::Hz48000, Channels::Mono) => Q5_SETUP_MONO48,
-        (SampleRate::Hz44100, Channels::Stereo) => Q5_SETUP_STEREO44,
-        (SampleRate::Hz48000, Channels::Stereo) => Q5_SETUP_STEREO48,
-    };
-    write_setup_packet(blob, w);
+    let setup = crate::setup::encoder_setup_for(rate.hz(), channels.count() as usize, 0.5);
+    write_setup_packet(&setup.packet, w);
 }

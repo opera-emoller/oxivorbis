@@ -23,6 +23,9 @@ oracle = []
 # library lean and WASM-friendly. When on, public API is unchanged but
 # encode() fans out per-block analysis across the global Rayon pool.
 parallel = ["dep:rayon"]
+# Undocumented, unstable internals for this crate's own tests and tools
+# (parity entry points, header/psy/mdct modules). Not part of the API.
+__internal = []
 
 [dependencies]
 ogg = "0.9"
@@ -30,6 +33,9 @@ rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 lewton = "0.10"
+# Integration tests reach the `__internal` entry points through this
+# self-dependency, so plain `cargo test` works without extra flags.
+lewtoff = { path = ".", features = ["__internal"] }
 
 [profile.release]
 debug = "line-tables-only"

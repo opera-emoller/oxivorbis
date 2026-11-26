@@ -27,7 +27,7 @@ use std::sync::Arc;
 use crate::bitpack::BitWriter;
 use crate::envelope::{EnvelopeLookup, VE_POST, VE_WIN};
 use crate::floor1::Floor1State;
-use crate::headers::{write_comment_header_with_strings, write_id_header_with, write_setup_packet};
+use crate::headers::{write_comment_header, write_id_header_with, write_setup_packet};
 use crate::lpc::{lpc_from_data, lpc_predict};
 use crate::mapping0::{BlockMode, MappingScratch, mapping0_forward};
 use crate::ogg_pages::OggStreamWriter;
@@ -51,9 +51,6 @@ const LPC_ORDER_POST: usize = 32;
 /// `COMPACT_FRAMES + 2*bs1` frames independent of input length.
 const COMPACT_FRAMES: i64 = 4096;
 
-/// libvorbis base_quality for oggenc `-q 5` (`(float)(5.0f * 0.1)` == 0.5f).
-pub(crate) const Q5_BASE_QUALITY: f32 = 0.5;
-
 /// Convert an oggenc-scale quality (-1..10) to the libvorbis base_quality
 /// float exactly the way vorbis-tools 1.4.3 `oggenc -q` does.
 ///
@@ -75,33 +72,6 @@ pub(crate) const Q5_BASE_QUALITY: f32 = 0.5;
 pub(crate) fn oggenc_base_quality(quality: f32) -> f32 {
     let q = if quality > 10.0 { 10.0 } else { quality };
     (q as f64 * 0.1) as f32
-}
-
-/// A stream serial for callers that don't pick one.
-///
-/// Mixes a process-wide counter, a stack address and std's randomly keyed
-/// hasher, plus the wall clock where it exists. `SystemTime::now()` panics
-/// on `wasm32-unknown-unknown`, so it is skipped there. Not
-/// cryptographically unique: callers that need guaranteed-distinct serials
-/// (e.g. for chaining or multiplexing streams) should pass one explicitly
-/// via `Encoder::with_serial`.
-pub(crate) fn random_serial() -> u32 {
-    use std::hash::{BuildHasher, Hash, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut h);
-    let local = 0u8;
-    (&local as *const u8 as usize).hash(&mut h);
-    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        if let Ok(d) = SystemTime::now().duration_since(UNIX_EPOCH) {
-            d.as_nanos().hash(&mut h);
-        }
-    }
-    let x = h.finish();
-    (x as u32) ^ ((x >> 32) as u32)
 }
 
 /// Port of libvorbis `_preextrapolate_helper` for one channel.
@@ -246,8 +216,8 @@ impl EncoderCore {
         channels: Channels,
         base_quality: f32,
         serial: u32,
-        vendor: Option<&[u8]>,
-        encoder_tag: Option<&[u8]>,
+        vendor: &[u8],
+        comments: &[Vec<u8>],
     ) -> Self {
         let ch = match channels {
             Channels::Mono => 1usize,
@@ -257,7 +227,8 @@ impl EncoderCore {
             SampleRate::Hz44100 => 44100,
             SampleRate::Hz48000 => 48000,
         };
-        assert!(
+        // Guaranteed by `Quality`.
+        debug_assert!(
             (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base_quality),
             "base_quality {base_quality} outside libvorbis's -0.1..=1.0 (oggenc -q -1..10)"
         );
@@ -302,7 +273,7 @@ impl EncoderCore {
         }
         {
             let mut w = BitWriter::new();
-            write_comment_header_with_strings(&mut w, vendor, encoder_tag);
+            write_comment_header(&mut w, vendor, comments);
             ogg.write_packet(&w.into_bytes(), 0, false, false);
         }
         {
@@ -888,21 +859,6 @@ impl EncoderCore {
     }
 }
 
-/// One-shot encode of interleaved `i16` PCM through the streaming core.
-pub(crate) fn encode_with_base_quality_and_meta(
-    samples: &[i16],
-    rate: SampleRate,
-    channels: Channels,
-    base_quality: f32,
-    serial: u32,
-    vendor: Option<&[u8]>,
-    encoder_tag: Option<&[u8]>,
-) -> Vec<u8> {
-    let mut core = EncoderCore::new(rate, channels, base_quality, serial, vendor, encoder_tag);
-    core.feed(samples, i16_to_f32);
-    core.finish()
-}
-
 /// libvorbis-driver i16 scaling: `sample / 32768.0f`.
 #[inline]
 pub(crate) fn i16_to_f32(s: i16) -> f32 {
@@ -919,6 +875,20 @@ pub(crate) fn f32_sample(s: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_with_base_quality_and_meta(
+        pcm: &[i16],
+        rate: SampleRate,
+        channels: Channels,
+        q: f32,
+        serial: u32,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let mut core = EncoderCore::new(rate, channels, q, serial, b"v", &[]);
+        core.feed(pcm, i16_to_f32);
+        core.finish()
+    }
 
     /// SplitMix64 for reproducible test signals.
     struct Rng(u64);
@@ -979,7 +949,7 @@ mod tests {
         q: f32,
         chunks: &mut Rng,
     ) -> Vec<u8> {
-        let mut core = EncoderCore::new(rate, channels, q, 7, None, None);
+        let mut core = EncoderCore::new(rate, channels, q, 7, b"v", &[]);
         let mut out = Vec::new();
         let mut rest = pcm;
         while !rest.is_empty() {
@@ -1027,8 +997,15 @@ mod tests {
             };
             let ch = if channels == Channels::Stereo { 2 } else { 1 };
             let pcm = signal(&mut rng, frames, ch);
-            let legacy =
-                crate::encode_legacy::legacy_encode(&pcm, rate, channels, q, 7, None, None);
+            let legacy = crate::encode_legacy::legacy_encode(
+                &pcm,
+                rate,
+                channels,
+                q,
+                7,
+                Some(b"v"),
+                Some(b""),
+            );
             let oneshot = encode_with_base_quality_and_meta(&pcm, rate, channels, q, 7, None, None);
             assert!(
                 legacy == oneshot,
@@ -1046,8 +1023,7 @@ mod tests {
     #[test]
     fn buffer_is_bounded() {
         for q in [0.5f32, -0.1] {
-            let mut core =
-                EncoderCore::new(SampleRate::Hz44100, Channels::Stereo, q, 1, None, None);
+            let mut core = EncoderCore::new(SampleRate::Hz44100, Channels::Stereo, q, 1, b"v", &[]);
             let mut rng = Rng(3);
             let mut max = 0;
             for _ in 0..200 {

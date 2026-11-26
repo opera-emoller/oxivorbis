@@ -263,41 +263,41 @@ fn local_book_besterror(book: &Codebook, a: &mut [i32]) -> i32 {
         let mut o = dim;
         for _i in 0..dim {
             o -= 1;
-            let v = (a[o] - minval + (del >> 1)) / del;
+            // Wrapping ops: residues of pathological (huge) input
+            // overflow i32 exactly as release builds and libvorbis do.
+            let v = a[o].wrapping_sub(minval).wrapping_add(del >> 1) / del;
             let m = if v < ze {
-                ((ze - v) << 1) - 1
+                (ze.wrapping_sub(v) << 1).wrapping_sub(1)
             } else {
-                (v - ze) << 1
+                v.wrapping_sub(ze) << 1
             };
-            index = index * qv
-                + (if m < 0 {
-                    0
-                } else if m >= qv {
-                    qv - 1
-                } else {
-                    m
-                });
-            p[o] = v * del + minval;
+            index = index.wrapping_mul(qv).wrapping_add(if m < 0 {
+                0
+            } else if m >= qv {
+                qv - 1
+            } else {
+                m
+            });
+            p[o] = v.wrapping_mul(del).wrapping_add(minval);
         }
     } else {
         let mut o = dim;
         for _i in 0..dim {
             o -= 1;
-            let v = a[o] - minval;
+            let v = a[o].wrapping_sub(minval);
             let m = if v < ze {
-                ((ze - v) << 1) - 1
+                (ze.wrapping_sub(v) << 1).wrapping_sub(1)
             } else {
-                (v - ze) << 1
+                v.wrapping_sub(ze) << 1
             };
-            index = index * qv
-                + (if m < 0 {
-                    0
-                } else if m >= qv {
-                    qv - 1
-                } else {
-                    m
-                });
-            p[o] = v * del + minval;
+            index = index.wrapping_mul(qv).wrapping_add(if m < 0 {
+                0
+            } else if m >= qv {
+                qv - 1
+            } else {
+                m
+            });
+            p[o] = v.wrapping_mul(del).wrapping_add(minval);
         }
     }
 
@@ -340,7 +340,7 @@ fn local_book_besterror(book: &Codebook, a: &mut [i32]) -> i32 {
 
     if index > -1 {
         for i in 0..dim {
-            a[i] -= p[i];
+            a[i] = a[i].wrapping_sub(p[i]);
         }
     }
 
