@@ -155,6 +155,13 @@ parity-diff input rate channels:
 regen-setup-blob:
     cargo run -p gen-setup-blob
 
+# Regenerate src/setup_books.bin (every reachable static codebook, packed
+# by libvorbis's vorbis_staticbook_pack) and src/setup_templates.rs (the
+# floor/residue/mapping/setup templates) from the vendored libvorbis.
+# Requires a C compiler and libogg headers.
+regen-setup-templates:
+    ./tools/gen-setup-templates/run.sh
+
 # Regenerate tests/vectors/headers/*.bin reference files from a fresh
 # ffmpeg-libvorbis encode for each supported (rate × channels) combo.
 regen-header-vectors:
