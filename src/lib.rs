@@ -445,8 +445,9 @@ impl Encoder {
         self.core.buffered_frames()
     }
 
-    /// Blocks analyzed per parallel batch (default 32 x Rayon threads).
-    /// Output does not depend on it; exposed for tests.
+    /// Blocks analyzed per parallel batch (default 32 x Rayon threads,
+    /// at most 256 long blocks of 2048 or 128 of 4096). Output does not
+    /// depend on it; exposed for tests.
     #[doc(hidden)]
     #[cfg(feature = "parallel")]
     pub fn set_parallel_batch(&mut self, blocks: usize) {

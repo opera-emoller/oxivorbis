@@ -138,14 +138,22 @@ struct BlockJob {
     eos: bool,
 }
 
-/// Default parallel batch. Large enough that per-batch synchronisation
-/// and the producing thread competing with the workers for a core stay
-/// cheap (smaller batches measurably lose throughput on a loaded
-/// machine), small enough to bound memory: at most about four batches
-/// (a few MB of windowed PCM) are alive at once.
+/// Upper bound on a parallel batch, in long-block samples: 256 blocks of
+/// 2048 (q0..q10) or 128 of 4096 (q-1), i.e. about 6 s of audio at
+/// 44.1 kHz and 4 MiB of windowed stereo PCM per batch, whatever the
+/// thread count.
 #[cfg(feature = "parallel")]
-fn default_batch() -> usize {
-    32 * rayon::current_num_threads().max(1)
+const MAX_BATCH_SAMPLES: usize = 256 * 2048;
+
+/// Default parallel batch: 32 blocks per Rayon thread, capped at
+/// [`MAX_BATCH_SAMPLES`]. Large enough that per-batch synchronisation and
+/// the producing thread competing with the workers for a core stay cheap
+/// (smaller batches measurably lose throughput); the cap keeps output
+/// latency and memory independent of the core count. About three batches
+/// are alive at once (one being filled, one in pass A, one in pass C).
+#[cfg(feature = "parallel")]
+fn default_batch(long_block: usize) -> usize {
+    (32 * rayon::current_num_threads().max(1)).min(MAX_BATCH_SAMPLES / long_block)
 }
 
 /// The result of a spawned pass, still being computed.
@@ -379,7 +387,7 @@ impl EncoderCore {
             #[cfg(feature = "parallel")]
             jobs: Vec::new(),
             #[cfg(feature = "parallel")]
-            batch: default_batch(),
+            batch: default_batch(bs.long),
             #[cfg(feature = "parallel")]
             pass_a: None,
             #[cfg(feature = "parallel")]

@@ -206,6 +206,68 @@ fn encoder_is_send_sync() {
     });
 }
 
+/// Granule position of the last page in `pages` (whole Ogg pages), if
+/// any page carries one.
+fn last_granule(pages: &[u8]) -> Option<u64> {
+    let mut p = 0;
+    let mut last = None;
+    while p + 27 <= pages.len() {
+        assert_eq!(&pages[p..p + 4], b"OggS");
+        let gp = u64::from_le_bytes(pages[p + 6..p + 14].try_into().unwrap());
+        if gp != u64::MAX {
+            last = Some(gp);
+        }
+        let nseg = pages[p + 26] as usize;
+        let body: usize = pages[p + 27..p + 27 + nseg]
+            .iter()
+            .map(|&b| b as usize)
+            .sum();
+        p += 27 + nseg + body;
+    }
+    assert_eq!(p, pages.len(), "write returned a partial page");
+    last
+}
+
+/// With `parallel`, how far `write`'s output trails the input must not
+/// grow with the thread count: an encoder sized for a 64-thread pool
+/// still returns pages within ~16 s of audio (the batch cap; 3 batches of
+/// at most 256 long blocks in flight), at q5 and q-1 (4096-sample blocks).
+/// The serial build trails by well under a second.
+#[test]
+fn streaming_lag_is_bounded() {
+    let pcm = music(45 * 44_100, 5);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(64)
+        .build()
+        .unwrap();
+    for q in [5.0f32, -1.0] {
+        let opts = Options::default().with_quality(Quality::new(q).unwrap());
+        // Sized inside the pool (64 threads), driven from this thread.
+        let mut enc = pool.install(|| Encoder::new(SampleRate::Hz44100, Channels::Stereo, &opts));
+        let mut fed = 0usize;
+        let mut emitted = 0u64;
+        let mut max_lag = 0usize;
+        for chunk in pcm.chunks(4096 * 2) {
+            fed += chunk.len() / 2;
+            if let Some(gp) = last_granule(enc.write(chunk)) {
+                emitted = gp;
+            }
+            max_lag = max_lag.max(fed - emitted as usize);
+        }
+        enc.finish();
+        let lag_s = max_lag as f64 / 44_100.0;
+        let bound = if cfg!(feature = "parallel") {
+            17.0
+        } else {
+            1.0
+        };
+        assert!(
+            lag_s < bound,
+            "q{q}: output lagged {lag_s:.1} s > {bound} s"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Adversarial f32 input
 // ---------------------------------------------------------------------------
