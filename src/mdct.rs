@@ -203,6 +203,33 @@ fn mdct_butterfly_32_g(x: &mut [f32], base: usize) {
     mdct_butterfly_16_g(x, base + 16);
 }
 
+/// One 8-float step of libvorbis's generic/first butterflies: `hi` is the
+/// block at x1, `lo` the block at x2, and `tw[k]` the (T[0], T[1]) twiddle
+/// pair applied to element pair `6 - 2k`. Exactly the C statement order and
+/// expressions; fixed-size views remove the per-access bounds checks.
+#[inline(always)]
+fn mdct_bf8(hi: &mut [f32; 8], lo: &mut [f32; 8], tw: [(f32, f32); 4]) {
+    for (k, &(t0, t1)) in tw.iter().enumerate() {
+        let e = 6 - 2 * k;
+        let r0 = hi[e] - lo[e];
+        let r1 = hi[e + 1] - lo[e + 1];
+        hi[e] += lo[e];
+        hi[e + 1] += lo[e + 1];
+        lo[e] = r1 * t1 + r0 * t0;
+        lo[e + 1] = r1 * t0 - r0 * t1;
+    }
+}
+
+/// `x[x1..x1+8]` and `x[x2..x2+8]` as disjoint fixed-size views (x2 + 8 <= x1).
+#[inline(always)]
+fn bf8_views(x: &mut [f32], x1: usize, x2: usize) -> (&mut [f32; 8], &mut [f32; 8]) {
+    let (lo, hi) = x.split_at_mut(x1);
+    (
+        (&mut hi[..8]).try_into().unwrap(),
+        (&mut lo[x2..x2 + 8]).try_into().unwrap(),
+    )
+}
+
 fn mdct_butterfly_first_g(
     trig: &[f32],
     t_base: usize,
@@ -215,33 +242,13 @@ fn mdct_butterfly_first_g(
     let mut t = t_base;
 
     loop {
-        let r0 = x[x1 + 6] - x[x2 + 6];
-        let r1 = x[x1 + 7] - x[x2 + 7];
-        x[x1 + 6] += x[x2 + 6];
-        x[x1 + 7] += x[x2 + 7];
-        x[x2 + 6] = r1 * trig[t + 1] + r0 * trig[t + 0];
-        x[x2 + 7] = r1 * trig[t + 0] - r0 * trig[t + 1];
-
-        let r0 = x[x1 + 4] - x[x2 + 4];
-        let r1 = x[x1 + 5] - x[x2 + 5];
-        x[x1 + 4] += x[x2 + 4];
-        x[x1 + 5] += x[x2 + 5];
-        x[x2 + 4] = r1 * trig[t + 5] + r0 * trig[t + 4];
-        x[x2 + 5] = r1 * trig[t + 4] - r0 * trig[t + 5];
-
-        let r0 = x[x1 + 2] - x[x2 + 2];
-        let r1 = x[x1 + 3] - x[x2 + 3];
-        x[x1 + 2] += x[x2 + 2];
-        x[x1 + 3] += x[x2 + 3];
-        x[x2 + 2] = r1 * trig[t + 9] + r0 * trig[t + 8];
-        x[x2 + 3] = r1 * trig[t + 8] - r0 * trig[t + 9];
-
-        let r0 = x[x1 + 0] - x[x2 + 0];
-        let r1 = x[x1 + 1] - x[x2 + 1];
-        x[x1 + 0] += x[x2 + 0];
-        x[x1 + 1] += x[x2 + 1];
-        x[x2 + 0] = r1 * trig[t + 13] + r0 * trig[t + 12];
-        x[x2 + 1] = r1 * trig[t + 12] - r0 * trig[t + 13];
+        let tr: &[f32; 16] = (&trig[t..t + 16]).try_into().unwrap();
+        let (hi, lo) = bf8_views(x, x1, x2);
+        mdct_bf8(
+            hi,
+            lo,
+            [(tr[0], tr[1]), (tr[4], tr[5]), (tr[8], tr[9]), (tr[12], tr[13])],
+        );
 
         if x2 == x_base {
             break;
@@ -265,41 +272,16 @@ fn mdct_butterfly_generic_g(
     let mut t = t_base;
 
     loop {
-        let r0 = x[x1 + 6] - x[x2 + 6];
-        let r1 = x[x1 + 7] - x[x2 + 7];
-        x[x1 + 6] += x[x2 + 6];
-        x[x1 + 7] += x[x2 + 7];
-        x[x2 + 6] = r1 * trig[t + 1] + r0 * trig[t + 0];
-        x[x2 + 7] = r1 * trig[t + 0] - r0 * trig[t + 1];
-
-        t += trigint;
-
-        let r0 = x[x1 + 4] - x[x2 + 4];
-        let r1 = x[x1 + 5] - x[x2 + 5];
-        x[x1 + 4] += x[x2 + 4];
-        x[x1 + 5] += x[x2 + 5];
-        x[x2 + 4] = r1 * trig[t + 1] + r0 * trig[t + 0];
-        x[x2 + 5] = r1 * trig[t + 0] - r0 * trig[t + 1];
-
-        t += trigint;
-
-        let r0 = x[x1 + 2] - x[x2 + 2];
-        let r1 = x[x1 + 3] - x[x2 + 3];
-        x[x1 + 2] += x[x2 + 2];
-        x[x1 + 3] += x[x2 + 3];
-        x[x2 + 2] = r1 * trig[t + 1] + r0 * trig[t + 0];
-        x[x2 + 3] = r1 * trig[t + 0] - r0 * trig[t + 1];
-
-        t += trigint;
-
-        let r0 = x[x1 + 0] - x[x2 + 0];
-        let r1 = x[x1 + 1] - x[x2 + 1];
-        x[x1 + 0] += x[x2 + 0];
-        x[x1 + 1] += x[x2 + 1];
-        x[x2 + 0] = r1 * trig[t + 1] + r0 * trig[t + 0];
-        x[x2 + 1] = r1 * trig[t + 0] - r0 * trig[t + 1];
-
-        t += trigint;
+        let tw = |t: usize| (trig[t], trig[t + 1]);
+        let tws = [
+            tw(t),
+            tw(t + trigint),
+            tw(t + 2 * trigint),
+            tw(t + 3 * trigint),
+        ];
+        t += 4 * trigint;
+        let (hi, lo) = bf8_views(x, x1, x2);
+        mdct_bf8(hi, lo, tws);
 
         if x2 == x_base {
             break;
