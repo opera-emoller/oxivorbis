@@ -48,7 +48,12 @@ parallel = ["dep:rayon"]
 __internal = []
 
 [dependencies]
-ogg = "0.9"
+# Pinned exactly: src/ogg_pages.rs mirrors this version's internal page
+# splitting (it emits a page by itself whenever 255 lacing values
+# accumulate) to reproduce libogg's page boundaries. A release that changed
+# that behaviour would silently change lewtoff's page layout, so upgrades
+# must be deliberate and re-run the parity suite.
+ogg = "=0.9.2"
 rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
