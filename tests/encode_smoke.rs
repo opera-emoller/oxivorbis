@@ -97,3 +97,46 @@ fn lewton_can_decode_our_silence_stereo44() {
         }
     }
 }
+
+#[test]
+fn oggenc_base_quality_bits() {
+    // Bits produced by vorbis-tools 1.4.3 oggenc's `quality *= 0.1` on a
+    // float (see lewtoff::encode::oggenc_base_quality and the oracle-gated
+    // tests/parity.rs::parity_oggenc_quality_conversion).
+    let bits = |q: f32| lewtoff::oggenc_base_quality(q).to_bits();
+    assert_eq!(lewtoff::oggenc_base_quality(5.0), 0.5);
+    assert_eq!(lewtoff::oggenc_base_quality(10.0), 1.0);
+    assert_eq!(lewtoff::oggenc_base_quality(11.0), 1.0);
+    assert_eq!(bits(9.344), 0x3f6f34d6);
+    assert_eq!(bits(9.303), 0x3f6e2825);
+}
+
+#[test]
+fn encode_with_quality_q5_matches_encode_and_others_decode() {
+    let samples = sine_stereo(44100, 44100);
+    // Same settings except the random serial (and therefore page CRCs).
+    let a = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo);
+    let b = lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, 5.0);
+    assert_eq!(a.len(), b.len());
+    let mut prev_len = 0;
+    for q in [0.0f32, 2.5, 6.0, 10.0] {
+        let bytes =
+            lewtoff::encode_with_quality(&samples, SampleRate::Hz44100, Channels::Stereo, q);
+        check_ogg(&bytes);
+        assert!(bytes.len() > prev_len, "q{q} not larger than lower quality");
+        prev_len = bytes.len();
+        let mut reader = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(bytes))
+            .expect("lewton failed to open stream");
+        while reader
+            .read_dec_packet_itl()
+            .expect("lewton decode error")
+            .is_some()
+        {}
+    }
+}
+
+#[test]
+#[should_panic(expected = "q-1 not yet supported")]
+fn encode_with_quality_rejects_q_minus_1() {
+    lewtoff::encode_with_quality(&silence(4410), SampleRate::Hz44100, Channels::Mono, -0.5);
+}

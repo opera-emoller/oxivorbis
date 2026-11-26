@@ -2,6 +2,7 @@ use super::*;
 
 /// Render a config in the exact text format printed by
 /// `tools/oracle-encoder/dump_params.c` (minus the leading `q` line).
+#[cfg(feature = "oracle")]
 fn oracle_text(c: &QualityConfig) -> String {
     use std::fmt::Write;
     let mut s = String::new();
@@ -85,159 +86,13 @@ fn oracle_text(c: &QualityConfig) -> String {
 
 const COMBOS: [(u32, usize); 4] = [(44100, 1), (44100, 2), (48000, 1), (48000, 2)];
 
-// ---------------------------------------------------------------------------
-// (i) q=0.5 vs the hand-written Q5 builders in encode.rs
-// ---------------------------------------------------------------------------
-
-/// Assert `a == b` bitwise for f32 slices, with a readable label.
-fn eq_f32(label: &str, a: &[f32], b: &[f32]) {
-    let ab: Vec<u32> = a.iter().map(|v| v.to_bits()).collect();
-    let bb: Vec<u32> = b.iter().map(|v| v.to_bits()).collect();
-    assert_eq!(ab, bb, "{label}: derived {a:?} != encode.rs {b:?}");
-}
-
 #[test]
-fn q5_matches_encoder_builders() {
+fn q5_template_and_id_header_values() {
     for (rate, ch) in COMBOS {
         let c = quality_config(0.5, rate, ch);
         assert_eq!(c.is, 6);
         assert_eq!(c.blocksizes, [256, 2048]);
         assert_eq!(c.bitrate_nominal, if ch == 2 { 160_000 } else { 96_000 });
-
-        let reference = q5_reference::q5_psy();
-        for (b, (ours, theirs)) in c.psy.iter().zip(reference.iter()).enumerate() {
-            let l = |f: &str| format!("rate={rate} ch={ch} psy[{b}].{f}");
-            assert_eq!(ours.blockflag, theirs.blockflag, "{}", l("blockflag"));
-            eq_f32(&l("ath_adjatt"), &[ours.ath_adjatt], &[theirs.ath_adjatt]);
-            eq_f32(&l("ath_maxatt"), &[ours.ath_maxatt], &[theirs.ath_maxatt]);
-            eq_f32(
-                &l("tone_masteratt"),
-                &ours.tone_masteratt,
-                &theirs.tone_masteratt,
-            );
-            eq_f32(
-                &l("tone_centerboost"),
-                &[ours.tone_centerboost],
-                &[theirs.tone_centerboost],
-            );
-            eq_f32(&l("tone_decay"), &[ours.tone_decay], &[theirs.tone_decay]);
-            // KNOWN BUG in encode.rs: make_q5_psy_short / make_q5_psy_transition
-            // use -30.0; libvorbis produces 0xc1f00005 for all four block types
-            // (interp of _psy_tone_suppress[6..7] at ds~1e-6). Latent: parity
-            // holds today because the tone peak limit rarely binds.
-            if b == 1 || b == 2 {
-                assert_eq!(theirs.tone_abs_limit, -30.0);
-                assert_eq!(ours.tone_abs_limit.to_bits(), 0xc1f00005, "{}", l("tal"));
-            } else {
-                eq_f32(
-                    &l("tone_abs_limit"),
-                    &[ours.tone_abs_limit],
-                    &[theirs.tone_abs_limit],
-                );
-            }
-            eq_f32(&l("toneatt"), &ours.toneatt, &theirs.toneatt);
-            assert_eq!(ours.noisemaskp, theirs.noisemaskp, "{}", l("noisemaskp"));
-            eq_f32(
-                &l("noisemaxsupp"),
-                &[ours.noisemaxsupp],
-                &[theirs.noisemaxsupp],
-            );
-            eq_f32(
-                &l("noisewindowlo"),
-                &[ours.noisewindowlo],
-                &[theirs.noisewindowlo],
-            );
-            eq_f32(
-                &l("noisewindowhi"),
-                &[ours.noisewindowhi],
-                &[theirs.noisewindowhi],
-            );
-            assert_eq!(ours.noisewindowlomin, theirs.noisewindowlomin);
-            assert_eq!(ours.noisewindowhimin, theirs.noisewindowhimin);
-            assert_eq!(ours.noisewindowfixed, theirs.noisewindowfixed);
-            for j in 0..P_NOISECURVES {
-                eq_f32(
-                    &l(&format!("noiseoff[{j}]")),
-                    &ours.noiseoff[j],
-                    &theirs.noiseoff[j],
-                );
-            }
-            eq_f32(&l("noisecompand"), &ours.noisecompand, &theirs.noisecompand);
-            eq_f32(
-                &l("max_curve_dB"),
-                &[ours.max_curve_dB],
-                &[theirs.max_curve_dB],
-            );
-            assert_eq!(ours.normal_p, theirs.normal_p);
-            assert_eq!(ours.normal_start, theirs.normal_start);
-            // KNOWN DIFF: encode.rs uses normal_partition=32 for short blocks;
-            // libvorbis uses _noise_part_short_44[is]=8. Output-neutral at Q5
-            // because normal_start=9999 disables noise normalization, but it
-            // matters at q<=0.4 where normalization is active.
-            if b < 2 {
-                assert_eq!(theirs.normal_partition, 32);
-                assert_eq!(ours.normal_partition, 8);
-            } else {
-                assert_eq!(ours.normal_partition, theirs.normal_partition);
-            }
-            assert_eq!(ours.normal_thresh.to_bits(), theirs.normal_thresh.to_bits());
-        }
-
-        let g = &c.psy_global;
-        let r = q5_reference::q5_psy_global(rate as i64, ch);
-        assert_eq!(g.eighth_octave_lines, r.eighth_octave_lines);
-        eq_f32("preecho_thresh", &g.preecho_thresh, &r.preecho_thresh);
-        // KNOWN DIFF: bands 2,3 of postecho_thresh are -13.5 in encode.rs but
-        // libvorbis gives 0xc157ffff (-13.499999) from the interpolation.
-        let mut post = r.postecho_thresh;
-        post[2] = f32::from_bits(0xc157ffff);
-        post[3] = f32::from_bits(0xc157ffff);
-        eq_f32("postecho_thresh", &g.postecho_thresh, &post);
-        eq_f32(
-            "stretch_penalty",
-            &[g.stretch_penalty],
-            &[r.stretch_penalty],
-        );
-        eq_f32(
-            "preecho_minenergy",
-            &[g.preecho_minenergy],
-            &[r.preecho_minenergy],
-        );
-        eq_f32(
-            "ampmax_att_per_sec",
-            &[g.ampmax_att_per_sec],
-            &[r.ampmax_att_per_sec],
-        );
-        assert_eq!(g.coupling_prepointamp, r.coupling_prepointamp);
-        assert_eq!(g.coupling_postpointamp, r.coupling_postpointamp);
-
-        // KNOWN DIFFS (output-neutral today), libvorbis vs encode.rs:
-        // * libvorbis fills coupling_* and sliding_lowpass for mono too (the
-        //   uncoupled template still has stereo_modes); encode.rs puts n/2
-        //   placeholders there. Mono never reads them.
-        // * sliding_lowpass is unclamped in libvorbis (e.g. 4597 for 99 kHz
-        //   at 44.1k); encode.rs clamps to n/2 (1024 / 128). Consumers only
-        //   compare `j < sliding_lowpass - i` with j < n/2, so identical.
-        // * coupling_pointlimit[1] is clamped to n/2 in encode.rs (no-op at
-        //   12 kHz) and [0] is computed as limit/8 rather than from
-        //   blocksizes[0] (equal at Q5: 69 both ways).
-        let khz12 = |bs: f64| (12.0_f64 * 1000. / rate as f64 * bs) as i32;
-        let lp99 = |bs: f64| (99.0_f64 * 1000. / rate as f64 * bs) as i32;
-        assert_eq!(g.coupling_pkHz, [12; PACKETBLOBS]);
-        assert_eq!(g.coupling_pointlimit[0], [khz12(256.); PACKETBLOBS]);
-        assert_eq!(g.coupling_pointlimit[1], [khz12(2048.); PACKETBLOBS]);
-        assert_eq!(g.sliding_lowpass[0], [lp99(256.); PACKETBLOBS]);
-        assert_eq!(g.sliding_lowpass[1], [lp99(2048.); PACKETBLOBS]);
-        if ch == 2 {
-            assert_eq!(g.coupling_pkHz, r.coupling_pkHz);
-            assert_eq!(g.coupling_pointlimit, r.coupling_pointlimit);
-            for k in 0..2 {
-                for i in 0..PACKETBLOBS {
-                    let n2 = if k == 0 { 128 } else { 1024 };
-                    assert_eq!(g.sliding_lowpass[k][i].min(n2), r.sliding_lowpass[k][i]);
-                }
-            }
-        }
     }
 }
 

@@ -87,13 +87,18 @@ fn assert_parity_oracle(samples: &[i16], rate: SampleRate, channels: Channels) {
 }
 
 fn oggenc_encode_q5(samples: &[i16], rate: u32, channels: u16) -> Vec<u8> {
+    oggenc_encode(samples, rate, channels, "5")
+}
+
+/// System `oggenc -q <quality>` (quality passed verbatim, oggenc scale).
+fn oggenc_encode(samples: &[i16], rate: u32, channels: u16, quality: &str) -> Vec<u8> {
     let raw: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
 
     let mut child = Command::new("oggenc")
         .args([
             "-Q",
             "-q",
-            "5",
+            quality,
             "-R",
             &rate.to_string(),
             "-B",
@@ -211,6 +216,44 @@ fn assert_parity(samples: &[i16], rate: SampleRate, channels: Channels) {
             &oracle_bytes[or_start..or_end],
         );
     }
+}
+
+/// `lewtoff::oggenc_base_quality` must reproduce oggenc's `-q` float
+/// conversion bit for bit. The listed values are ones where the candidate
+/// conversions disagree on the f32 and that disagreement reaches the bytes
+/// (the ID header's bitrate_nominal): 9.344/9.351 separate oggenc's
+/// `(float)((double)(float)q * 0.1)` from both `(float)(atof(q) * 0.1)` and
+/// `(float)q * 0.1f`; 9.303 separates it from the all-double form. "11"
+/// covers oggenc's clamp to 10. Silence keeps the system libvorbis's FP
+/// optimizations out of the picture.
+#[test]
+fn parity_oggenc_quality_conversion() {
+    let samples = vec![0i16; 4410 * 2];
+    for q in ["0", "2.5", "7.3", "9.303", "9.344", "9.351", "10", "11"] {
+        let want = oggenc_encode(&samples, 44100, 2, q);
+        let serial = extract_serial(&want);
+        let (vendor, encoder_tag) = extract_comment_strings(&want);
+        let qf: f32 = q.parse().unwrap();
+        let got = lewtoff::encode_with_base_quality_and_meta(
+            &samples,
+            SampleRate::Hz44100,
+            Channels::Stereo,
+            lewtoff::oggenc_base_quality(qf),
+            serial,
+            Some(&vendor),
+            Some(&encoder_tag),
+        );
+        assert!(
+            got == want,
+            "oggenc -q {q}: diverged at byte {}",
+            first_diff(&got, &want)
+        );
+    }
+    // The test values really do discriminate between the conversions.
+    let naive = |q: f64| (q * 0.1) as f32;
+    assert_ne!(lewtoff::oggenc_base_quality(9.344), naive(9.344));
+    assert_ne!(lewtoff::oggenc_base_quality(9.303), naive(9.303));
+    assert_ne!(lewtoff::oggenc_base_quality(9.344), 9.344f32 * 0.1f32);
 }
 
 fn make_sine_mono(rate: u32, freq: f32, duration_secs: f32) -> Vec<i16> {
@@ -382,9 +425,8 @@ fn channel_count(channels: Channels) -> u16 {
 /// Oracle parity at an arbitrary libvorbis base_quality (-0.1..1.0).
 ///
 /// The oracle gets `base_quality` as its 3rd argument; lewtoff goes through
-/// `common::lewtoff_encode_q`, which only supports q5 until quality is
-/// wired into the encoder (other qualities panic with "pending quality
-/// wiring" — such tests are `#[ignore]`d).
+/// `common::lewtoff_encode_q`. q-1 (base_quality < 0) is not supported yet
+/// and its matrix entries are `#[ignore]`d.
 fn assert_parity_oracle_q(
     samples: &[i16],
     rate: SampleRate,
@@ -536,8 +578,8 @@ fn run_quality_case(base_quality: f32, rate: SampleRate, channels: Channels, sig
 /// Test matrix: `oracle_parity_q::<quality>::<config>::<signal>`.
 /// One representative base_quality per libvorbis template interval
 /// (-0.1, 0.0, ..., 1.0 are the 12 anchor points; the midpoints exercise
-/// interpolation between adjacent templates) plus the endpoint 1.0 and
-/// q5 itself (0.5, the only one lewtoff encodes today).
+/// interpolation between adjacent templates) plus the endpoints 0.0 and
+/// 1.0 and q5 itself (0.5).
 mod oracle_parity_q {
     use super::*;
 
@@ -563,19 +605,20 @@ mod oracle_parity_q {
         };
     }
 
-    quality!(q_m005, -0.05, #[ignore = "pending quality wiring"]);
-    quality!(q_005, 0.05, #[ignore = "pending quality wiring"]);
-    quality!(q_015, 0.15, #[ignore = "pending quality wiring"]);
-    quality!(q_025, 0.25, #[ignore = "pending quality wiring"]);
-    quality!(q_035, 0.35, #[ignore = "pending quality wiring"]);
-    quality!(q_045, 0.45, #[ignore = "pending quality wiring"]);
+    quality!(q_m005, -0.05, #[ignore = "pending 512/4096 block support"]);
+    quality!(q_000, 0.0);
+    quality!(q_005, 0.05);
+    quality!(q_015, 0.15);
+    quality!(q_025, 0.25);
+    quality!(q_035, 0.35);
+    quality!(q_045, 0.45);
     quality!(q_050, 0.5);
-    quality!(q_055, 0.55, #[ignore = "pending quality wiring"]);
-    quality!(q_065, 0.65, #[ignore = "pending quality wiring"]);
-    quality!(q_075, 0.75, #[ignore = "pending quality wiring"]);
-    quality!(q_085, 0.85, #[ignore = "pending quality wiring"]);
-    quality!(q_095, 0.95, #[ignore = "pending quality wiring"]);
-    quality!(q_100, 1.0, #[ignore = "pending quality wiring"]);
+    quality!(q_055, 0.55);
+    quality!(q_065, 0.65);
+    quality!(q_075, 0.75);
+    quality!(q_085, 0.85);
+    quality!(q_095, 0.95);
+    quality!(q_100, 1.0);
 }
 
 /// Reassemble Ogg packets from a stream (single logical stream).

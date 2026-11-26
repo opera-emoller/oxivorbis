@@ -1,7 +1,9 @@
 //! Vorbis header packet construction (id, comment, setup) per Vorbis I §4.2.
 //!
-//! The three packets are byte-identical to what `ffmpeg -c:a libvorbis -q:a 5`
-//! produces for the supported (rate × channels) input space.
+//! The three packets are byte-identical to what libvorbis 1.3.7 produces in
+//! VBR mode. The `write_id_header` / `write_setup_header` conveniences are the
+//! Q5 packets; the encoder uses the quality-generic [`write_id_header_with`] and
+//! [`write_setup_packet`].
 
 use crate::bitpack::BitWriter;
 use crate::setup_blob::{Q5_SETUP_MONO44, Q5_SETUP_MONO48, Q5_SETUP_STEREO44, Q5_SETUP_STEREO48};
@@ -14,23 +16,37 @@ const VENDOR: &[u8] = b"Lavf61.7.100";
 /// User comment written by ffmpeg into the comment header.
 const ENCODER_TAG: &[u8] = b"encoder=Lavc61.19.101 libvorbis";
 
-/// Nominal bitrate for mono streams at Q5 (bits/sec), as written by
-/// ffmpeg-libvorbis into the id header.
+/// Nominal bitrate for mono streams at Q5 (bits/sec).
 const BITRATE_NOMINAL_MONO: i32 = 96_000;
 
 /// Nominal bitrate for stereo streams at Q5 (bits/sec).
 const BITRATE_NOMINAL_STEREO: i32 = 160_000;
 
-/// log2 of the short block size (256 = 2^8).
-const BLOCKSIZE_0_LOG2: u32 = 8;
+/// Q5 block sizes (short, long).
+const Q5_BLOCKSIZES: [usize; 2] = [256, 2048];
 
-/// log2 of the long block size (2048 = 2^11).
-const BLOCKSIZE_1_LOG2: u32 = 11;
+/// Write the Q5 Vorbis identification header packet (packet type 0x01).
+pub fn write_id_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) {
+    let bitrate_nominal = match channels {
+        Channels::Mono => BITRATE_NOMINAL_MONO,
+        Channels::Stereo => BITRATE_NOMINAL_STEREO,
+    };
+    write_id_header_with(rate, channels, bitrate_nominal, Q5_BLOCKSIZES, w);
+}
 
-/// Write the Vorbis identification header packet (packet type 0x01).
+/// Write the Vorbis identification header packet (packet type 0x01) with
+/// the given nominal bitrate and `[short, long]` block sizes (powers of
+/// two). libvorbis VBR mode leaves bitrate_upper/lower at 0 (unset).
 ///
 /// Per Vorbis I §4.2.2.
-pub fn write_id_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) {
+pub fn write_id_header_with(
+    rate: SampleRate,
+    channels: Channels,
+    bitrate_nominal: i32,
+    blocksizes: [usize; 2],
+    w: &mut BitWriter,
+) {
+    debug_assert!(blocksizes.iter().all(|b| b.is_power_of_two()));
     let audio_sample_rate: u32 = match rate {
         SampleRate::Hz44100 => 44_100,
         SampleRate::Hz48000 => 48_000,
@@ -39,11 +55,6 @@ pub fn write_id_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) 
         Channels::Mono => 1,
         Channels::Stereo => 2,
     };
-    let bitrate_nominal: i32 = match channels {
-        Channels::Mono => BITRATE_NOMINAL_MONO,
-        Channels::Stereo => BITRATE_NOMINAL_STEREO,
-    };
-
     w.write(0x01, 8);
     for &b in b"vorbis" {
         w.write(b as u32, 8);
@@ -56,8 +67,8 @@ pub fn write_id_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) 
     w.write(bitrate_nominal as u32, 32);
     w.write(0, 32);
 
-    w.write(BLOCKSIZE_0_LOG2, 4);
-    w.write(BLOCKSIZE_1_LOG2, 4);
+    w.write(blocksizes[0].trailing_zeros(), 4);
+    w.write(blocksizes[1].trailing_zeros(), 4);
 
     w.write(1, 1);
 }
@@ -103,7 +114,15 @@ pub fn write_comment_header(w: &mut BitWriter) {
     write_comment_header_with_strings(w, None, None);
 }
 
-/// Write the Vorbis setup header packet (packet type 0x05).
+/// Write a complete, pre-built setup header packet (as produced by the
+/// setup generator; it already starts with the 0x05 + "vorbis" sync).
+pub fn write_setup_packet(packet: &[u8], w: &mut BitWriter) {
+    for &b in packet {
+        w.write(b as u32, 8);
+    }
+}
+
+/// Write the Q5 Vorbis setup header packet (packet type 0x05).
 ///
 /// The packet is the embedded Q5 setup blob byte-for-byte; it already
 /// starts with the 0x05 + "vorbis" sync sequence. The blob varies by
@@ -115,7 +134,5 @@ pub fn write_setup_header(rate: SampleRate, channels: Channels, w: &mut BitWrite
         (SampleRate::Hz44100, Channels::Stereo) => Q5_SETUP_STEREO44,
         (SampleRate::Hz48000, Channels::Stereo) => Q5_SETUP_STEREO48,
     };
-    for &b in blob {
-        w.write(b as u32, 8);
-    }
+    write_setup_packet(blob, w);
 }

@@ -36,7 +36,6 @@
 //! Every field is verified bit-for-bit against `tools/oracle-encoder/dump_params`
 //! by the oracle-gated test `quality_oracle_grid`.
 
-#![allow(dead_code)]
 // Index loops deliberately mirror the C for side-by-side review.
 #![allow(clippy::needless_range_loop)]
 
@@ -56,9 +55,11 @@ pub(crate) const MIN_BASE_QUALITY: f32 = -0.1;
 pub(crate) struct QualityConfig {
     /// `hi->base_setting`: template position in `0.0..11.0`.
     pub base_setting: f64,
-    /// `(int)base_setting`.
+    /// `(int)base_setting` (diagnostic; the encoder only needs base_setting).
+    #[allow(dead_code)]
     pub is: usize,
     /// `base_setting - is`.
+    #[allow(dead_code)]
     pub ds: f64,
     /// `[short, long]` block sizes.
     pub blocksizes: [usize; 2],
@@ -358,9 +359,6 @@ fn block_psy(s: f64, block: usize, ath_adjatt: f32, ath_maxatt: f32) -> VorbisIn
     p.ath_maxatt = ath_maxatt;
     p
 }
-
-#[cfg(test)]
-mod q5_reference;
 
 #[cfg(test)]
 mod tests;

@@ -1,7 +1,9 @@
-//! Full Q5 Vorbis setup parser: codebooks, floors, residues, mappings, modes.
+//! Vorbis setup-header parser (codebooks, floors, residues, mappings, modes)
+//! plus the per-quality [`EncoderSetup`] cache.
 //!
-//! Reads a single Vorbis setup-header blob (the bytes starting with `\x05vorbis`)
-//! and returns a `Q5Setup` struct with everything the encoder needs at runtime.
+//! Reads a single Vorbis setup-header packet (the bytes starting with
+//! `\x05vorbis`) and returns a `CodecSetup` with everything the encoder
+//! needs at runtime.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -45,10 +47,10 @@ pub(crate) struct Mode {
 }
 
 // ---------------------------------------------------------------------------
-// Q5Setup: everything the encoder needs
+// CodecSetup: everything the encoder needs (parsed setup header)
 // ---------------------------------------------------------------------------
 
-pub(crate) struct Q5Setup {
+pub(crate) struct CodecSetup {
     #[allow(dead_code)]
     pub channels: usize,
     pub books: Vec<Codebook>,
@@ -98,17 +100,17 @@ impl From<crate::residue::ResidueError> for SetupError {
 }
 
 // ---------------------------------------------------------------------------
-// unpack_q5_setup: parse the full setup blob
+// unpack_setup: parse a full setup header
 // ---------------------------------------------------------------------------
 
 /// Parses a setup header. `params` supplies the encode-only floor/residue
 /// fields (one entry per floor / residue, in header order), normally from
 /// [`crate::setup_gen::build_setup`].
-pub(crate) fn unpack_q5_setup(
+pub(crate) fn unpack_setup(
     blob: &[u8],
     channels: usize,
     params: &EncodeParams,
-) -> Result<Q5Setup, SetupError> {
+) -> Result<CodecSetup, SetupError> {
     if blob.len() < 7 || &blob[0..7] != b"\x05vorbis" {
         return Err(SetupError::BadMagic);
     }
@@ -230,7 +232,7 @@ pub(crate) fn unpack_q5_setup(
     // modebits: number of bits needed to encode mode number
     let modebits = ov_ilog(modes_count as u32 - 1);
 
-    Ok(Q5Setup {
+    Ok(CodecSetup {
         channels,
         books,
         floor_states,
@@ -323,40 +325,78 @@ fn unpack_mapping(
 }
 
 // ---------------------------------------------------------------------------
-// OnceLock-cached Q5 setups for each (rate, channels) combo
+// Per-quality encoder setup cache
 // ---------------------------------------------------------------------------
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
-use crate::{Channels, SampleRate};
+use crate::quality::{QualityConfig, quality_config};
 
-pub(crate) fn q5_setup_for(rate: SampleRate, channels: Channels) -> &'static Q5Setup {
-    use crate::setup_blob::{
-        Q5_SETUP_MONO44, Q5_SETUP_MONO48, Q5_SETUP_STEREO44, Q5_SETUP_STEREO48,
-    };
+/// Everything quality-dependent the encoder needs that does not depend on
+/// the input samples: the derived parameters, the setup header packet, and
+/// its parsed form.
+pub(crate) struct EncoderSetup {
+    pub cfg: QualityConfig,
+    /// Complete setup header packet (starts with `\x05vorbis`).
+    pub packet: Vec<u8>,
+    pub setup: CodecSetup,
+}
 
-    fn parse(blob: &[u8], ch: usize, rate_hz: u32) -> Q5Setup {
-        let (base, lowpass) = crate::setup_gen::vbr_setting(rate_hz, ch, 0.5);
-        let params = crate::setup_gen::build_setup(rate_hz, ch, base, lowpass).params;
-        unpack_q5_setup(blob, ch, &params).expect("Q5 setup parse failed")
+/// Number of distinct (rate, channels, quality) setups kept alive. Building
+/// one costs a few hundred microseconds (codebook unpacking dominates);
+/// the cache keeps repeated encodes of short files at the same settings
+/// from paying it every call.
+const CACHE_CAP: usize = 8;
+
+type CacheKey = (u32, usize, u32);
+
+static CACHE: Mutex<Vec<(CacheKey, Arc<EncoderSetup>)>> = Mutex::new(Vec::new());
+
+fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> EncoderSetup {
+    let cfg = quality_config(base_quality, rate, channels);
+    let generated =
+        crate::setup_gen::build_setup(rate, channels, cfg.base_setting, cfg.lowpass_khz);
+    debug_assert_eq!(
+        [
+            generated.blocksizes[0] as usize,
+            generated.blocksizes[1] as usize
+        ],
+        cfg.blocksizes
+    );
+    let setup = unpack_setup(&generated.packet, channels, &generated.params)
+        .expect("generated setup header failed to parse");
+    EncoderSetup {
+        cfg,
+        packet: generated.packet,
+        setup,
     }
+}
 
-    match (rate, channels) {
-        (SampleRate::Hz44100, Channels::Mono) => {
-            static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| parse(Q5_SETUP_MONO44, 1, 44100))
-        }
-        (SampleRate::Hz48000, Channels::Mono) => {
-            static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| parse(Q5_SETUP_MONO48, 1, 48000))
-        }
-        (SampleRate::Hz44100, Channels::Stereo) => {
-            static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| parse(Q5_SETUP_STEREO44, 2, 44100))
-        }
-        (SampleRate::Hz48000, Channels::Stereo) => {
-            static CACHE: OnceLock<Q5Setup> = OnceLock::new();
-            CACHE.get_or_init(|| parse(Q5_SETUP_STEREO48, 2, 48000))
+/// Returns the (cached) encoder setup for `rate` Hz, `channels` and the
+/// libvorbis `base_quality` (-0.1..=1.0). The cache is keyed on the exact
+/// f32 bits of `base_quality`.
+pub(crate) fn encoder_setup_for(
+    rate: u32,
+    channels: usize,
+    base_quality: f32,
+) -> Arc<EncoderSetup> {
+    let key = (rate, channels, base_quality.to_bits());
+    {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, s)) = cache.iter().find(|(k, _)| *k == key) {
+            return Arc::clone(s);
         }
     }
+    // Build outside the lock so concurrent encodes at other settings don't
+    // serialize behind us.
+    let built = Arc::new(build_encoder_setup(rate, channels, base_quality));
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, s)) = cache.iter().find(|(k, _)| *k == key) {
+        return Arc::clone(s);
+    }
+    if cache.len() >= CACHE_CAP {
+        cache.remove(0);
+    }
+    cache.push((key, Arc::clone(&built)));
+    built
 }

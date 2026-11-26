@@ -94,12 +94,17 @@ pub(crate) struct MapResTemplate {
 /// The subset of `ve_setup_data_template` the setup header depends on.
 pub(crate) struct SetupTemplate {
     pub mappings: i32,
+    /// Quality -> base_setting mapping; consumed by `quality.rs` (via
+    /// `tables::quality`), kept here for template completeness.
+    #[allow(dead_code)]
     pub quality_mapping: &'static [f64],
     pub coupling_restriction: i32,
     pub samplerate_min_restriction: i64,
     pub samplerate_max_restriction: i64,
     pub blocksize_short: &'static [i32],
     pub blocksize_long: &'static [i32],
+    /// Lowpass per template; `quality.rs` derives `lowpass_khz` from it.
+    #[allow(dead_code)]
     pub psy_lowpass: &'static [f64],
     pub floor_mapping_list: &'static [&'static [u16]],
     pub maps: &'static [MapResTemplate],
@@ -162,52 +167,6 @@ fn select_template(channels: usize, rate: u32) -> &'static SetupTemplate {
         }
     }
     panic!("no setup template for {channels} ch @ {rate} Hz");
-}
-
-/// `vorbis_encode_setup_vbr` + `get_setup_template` + the lowpass line of
-/// `vorbis_encode_setup_setting`: libvorbis base quality (-0.1..1.0) to
-/// `(hi.base_setting, hi.lowpass_kHz)`, with libvorbis's float/double
-/// mix reproduced exactly.
-///
-/// Agent-(a)'s `quality.rs` is the canonical owner of this derivation;
-/// this copy exists so setup generation is testable stand-alone.
-#[allow(dead_code)]
-pub(crate) fn vbr_setting(rate: u32, channels: usize, quality: f32) -> (f64, f64) {
-    // `quality+=.0000001;` — float += double: computed in double, stored float.
-    let mut q = (quality as f64 + 0.0000001) as f32;
-    if q as f64 >= 1.0 {
-        q = 0.9999_f64 as f32;
-    }
-    let req = q as f64;
-    let t = select_template(channels, rate);
-    let mappings = t.mappings as usize;
-    let map = t.quality_mapping;
-    assert!(
-        req >= map[0] && req <= map[mappings],
-        "quality out of range"
-    );
-    let mut j = 0;
-    while j < mappings {
-        if req >= map[j] && req < map[j + 1] {
-            break;
-        }
-        j += 1;
-    }
-    let base_setting = if j == mappings {
-        j as f64 - 0.001
-    } else {
-        let low = map[j] as f32;
-        let high = map[j + 1] as f32;
-        // (double - float) / (float - float): the denominator is a float
-        // subtraction, the division is in double, the result stored float.
-        let del = ((req - low as f64) / (high - low) as f64) as f32;
-        // `j+del` is an int + float add in float.
-        (j as f32 + del) as f64
-    };
-    let is = base_setting as usize;
-    let ds = base_setting - is as f64;
-    let lowpass = t.psy_lowpass[is] * (1.0 - ds) + t.psy_lowpass[is + 1] * ds;
-    (base_setting, lowpass)
 }
 
 // ---------------------------------------------------------------------------
@@ -659,8 +618,8 @@ mod tests {
     }
 
     fn generate(rate: u32, ch: usize, q: f32) -> GeneratedSetup {
-        let (base, lp) = vbr_setting(rate, ch, q);
-        build_setup(rate, ch, base, lp)
+        let c = crate::quality::quality_config(q, rate, ch);
+        build_setup(rate, ch, c.base_setting, c.lowpass_khz)
     }
 
     #[test]
@@ -680,7 +639,8 @@ mod tests {
     #[test]
     fn q5_base_setting_and_lowpass() {
         // Sanity: q=0.5 lands just past template 6.
-        let (base, lp) = vbr_setting(44100, 2, 0.5);
+        let c = crate::quality::quality_config(0.5, 44100, 2);
+        let (base, lp) = (c.base_setting, c.lowpass_khz);
         assert_eq!(base as usize, 6);
         assert!(base > 6.0 && base < 6.0001, "{base}");
         assert!((lp - 20.1).abs() < 1e-3, "{lp}");
@@ -694,7 +654,7 @@ mod tests {
         for (rate, ch) in COMBOS {
             let g = generate(rate, ch, 0.5);
             let blob_setup =
-                crate::setup::unpack_q5_setup(q5_blob(rate, ch), ch, &g.params).expect("parse");
+                crate::setup::unpack_setup(q5_blob(rate, ch), ch, &g.params).expect("parse");
             assert_eq!(g.params.floors.len(), 2);
             for (fs, p) in blob_setup.floor_states.iter().zip(&g.params.floors) {
                 let legacy_twofit = if fs.vi.postlist[1] == 128 { 1.0 } else { 3.0 };
@@ -738,7 +698,7 @@ mod tests {
         let g = generate(44100, 2, -0.1);
         assert_eq!(g.blocksizes, [512, 4096]);
         assert_eq!(g.params.floors[0].twofitweight, 1.0);
-        let s = crate::setup::unpack_q5_setup(&g.packet, 2, &g.params).expect("parse");
+        let s = crate::setup::unpack_setup(&g.packet, 2, &g.params).expect("parse");
         assert_eq!(s.floor_states[0].vi.postlist[1], 256);
     }
 
@@ -750,7 +710,7 @@ mod tests {
             for i in -10..=100 {
                 let q = i as f32 / 100.0;
                 let g = generate(rate, ch, q);
-                let s = crate::setup::unpack_q5_setup(&g.packet, ch, &g.params)
+                let s = crate::setup::unpack_setup(&g.packet, ch, &g.params)
                     .unwrap_or_else(|e| panic!("q={q} {rate}/{ch}: {e:?}"));
                 assert_eq!(s.floor_states.len(), g.params.floors.len());
                 assert_eq!(s.residue_setups.len(), g.params.residues.len());

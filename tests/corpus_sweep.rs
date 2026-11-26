@@ -162,7 +162,7 @@ fn corpus_parity_sweep() {
     );
     assert!(
         common::lewtoff_supports_quality(base_quality),
-        "pending quality wiring: lewtoff cannot encode CORPUS_QUALITY {base_quality} yet"
+        "pending 512/4096 block support: lewtoff cannot encode CORPUS_QUALITY {base_quality} yet"
     );
 
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);
