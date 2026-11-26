@@ -1594,13 +1594,15 @@ pub fn vp_couple_quantize_normalize(
                     i as i32,
                     jn,
                 );
-                for j in 0..jn {
-                    quant[k][j] = mdct[k][i + j] * mdct[k][i + j];
-                    raw[k][j] = quant[k][j];
-                    if mdct[k][i + j] < 0.0 {
-                        raw[k][j] *= -1.0;
-                    }
-                    floor_v[k][j] *= floor_v[k][j];
+                let lines = mdct[k][i..i + jn]
+                    .iter()
+                    .zip(&mut quant[k][..jn])
+                    .zip(&mut raw[k][..jn])
+                    .zip(&mut floor_v[k][..jn]);
+                for (((&m, q), r), fl) in lines {
+                    *q = m * m;
+                    *r = if m < 0.0 { *q * -1.0 } else { *q };
+                    *fl *= *fl;
                 }
                 acc[track] = noise_normalize(
                     p,
