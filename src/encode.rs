@@ -148,12 +148,38 @@ fn default_batch() -> usize {
     32 * rayon::current_num_threads().max(1)
 }
 
+/// The result of a spawned pass, still being computed.
+///
+/// `mpsc::Receiver` is `Send` but not `Sync`, which would make `Encoder`
+/// `!Sync` with `parallel` on (features are additive, so that would be a
+/// breaking change for dependents of a crate that turns it on). The
+/// receiver is only ever used by value, through `&mut self`, so the mutex
+/// is never locked; it only restores `Sync`.
+#[cfg(feature = "parallel")]
+struct Pending<T>(std::sync::Mutex<std::sync::mpsc::Receiver<T>>);
+
+#[cfg(feature = "parallel")]
+impl<T> Pending<T> {
+    fn new(rx: std::sync::mpsc::Receiver<T>) -> Self {
+        Self(std::sync::Mutex::new(rx))
+    }
+
+    /// Wait for the result (see [`recv_helping`]).
+    fn wait(self) -> T {
+        let rx = self
+            .0
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recv_helping(&rx).expect("parallel analysis worker panicked")
+    }
+}
+
 /// Batch in pass A (local ampmax): the jobs come back with their peaks.
 #[cfg(feature = "parallel")]
-type PassA = std::sync::mpsc::Receiver<(Vec<BlockJob>, Vec<f32>)>;
+type PassA = Pending<(Vec<BlockJob>, Vec<f32>)>;
 /// Batch in pass C (analysis): `(granulepos, eos)` per block, packets.
 #[cfg(feature = "parallel")]
-type PassC = (Vec<(u64, bool)>, std::sync::mpsc::Receiver<Vec<Vec<u8>>>);
+type PassC = (Vec<(u64, bool)>, Pending<Vec<Vec<u8>>>);
 
 pub(crate) struct EncoderCore {
     setup: Arc<EncoderSetup>,
@@ -897,12 +923,11 @@ impl EncoderCore {
     fn pipeline_async(&mut self, finishing: bool) {
         use rayon::prelude::*;
         use std::sync::mpsc::channel;
-        const WORKER: &str = "parallel analysis worker panicked";
 
         // Pass B for the batch whose pass A was launched last time, then
         // launch its pass C.
-        if let Some(rx) = self.pass_a.take() {
-            let (jobs, local_max) = recv_helping(&rx).expect(WORKER);
+        if let Some(pending) = self.pass_a.take() {
+            let (jobs, local_max) = pending.wait();
             let input_ampmax = self.chain_ampmax(&jobs, &local_max);
             let meta = jobs.iter().map(|j| (j.granulepos, j.eos)).collect();
             let (tx, rx) = channel();
@@ -915,7 +940,7 @@ impl EncoderCore {
                     analyze_batch(&setup, &psy_looks, &floor_seed, ch, &jobs, &input_ampmax);
                 let _ = tx.send(packets);
             });
-            self.pass_c.push_back((meta, rx));
+            self.pass_c.push_back((meta, Pending::new(rx)));
         }
         // Pass A for the batch just filled.
         if !self.jobs.is_empty() {
@@ -928,13 +953,13 @@ impl EncoderCore {
                     .collect();
                 let _ = tx.send((jobs, local_max));
             });
-            self.pass_a = Some(rx);
+            self.pass_a = Some(Pending::new(rx));
         }
         // Write finished packets in order.
         let keep = if finishing { 0 } else { 1 };
         while self.pass_c.len() > keep {
-            let (meta, rx) = self.pass_c.pop_front().expect("non-empty");
-            let packets = recv_helping(&rx).expect(WORKER);
+            let (meta, pending) = self.pass_c.pop_front().expect("non-empty");
+            let packets = pending.wait();
             for ((granulepos, eos), packet) in meta.into_iter().zip(&packets) {
                 self.ogg.write_packet(packet, granulepos, eos, false);
             }

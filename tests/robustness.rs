@@ -190,6 +190,22 @@ fn encoder_moves_into_pool() {
     assert!(got == want, "encoder moved into a pool differs");
 }
 
+/// `Encoder` is `Send + Sync` in every feature combination (checked at
+/// compile time; this file is built with and without `parallel`).
+#[test]
+fn encoder_is_send_sync() {
+    const fn send_sync<T: Send + Sync>() {}
+    const _: () = send_sync::<Encoder>();
+    const _: () = send_sync::<Options>();
+    // And shareable by reference across threads.
+    let enc = Encoder::new(SampleRate::Hz44100, Channels::Mono, &Options::default());
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let _: &Encoder = &enc;
+        });
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Adversarial f32 input
 // ---------------------------------------------------------------------------

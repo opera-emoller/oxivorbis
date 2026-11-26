@@ -380,6 +380,14 @@ pub struct Encoder {
     core: Box<encode::EncoderCore>,
 }
 
+// `Encoder` and `Options` are `Send + Sync` with and without `parallel`
+// (features are additive, so this must not depend on them).
+const _: () = {
+    const fn send_sync<T: Send + Sync>() {}
+    send_sync::<Encoder>();
+    send_sync::<Options>();
+};
+
 impl Encoder {
     /// New encoder for `rate` / `channels` with the given options. The
     /// header pages are produced right away and returned by the first
