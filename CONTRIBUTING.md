@@ -51,15 +51,27 @@ only deviations from upstream are applied from outside the trees:
   header that libogg's `configure` would generate.
 
 The oracle reads s16le (or f32 LE with the `f32` argument) from stdin
-and takes `<rate> <channels> [base_quality [s16|f32 [comment]]]`.
-Leading oggenc-style flags (`-b K`, `-m K`, `-M K`, `--managed`, `-q`,
-`-A KEY=VALUE` for the reservoir advanced options) switch it from
-`vorbis_encode_init_vbr` to a replay of oggenc 1.4.3's bitrate setup
-(`setup_like_oggenc` in `main.c`); `-q` means quality mode at
-`base_quality`. It
-feeds libvorbis in 64-frame `vorbis_analysis_wrote` chunks and drains
-blocks after every call. oxivorbis's output is defined to match this. The
+and takes `<rate> <channels> [base_quality [s16|f32 [comment]]]`, any
+channel count (libvorbis rejects more than 255), interleaved in Vorbis
+channel order. Leading oggenc-style flags (`-b K`, `-m K`, `-M K`,
+`--managed`, `-q`, `-A KEY=VALUE` for the reservoir advanced options)
+switch it from `vorbis_encode_init_vbr` to a replay of oggenc 1.4.3's
+bitrate setup (`setup_like_oggenc` in `main.c`); `-q` means quality mode
+at `base_quality`. It feeds libvorbis in 64-frame
+`vorbis_analysis_wrote` chunks and drains blocks after every call.
+oxivorbis's output is defined to match this. The
 oracle writes nothing to stderr unless it fails.
+
+`tools/oracle-encoder/probe_channels` (built by
+`build_quality_dumpers.sh`) asks `vorbis_encode_init_vbr` which
+(channels, rate, quality) requests it accepts and which template it
+picks: `probe_channels grid` (0..=300 channels × edge rates × a quality
+grid), `probe_channels rates <ch> <q>...` (every rate 1..=200001) and
+`probe_channels one <ch> <rate> <q>`. Every count 1..=255 is accepted at
+every rate and quality; 0 and more than 255 channels fail with
+`OV_EINVAL`, rates above 200 kHz with `OV_EIMPL`. 6 channels at
+40..=70 kHz get `ve_setup_44_51`, any other count than 2 the rate's
+uncoupled template.
 
 `dump_params`, `dump_quality_tables`, `dsp_oracle`,
 `tools/gen-setup-templates` and `tools/gen-vectors-mdct` are built from
@@ -130,6 +142,21 @@ with the same five signals, mono and stereo:
   49999/50000/50001, 199999/200000), 1, 100 and 1000 Hz, and odd rates
   (37800, 44056, 88200, 192000), at q-1, q5 and q10.
 
+`oracle_parity_multichannel::*` covers more than two channels, with the
+five signals plus `last_only` (content in the last channel, the 5.1
+LFE, only). Each channel carries distinct content, since identical
+channels would hide coupling bugs.
+
+- `surround::<rate>`: libvorbis's 5.1 template at 44.1 and 48 kHz at
+  18 qualities from q-1 to q10 (the eleven anchors and midpoints between
+  them, covering the coupled mapping below q5 and the uncoupled
+  two-submap one from q5), and at both ends of its rate range (40 and
+  70 kHz) at q-1, q3, q6.5 and q10.
+- `uncoupled::c<n>_r<rate>`: 3, 4, 5, 7 and 8 channels at a rate per
+  template family, and 6 channels outside the 5.1 range (11.025, 32 and
+  96 kHz, 39999 and 70001 Hz), at q-1, q5 and q10.
+- `c255_short`: 255 channels, 0.25 s at q5.
+
 `oracle_parity_long::cases::*` covers long inputs: 30 to 120 s of
 never-silent noise+tone, transients and 20 Hz–20 kHz chirps, across all
 four configs at q-1, q0, q2, q5 and q10. `oracle_parity_long_silence_*`
@@ -170,8 +197,9 @@ writes.
 
 `tests/golden.rs` compares oxivorbis against committed oracle output
 (`tests/vectors/golden/*.ogg`) for integer-generated signals,
-including q-1, q10, f32 input and three bitrate modes. It needs no
-oracle at run time, so it runs in every `cargo test` and on wasm. With `--features oracle`,
+including q-1, q10, f32 input, three bitrate modes, 5.1 (coupled and
+uncoupled mappings) and 4 channels. It needs no oracle at run time, so
+it runs in every `cargo test` and on wasm. With `--features oracle`,
 `golden_vectors_are_fresh` also checks the vectors against a fresh
 oracle run. `just regen-golden-vectors` rewrites them.
 
@@ -190,10 +218,11 @@ Its long-input tests (`chunking_invariance_10s`,
 Inside `src/`, the oracle-gated unit tests are:
 
 - `quality_oracle_grid`: setup parameters versus libvorbis, for every
-  quality, at 45 rates covering every template and range edge, mono and
-  stereo (about 110,000 configurations).
-- `oracle_setup_header_sweep`: setup headers at 26 rates, mono and
-  stereo.
+  quality, at 48 rates covering every template and range edge (the 5.1
+  template's 40/70 kHz ends included), at 1, 2, 3, 6 and 255 channels
+  (about 324,000 configurations).
+- `oracle_setup_header_sweep`: setup headers at 29 rates in mono, stereo
+  and 5.1, plus 3 and 255 channels at a rate per family (4465 headers).
 - `dsp_manifest_*`: MDCT, FFT and window outputs against hashes
   produced by `tools/oracle-encoder/dsp_oracle`. These tests always run.
 
@@ -261,13 +290,18 @@ as positional arguments to `just corpus`:
 |------------------|---------------------------------|------------|---------|
 | `CORPUS_LIMIT`   | `100`                           | all files  | Test only the first N files (sorted) |
 | `CORPUS_QUALITY` | `-0.1,0.5,1.0`                  | `0.5`      | libvorbis `base_quality` list |
-| `CORPUS_CONFIGS` | `44100x2,22050x1`, or `all`     | `44100x2`  | Rate × channel configurations (any rate 1..=200000; `all` = 44.1/48 kHz × mono/stereo) |
+| `CORPUS_CONFIGS` | `44100x2,22050x1,48000x6`, or `all` | `44100x2`  | Rate × channel configurations (any rate 1..=200000, 1..=255 channels; `all` = 44.1/48 kHz × mono/stereo) |
 | `CORPUS_JOBS`    | `4`                             | all cores  | Worker threads |
 | `CORPUS_BITRATE` | `"--managed -b 128 -M 160"`     | unset (VBR) | A bitrate mode as oracle flags (`-b -m -M --managed -q`; `-q` is quality mode at each `CORPUS_QUALITY` with the limits) |
 | `CORPUS_REQUIRE` | `1`                             | unset      | Fail instead of warning when there is no corpus |
 
 Positional order: `just corpus <limit> <extra-features> <quality> <configs> <jobs> <bitrate>`.
 Use `""` to skip an argument.
+
+A 6-channel config synthesizes 5.1 with distinct content per channel
+through an ffmpeg filter graph: front L/R from the file, center its mid
+delayed 13 ms, rears from the next file in the sorted list, LFE the mid
+low-passed at 120 Hz, in Vorbis order. Other counts use ffmpeg's `-ac`.
 
 Failing inputs are saved under
 `target/corpus-failures/<config>-q<q>/<relpath>/`. Each one holds the
@@ -278,7 +312,10 @@ The latest full sweep ran against the pristine oracle. It covered a
 6653-file corpus in all four configurations at q-1, q5 and q10, and all
 79,836 encodes were byte-identical (about 10 minutes on a 10-core M4).
 Earlier sweeps, against the instrumented build, also covered
-44.1 kHz stereo at q0, q2, q3 and q8.
+44.1 kHz stereo at q0, q2, q3 and q8. With more than two channels the
+sweep is byte-identical for `44100x6` over all 6653 files at q0 and q3,
+for `44100x6,48000x6` and `32000x6,44100x3,48000x8` over the first 1000
+files at q-1, q5 and q10 (28,306 encodes in all).
 
 ## Differential fuzzer
 
@@ -295,7 +332,7 @@ cargo run -p parity-fuzz --release -- --iters 10000 --seed 1 --quality 0.5
 #   --quality Q          libvorbis base_quality (-0.1..=1.0)
 #   --f32                feed f32 (write_f32 vs the oracle's f32 mode), incl.
 #                        values up to ±1e4, subnormals and -0.0
-#   --rates 44100,48000  --channels 1,2  --jobs J  --max-secs T  --max-len SECS
+#   --rates 44100,48000  --channels 1,2 (any of 1..=255)  --jobs J  --max-secs T  --max-len SECS
 #   --keep-going         collect all failures instead of stopping at the first
 #   --minimize-per-sig N only minimize the first N failures per signature
 #   --no-minimize        --start I  --min-frames N  --out DIR  --oracle PATH
@@ -309,13 +346,23 @@ cargo run -p parity-fuzz --release -- --iters 10000 --seed 1 --quality 0.5
 cargo run -p parity-fuzz --release -- --pcm input.s16le --rates 44100 --channels 2 --quality 0.5
 ```
 
+With more than two channels, each channel past the second is drawn from
+its own seeded stream (mono and stereo cases are unaffected): copies,
+negated and scaled copies of the left channel, silence, independent
+noise or another generator.
+
 The generators use no host libm. `tools/parity-fuzz/src/det.rs`
 implements sin, cos, exp, ln and pow with plain IEEE arithmetic, so a
 seed renders the same PCM on every platform.
 
 Against the pristine oracle, 20,000 s16 cases at each of q-1, q2, q5
 and q10, 10,000 f32 cases at each of the same qualities, and 1,500
-cases of up to 30 s at each of q-1, q5 and q10 all ran clean. When the
+cases of up to 30 s at each of q-1, q5 and q10 all ran clean. With
+more than two channels, 15,000 5.1 cases at each of ten qualities (40,
+44.1, 48, 64 and 70 kHz), 10,000 cases of 3 to 12 uncoupled channels at
+each of q-1, q2, q5 and q10 across every template family, 28,000 f32
+cases and 2,200 cases of up to 30 s ran clean (Linux x86_64), as did
+smokes against the ASan oracle including 255 channels. When the
 fuzzer finds a failure, copy the minimized `input.*le` into
 `tests/vectors/fuzz/` under its case id (for example
 `s1-i42-q0.5-44100-2ch.s16le`) so that `oracle_parity_fuzz_repros`
@@ -364,7 +411,7 @@ differs from what is committed. The golden vectors are checked by the
 |------------------------------|-------------|
 | `just regen-tables`          | `src/tables/{trig,drft,window}.rs` (MDCT, FFT, window tables) via `dsp_oracle` + `gen-tables` |
 | `just regen-dsp-manifest`    | `tools/oracle-encoder/dsp_manifest.txt` (hashes checked by `dsp_manifest_*`) |
-| `just regen-quality-tables`  | `src/tables/quality.rs` (mode-template tables of every 1–2 channel template) |
+| `just regen-quality-tables`  | `src/tables/quality.rs` (mode-template tables of every libvorbis template, 5.1 included) |
 | `just regen-setup-templates` | `src/setup_books.bin` and `src/setup_templates.rs` (codebooks, floor/residue/mapping templates) |
 | `just regen-header-vectors`  | `tests/vectors/headers/*.bin`, `tests/vectors/ogg/*` (from the oracle-encoder) |
 | `just regen-mdct-vectors`    | `tests/vectors/mdct/*.bin` |
@@ -398,7 +445,9 @@ GitHub's standard runners are in brackets.
   paths; the release-only streaming tests [~2 min, mostly the release
   build]; doctests; and fixed-seed parity-fuzz smokes [~2 min total].
   The smokes are s16 at five qualities, f32 at three, inputs up to 30 s
-  at q-1 and q10, and a run against an AddressSanitizer-built oracle.
+  at q-1 and q10, 3 to 8 channels (s16) and 5.1 (f32) at four
+  qualities, and a run against an AddressSanitizer-built oracle (mono,
+  stereo and 3 to 8 channels).
 - **macos** (~15–20 min) does the same build, freshness check, oracle
   suites, release streaming tests and fuzz smokes on Apple silicon with
   clang and macOS libm.

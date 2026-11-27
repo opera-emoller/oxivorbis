@@ -25,8 +25,11 @@ corners. Details and other qualities are under [Performance](#performance).
 - Works on `wasm32-unknown-unknown`.
 - Has a one-shot API and a streaming API, and takes `i16` or `f32`
   input. Streaming memory stays bounded however long the input is.
-- No `Result`s and no panics. Rates, channel layouts and qualities are
+- No `Result`s and no panics. Rates, channel counts and qualities are
   typed, and every input encodes.
+- Mono, stereo, 5.1 surround and any other channel count up to 255,
+  each exactly as libvorbis encodes it (5.1 with libvorbis's coupling and
+  separate LFE coding).
 - An optional `parallel` feature spreads long inputs across all cores
   (7–9× `oggenc` above). Its output is byte-identical to the serial path.
 - Comes with an oggenc-style [command-line encoder](#command-line-encoder)
@@ -111,7 +114,7 @@ let opts = Options::default()
 
 // Rates and channel counts from a file header convert with TryFrom.
 let rate = SampleRate::try_from(44_100u32).expect("1..=200000 Hz");
-let channels = Channels::try_from(2u16).expect("1 or 2");
+let channels = Channels::try_from(2u16).expect("1..=255");
 
 let pcm = vec![0i16; 44_100 * 2];
 let ogg = oxivorbis::encode(&pcm, rate, channels, &opts);
@@ -260,7 +263,8 @@ several inputs at once. It supports oggenc's tag flags
 (`-c TAG=VALUE -t -a -l -N -G -d`), refuses to overwrite existing files
 without `-f`, and generates its own shell completions and man page
 (`--generate`). 16-bit WAV input produces the same bytes as
-`oxivorbis::encode`. See its README for each format's conversion, the
+`oxivorbis::encode` (WAV with 3 to 8 channels after reordering it from
+WAV to Vorbis channel order, as oggenc does). See its README for each format's conversion, the
 exit codes and the overwrite policy.
 
 ## Use from C and other languages
@@ -293,7 +297,7 @@ ctypes binding.
 |---|---|
 | Sample format | Interleaved `i16` (scaled by 1/32768) or `f32` (passed through unscaled) |
 | Sample rate   | Any rate from 1 Hz to 200 kHz (`SampleRate`), as libvorbis |
-| Channels      | Mono **or** stereo (`Channels`) |
+| Channels      | 1 to 255 (`Channels`), in Vorbis channel order; see [Multichannel and 5.1](#multichannel-and-51) |
 | Quality       | -1.0 to 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
 | Bitrate modes | 8 kHz to 50 kHz, within each rate's range (see [Bitrate modes](#bitrate-modes)) |
 
@@ -339,12 +343,67 @@ ctypes binding.
   This is tested up to ±`f32::MAX` at every quality and configuration
   with overflow checks on. NaN and ±infinity make libvorbis emit a
   corrupt stream, so oxivorbis encodes them as `0.0`.
-- **Odd sample counts in stereo:** `Encoder::write` holds an unpaired
-  trailing sample until the next call. `finish` and the one-shot
-  functions drop a final unpaired sample.
-- More than two channels are not supported. `Channels` is
-  `#[non_exhaustive]`, so support can be added later without breaking
-  changes.
+- **Partial frames:** `Encoder::write` holds the samples of an
+  incomplete trailing frame (an unpaired stereo sample, up to five
+  samples of a 5.1 frame) until the next call. `finish` and the one-shot
+  functions drop a final partial frame.
+
+## Multichannel and 5.1
+
+`Channels::new(n)` accepts every count libvorbis 1.3.7 encodes, `1..=255`
+(more fails in libvorbis with `OV_EINVAL`; the ID header stores the
+count in 8 bits). Constants cover `Channels::MONO`, `STEREO`,
+`SURROUND_5_1` and `MAX`. Every channel count works at every rate and
+quality, so there is still nothing to fail at run time. Which libvorbis
+template a request lands on, established by asking the reference
+`vorbis_encode_init_vbr` (`tools/oracle-encoder/probe_channels`):
+
+| Channels | Rate | libvorbis template | Coding |
+|---|---|---|---|
+| 1 | any | the rate's `*_uncoupled` | one floor and residue |
+| 2 | any | the rate's `*_stereo` | coupled L/R |
+| 6 | 40–70 kHz | `44_51` (`setup_44p51.h`) | 5.1: two submaps; below q5, four coupling steps (L/R, BL/BR, L/C, L/BL); the LFE has its own floor and a residue low-passed at 250 Hz |
+| 6 | other rates | the rate's `*_uncoupled` | independent channels |
+| 3–5, 7–255 | any | the rate's `*_uncoupled` | independent channels |
+
+**Channel order.** Input is interleaved (or, through the planar
+methods, sliced) in **Vorbis channel order**, Vorbis I spec section
+4.3.9, and encoded as given: oxivorbis never reorders channels. For 5.1
+that is front left, center, front right, rear left, rear right, LFE.
+
+| Channels | Vorbis order |
+|---|---|
+| 3 | L, C, R |
+| 4 | FL, FR, RL, RR |
+| 5 | FL, C, FR, RL, RR |
+| 6 | FL, C, FR, RL, RR, LFE |
+| 7 | FL, C, FR, SL, SR, RC, LFE |
+| 8 | FL, C, FR, SL, SR, RL, RR, LFE |
+
+WAV files and most decoders deliver WAV/SMPTE order instead (5.1: L, R,
+C, LFE, BL, BR). `Channels::wav_to_vorbis()` gives the permutation for
+1 to 8 channels and `reorder_wav_to_vorbis` applies it in place; both
+are optional:
+
+```rust
+use oxivorbis::{Channels, Options, SampleRate, reorder_wav_to_vorbis};
+
+// One second of 5.1 from a WAV reader: L R C LFE BL BR per frame.
+let mut pcm = vec![0i16; 48_000 * 6];
+reorder_wav_to_vorbis(&mut pcm, Channels::SURROUND_5_1); // now L C R BL BR LFE
+let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_48000, Channels::SURROUND_5_1, &Options::default());
+assert_eq!(&ogg[..4], b"OggS");
+```
+
+The [command-line encoder](#command-line-encoder) applies this
+reordering to WAV input with 3 to 8 channels, as oggenc does, and takes
+raw input as Vorbis order.
+
+Encoding time grows linearly with the channel count: 5.1 takes about
+2.9× as long as stereo at q5 (see [Performance](#performance)). Streaming
+memory is a few hundred KB per channel; the `parallel` feature shrinks
+its batches in proportion to the channel count, so a batch never holds
+more PCM than a stereo one.
 
 ## Parity contract
 
@@ -387,6 +446,13 @@ cases clean at 44.1/48 kHz and more than 400,000 across 4, 8, 11.025,
 16, 22.05, 32 and 96 kHz (mono and stereo, 16-bit and f32 input), and
 the CI parity suite covers every rate range's edges from 1 Hz to
 200 kHz. CI also compares 30 to 120 s of non-silent audio on every push.
+With more than two channels, 5.1 versions of the corpus (distinct
+content in every channel, rears from a second file, LFE low-passed) are
+byte-identical at 44.1 kHz for all 6653 files at q0 and q3 and for 1000
+files at 44.1 and 48 kHz at q-1, q5 and q10, as are uncoupled 6 channels
+at 32 kHz, 3 at 44.1 kHz and 8 at 48 kHz (28,306 encodes); the fuzzer
+has run about 255,000 cases clean at 3 to 12 channels (150,000 of them
+5.1 at 40 to 70 kHz), and 255 channels are in the parity suite.
 Parity is verified on macOS arm64, Linux x86_64 (glibc) and wasm32
 (under wasmtime). oxivorbis's output is also identical
 on Windows x86_64 (MSVC).
@@ -430,8 +496,8 @@ bit-packing and Ogg page emission stay serial. The API is unchanged and
 the output bytes are identical to the serial build.
 
 Blocks are processed in pipelined batches of 32 per Rayon thread, capped
-at 256 long blocks (about 6 s of 44.1 kHz audio), with up to three
-batches in flight. In exchange for the speed, `write` hands back pages
+at 256 long blocks (about 6 s of 44.1 kHz audio; proportionally fewer
+with more than two channels), with up to three batches in flight. In exchange for the speed, `write` hands back pages
 later than the serial build, and streaming uses more memory. Both are
 bounded, independent of input length and, past 8 threads, of the core
 count. Measured streaming 10 minutes of 44.1 kHz stereo at q5:
@@ -487,6 +553,12 @@ looser arithmetic.
 Other rates scale with the sample count. On the M4 at q5, the same
 track takes 0.10 s at 8 kHz mono (oggenc 0.16 s), 0.45 s at 22.05 kHz
 stereo (oggenc 0.72 s) and 1.45 s at 96 kHz stereo (oggenc 2.31 s).
+
+Channels scale linearly. A 5.1 version of the same track (its stereo
+as front L/R, center and LFE derived from it, rears from another track)
+takes 3.30 s serial and 0.51 s with `parallel` at q5 on the Intel
+machine, 2.9× and 2.7× the stereo times for 3× the channels; 3.76 s at
+q-1 and 4.22 s at q2, where 5.1 is coupled.
 
 Serial oxivorbis is about 1.5–1.8× as fast as oggenc. With `parallel` it is
 7–11× faster on long inputs, at about 1.6× the total CPU time of serial.

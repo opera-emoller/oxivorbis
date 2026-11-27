@@ -221,7 +221,7 @@ regen-golden-vectors:
         -E 'binary(golden) & test(golden_vectors_are_fresh)'
 
 # Regenerate src/tables/quality.rs (the quality-dependent mode-template
-# tables of every 1-2 channel libvorbis template) by compiling the vendored
+# tables of every libvorbis template, 5.1 included) by compiling the vendored
 # headers.
 # Also builds tools/oracle-encoder/dump_params, used by the oracle-gated
 # `quality_oracle_grid` test.
