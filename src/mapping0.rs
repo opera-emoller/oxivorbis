@@ -15,10 +15,11 @@ use crate::bitpack::BitWriter;
 use crate::debug_dump as dd;
 use crate::drft::drft_forward_n;
 use crate::floor1::{FLOOR1_MAX_POSTS, Floor1State, floor1_encode, floor1_fit};
+use crate::mapping0_managed::{BlobPosts, managed_fits};
 use crate::mdct::mdct_forward_n;
 use crate::psy::{
-    VorbisInfoPsyGlobal, VorbisLookPsy, to_db, vp_ampmax_decay, vp_noisemask, vp_offset_and_mix,
-    vp_tonemask,
+    PACKETBLOBS, VorbisInfoPsyGlobal, VorbisLookPsy, to_db, vp_ampmax_decay, vp_noisemask,
+    vp_offset_and_mix, vp_tonemask,
 };
 use crate::residue::{
     ResidueLook, ResidueSetup, res1_class, res1_forward, res2_class, res2_forward,
@@ -88,6 +89,8 @@ pub(crate) struct MappingScratch {
     /// In-place FFT buffer (`MAX_LONG_BLOCK`; sliced to the block size).
     pub fft_buf: Vec<f32>,
     pub psy: crate::psy::PsyScratch,
+    /// Every packetblob's floor posts, allocated on the first managed block.
+    pub managed: Option<Box<BlobPosts>>,
 }
 
 impl MappingScratch {
@@ -109,6 +112,7 @@ impl MappingScratch {
             res_work: vec![0i32; channels * MAX_LONG_HALF],
             fft_buf: vec![0.0f32; MAX_LONG_BLOCK],
             psy: crate::psy::PsyScratch::new(),
+            managed: None,
         }
     }
 }
@@ -186,7 +190,7 @@ pub(crate) fn mapping0_forward(
     block_mode: &BlockMode,
     books: &[crate::codebook::Codebook],
     scratch: &mut MappingScratch,
-    opb: &mut BitWriter,
+    opbs: &mut [BitWriter],
 ) {
     let n = pcm_blocks[0].len();
     let n2 = n / 2;
@@ -257,7 +261,7 @@ pub(crate) fn mapping0_forward(
         block_mode,
         books,
         scratch,
-        opb,
+        opbs,
         do_dump,
     );
 }
@@ -266,6 +270,10 @@ pub(crate) fn mapping0_forward(
 /// [`channel_spectra`] output (`gmdct`, `logfft`, `local_ampmax`) for a
 /// block of `n` samples: ampmax update, masking, floor fit, coupling,
 /// quantization and the packet's bits.
+///
+/// `opbs` holds one writer for packetblob `PACKETBLOBS/2` (VBR), or one per
+/// packetblob when the bitrate is managed (`vorbis_bitrate_managed`): then
+/// every blob is fitted and encoded, as libvorbis does.
 pub(crate) fn mapping0_forward_spectra(
     n: usize,
     channels: usize,
@@ -280,10 +288,15 @@ pub(crate) fn mapping0_forward_spectra(
     block_mode: &BlockMode,
     books: &[crate::codebook::Codebook],
     scratch: &mut MappingScratch,
-    opb: &mut BitWriter,
+    opbs: &mut [BitWriter],
     do_dump: bool,
 ) {
     let n2 = n / 2;
+    let managed = opbs.len() == PACKETBLOBS;
+    debug_assert!(managed || opbs.len() == 1);
+    if managed && scratch.managed.is_none() {
+        scratch.managed = Some(Box::new(BlobPosts::new(channels)));
+    }
     // Disjoint &mut borrows of scratch fields. Rust 2024's improved field
     // borrow analysis lets these be live simultaneously. Every buffer is
     // fully written (over its first n2 lines) before it is read.
@@ -300,6 +313,7 @@ pub(crate) fn mapping0_forward_spectra(
     let floor_used = &mut scratch.floor_used;
     let res_work = &mut scratch.res_work;
     let psy_scratch = &mut scratch.psy;
+    let mut blob_posts = scratch.managed.as_deref_mut().filter(|_| managed);
 
     // Apply ampmax decay at the START of each block (port of block.c _vp_ampmax_decay call).
     // libvorbis decays g->ampmax before calling mapping0_forward, using the CURRENT block's n2.
@@ -476,11 +490,88 @@ pub(crate) fn mapping0_forward_spectra(
                 );
             }
         }
+        if let Some(bp) = blob_posts.as_deref_mut() {
+            // Bitrate managed: the fits for the other packetblobs.
+            managed_fits(
+                bp,
+                i,
+                floor_used[i].then_some(&floor_posts[i]),
+                psy_look,
+                &noise_bufs[i],
+                &tone_bufs[i],
+                logmask,
+                gmdct[i].as_mut_slice(),
+                logmdct,
+                floor_state,
+                &mut iwork[i],
+            );
+        }
     }
 
-    // --- Encode the packet ---
-    // Port of: lines 592-688 in mapping0.c
-    // (we don't do bitrate management: only k = PACKETBLOBS/2)
+    // --- Encode the packet(s) ---
+    // Port of: lines 592-688 in mapping0.c: once for VBR (k =
+    // PACKETBLOBS/2), PACKETBLOBS times when managed.
+    let mut blob =
+        |k: usize, opb: &mut BitWriter, posts: &mut [[i32; FLOOR1_MAX_POSTS]], used: &[bool]| {
+            encode_blob(
+                k,
+                n,
+                channels,
+                psy_look,
+                gi,
+                floor_states,
+                residue_types,
+                residue_setups,
+                residue_looks,
+                mapping,
+                block_mode,
+                books,
+                gmdct,
+                iwork,
+                nonzero,
+                res_work,
+                posts,
+                used,
+                opb,
+                do_dump,
+            )
+        };
+    match blob_posts {
+        None => blob(PACKETBLOBS / 2, &mut opbs[0], floor_posts, floor_used),
+        Some(bp) => {
+            for (k, opb) in opbs.iter_mut().enumerate() {
+                blob(k, opb, &mut bp.posts[k], &bp.used[k]);
+            }
+        }
+    }
+}
+
+/// One packetblob `k` of `mapping0_forward`'s encode loop: mode bits, the
+/// floors (from `posts[ch]` where `used[ch]`), coupling and quantization
+/// for blob `k`, and the residue.
+fn encode_blob(
+    k: usize,
+    n: usize,
+    channels: usize,
+    psy_look: &VorbisLookPsy,
+    gi: &VorbisInfoPsyGlobal,
+    floor_states: &mut [Floor1State],
+    residue_types: &[u16],
+    residue_setups: &[ResidueSetup],
+    residue_looks: &[ResidueLook],
+    mapping: &Mapping,
+    block_mode: &BlockMode,
+    books: &[crate::codebook::Codebook],
+    gmdct: &mut [Vec<f32>],
+    iwork: &mut [Vec<i32>],
+    nonzero: &mut [i32],
+    res_work: &mut Vec<i32>,
+    floor_posts: &mut [[i32; FLOOR1_MAX_POSTS]],
+    floor_used: &[bool],
+    opb: &mut BitWriter,
+    do_dump: bool,
+) {
+    let n2 = n / 2;
 
     // Encode packet type (audio = 0)
     opb.write(0, 1);
@@ -520,9 +611,8 @@ pub(crate) fn mapping0_forward_spectra(
         );
     }
 
-    // Couple + quantize + normalize
-    // Use blobno = PACKETBLOBS/2 = 7 (nominal quality blob)
-    let blobno = crate::psy::PACKETBLOBS / 2;
+    // Couple + quantize + normalize for packetblob k
+    let blobno = k;
     let w_flag = if block_mode.is_long { 1 } else { 0 };
     let sliding_lowpass = gi.sliding_lowpass[w_flag][blobno];
 
@@ -531,9 +621,9 @@ pub(crate) fn mapping0_forward_spectra(
         gi,
         psy_look,
         &mapping.vp_mapping,
-        gmdct.as_mut_slice(),
-        iwork.as_mut_slice(),
-        nonzero.as_mut_slice(),
+        gmdct,
+        iwork,
+        nonzero,
         sliding_lowpass,
         channels,
     );

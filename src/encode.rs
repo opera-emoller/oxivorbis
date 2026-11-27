@@ -25,9 +25,10 @@
 use std::sync::Arc;
 
 use crate::bitpack::BitWriter;
+use crate::bitrate::BitrateManager;
 use crate::envelope::{EnvelopeLookup, VE_POST, VE_WIN};
 use crate::floor1::Floor1State;
-use crate::headers::{write_comment_header, write_id_header_with, write_setup_packet};
+use crate::headers::{write_comment_header, write_id_header_bitrates, write_setup_packet};
 use crate::lpc::{lpc_from_data, lpc_predict};
 #[cfg(not(feature = "parallel"))]
 use crate::mapping0::mapping0_forward;
@@ -35,7 +36,9 @@ use crate::mapping0::{BlockMode, MappingScratch};
 #[cfg(feature = "parallel")]
 use crate::mapping0::{channel_spectra, mapping0_forward_spectra};
 use crate::ogg_pages::OggStreamWriter;
-use crate::setup::{EncoderSetup, encoder_setup_for};
+use crate::psy::PACKETBLOBS;
+use crate::ratecontrol::RatePlan;
+use crate::setup::{EncoderSetup, SetupKey, encoder_setup_for_key};
 use crate::window::{BlockSizes, apply_window_bs};
 use crate::{Channels, SampleRate};
 
@@ -192,9 +195,10 @@ impl<T> Pending<T> {
 /// Batch in pass A (local ampmax): the jobs come back with their peaks.
 #[cfg(feature = "parallel")]
 type PassA = Pending<(Vec<BlockJob>, Vec<f32>)>;
-/// Batch in pass C (analysis): `(granulepos, eos)` per block, packets.
+/// Batch in pass C (analysis): `(granulepos, eos, W)` per block, and its
+/// packets (`blobs` per block, see [`EncoderCore::blobs`]).
 #[cfg(feature = "parallel")]
-type PassC = (Vec<(u64, bool)>, Pending<Vec<Vec<u8>>>);
+type PassC = (Vec<(u64, bool, bool)>, Pending<Vec<Vec<u8>>>);
 
 pub(crate) struct EncoderCore {
     setup: Arc<EncoderSetup>,
@@ -261,6 +265,9 @@ pub(crate) struct EncoderCore {
     #[cfg(test)]
     w_log: Vec<bool>,
 
+    /// `b->bms`: picks one of each block's packetblobs when managed.
+    bm: BitrateManager,
+
     ogg: OggStreamWriter,
     /// `ogg.output()` was handed to the caller and must be cleared before
     /// more pages are appended.
@@ -273,10 +280,29 @@ impl EncoderCore {
         self.ch
     }
 
+    /// VBR at libvorbis `base_quality` (`vorbis_encode_init_vbr`).
     pub(crate) fn new(
         rate: SampleRate,
         channels: Channels,
         base_quality: f32,
+        serial: u32,
+        vendor: &[u8],
+        comments: &[Vec<u8>],
+    ) -> Self {
+        // Guaranteed by `Quality`.
+        debug_assert!(
+            (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base_quality),
+            "base_quality {base_quality} outside libvorbis's -0.1..=1.0 (oggenc -q -1..10)"
+        );
+        let plan = RatePlan::vbr(base_quality, rate.hz(), channels.count() as usize);
+        Self::with_plan(rate, channels, &plan, serial, vendor, comments)
+    }
+
+    /// Any setup: VBR or bitrate driven (see `ratecontrol`).
+    pub(crate) fn with_plan(
+        rate: SampleRate,
+        channels: Channels,
+        plan: &RatePlan,
         serial: u32,
         vendor: &[u8],
         comments: &[Vec<u8>],
@@ -286,13 +312,16 @@ impl EncoderCore {
             Channels::Stereo => 2usize,
         };
         let rate_hz = rate.hz() as i64;
-        // Guaranteed by `Quality`.
-        debug_assert!(
-            (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base_quality),
-            "base_quality {base_quality} outside libvorbis's -0.1..=1.0 (oggenc -q -1..10)"
-        );
 
-        let setup = encoder_setup_for(rate_hz as u32, ch, base_quality);
+        let setup = encoder_setup_for_key(
+            rate_hz as u32,
+            ch,
+            SetupKey {
+                template: plan.template,
+                base_setting: plan.base_setting,
+                managed: plan.managed_setup,
+            },
+        );
         let cfg = &setup.cfg;
         // Per template and quality, e.g. 256/2048 (44.1 kHz q0..q10),
         // 512/4096 (q-1), 512/1024 (16/22 kHz) or 512/512 (8/11 kHz).
@@ -325,7 +354,7 @@ impl EncoderCore {
         let mut ogg = OggStreamWriter::new(serial);
         {
             let mut w = BitWriter::new();
-            write_id_header_with(rate, channels, cfg.bitrate_nominal, cfg.blocksizes, &mut w);
+            write_id_header_bitrates(rate, channels, plan.header_bitrates, cfg.blocksizes, &mut w);
             ogg.write_packet(&w.into_bytes(), 0, false, true);
         }
         {
@@ -356,6 +385,7 @@ impl EncoderCore {
             .map(|s| crate::floor1::floor1_look(s.vi.clone()))
             .collect();
         let minenergy = gi.preecho_minenergy;
+        let bm = BitrateManager::new(plan.bitrate_info, rate.hz(), cfg.blocksizes);
 
         Self {
             bs,
@@ -399,6 +429,7 @@ impl EncoderCore {
             first_block_done: false,
             #[cfg(test)]
             w_log: Vec::new(),
+            bm,
             ogg,
             output_returned: false,
             setup,
@@ -825,7 +856,14 @@ impl EncoderCore {
         let mode = self.block_mode(block);
         let setup = &self.setup.setup;
         let mapping = &setup.mappings[setup.modes[mode.mode_number].mapping];
-        let mut w = BitWriter::new();
+        let mut one = [BitWriter::new()];
+        let mut all: Vec<BitWriter>;
+        let writers: &mut [BitWriter] = if self.bm.managed() {
+            all = (0..PACKETBLOBS).map(|_| BitWriter::new()).collect();
+            &mut all
+        } else {
+            &mut one
+        };
         mapping0_forward(
             &win,
             &self.setup.psy_looks[block.blocktype as usize],
@@ -839,11 +877,32 @@ impl EncoderCore {
             &mode,
             &setup.books,
             &mut self.scratch,
-            &mut w,
+            writers,
         );
         self.win[block.w as usize] = win;
-        self.ogg
-            .write_packet(&w.into_bytes(), block.granulepos, block.eos, false);
+        let mut blobs: Vec<Vec<u8>> = writers
+            .iter_mut()
+            .map(|w| std::mem::replace(w, BitWriter::new()).into_bytes())
+            .collect();
+        self.write_block(&mut blobs, block.granulepos, block.eos, block.w);
+    }
+
+    /// Packetblobs per block: [`PACKETBLOBS`] when the bitrate manager is
+    /// active, else just the nominal one.
+    #[cfg(feature = "parallel")]
+    fn blobs(&self) -> usize {
+        if self.bm.managed() { PACKETBLOBS } else { 1 }
+    }
+
+    /// `vorbis_bitrate_addblock` + `vorbis_bitrate_flushpacket` +
+    /// `ogg_stream_packetin` for one block's packetblobs (in stream order).
+    fn write_block(&mut self, blobs: &mut [Vec<u8>], granulepos: u64, eos: bool, long: bool) {
+        let k = if blobs.len() == 1 {
+            0
+        } else {
+            self.bm.choose(long, blobs)
+        };
+        self.ogg.write_packet(&blobs[k], granulepos, eos, false);
     }
 
     #[cfg(feature = "parallel")]
@@ -910,10 +969,17 @@ impl EncoderCore {
             .map(|job| block_spectra(job, ch))
             .collect();
         let input_ampmax = self.chain_ampmax(&jobs, &local_max);
-        let packets = analyze_batch(&self.setup, &self.floor_seed, self.ch, &jobs, &input_ampmax);
-        for (job, packet) in jobs.iter().zip(&packets) {
-            self.ogg
-                .write_packet(packet, job.granulepos, job.eos, false);
+        let blobs = self.blobs();
+        let mut packets = analyze_batch(
+            &self.setup,
+            &self.floor_seed,
+            self.ch,
+            &jobs,
+            &input_ampmax,
+            blobs,
+        );
+        for (job, packet) in jobs.iter().zip(packets.chunks_mut(blobs)) {
+            self.write_block(packet, job.granulepos, job.eos, job.mode.is_long);
         }
     }
 
@@ -949,13 +1015,17 @@ impl EncoderCore {
         if let Some(pending) = self.pass_a.take() {
             let (jobs, local_max) = pending.wait();
             let input_ampmax = self.chain_ampmax(&jobs, &local_max);
-            let meta = jobs.iter().map(|j| (j.granulepos, j.eos)).collect();
+            let meta = jobs
+                .iter()
+                .map(|j| (j.granulepos, j.eos, j.mode.is_long))
+                .collect();
             let (tx, rx) = channel();
             let setup = Arc::clone(&self.setup);
             let floor_seed = Arc::clone(&self.floor_seed);
             let ch = self.ch;
+            let blobs = self.blobs();
             rayon::spawn(move || {
-                let packets = analyze_batch(&setup, &floor_seed, ch, &jobs, &input_ampmax);
+                let packets = analyze_batch(&setup, &floor_seed, ch, &jobs, &input_ampmax, blobs);
                 let _ = tx.send(packets);
             });
             self.pass_c.push_back((meta, Pending::new(rx)));
@@ -976,11 +1046,13 @@ impl EncoderCore {
         }
         // Write finished packets in order.
         let keep = if finishing { 0 } else { 1 };
+        let blobs = self.blobs();
         while self.pass_c.len() > keep {
             let (meta, pending) = self.pass_c.pop_front().expect("non-empty");
-            let packets = pending.wait();
-            for ((granulepos, eos), packet) in meta.into_iter().zip(&packets) {
-                self.ogg.write_packet(packet, granulepos, eos, false);
+            let mut packets = pending.wait();
+            for ((granulepos, eos, long), packet) in meta.into_iter().zip(packets.chunks_mut(blobs))
+            {
+                self.write_block(packet, granulepos, eos, long);
             }
         }
     }
@@ -1068,7 +1140,8 @@ fn block_spectra(job: &mut BlockJob, ch: usize) -> f32 {
 /// Pass C of the parallel pipeline: the rest of `mapping0_forward`
 /// ([`mapping0_forward_spectra`]) for every block of a batch, from the
 /// spectra pass A left in each job, each block starting from its chained
-/// `ampmax`.
+/// `ampmax`. Returns `blobs` packetblobs per block, block after block (1,
+/// or [`PACKETBLOBS`] when managed; the choice among them is serial).
 #[cfg(feature = "parallel")]
 fn analyze_batch(
     setup: &EncoderSetup,
@@ -1076,6 +1149,7 @@ fn analyze_batch(
     ch: usize,
     jobs: &[BlockJob],
     input_ampmax: &[f32],
+    blobs: usize,
 ) -> Vec<Vec<u8>> {
     use rayon::prelude::*;
     let gi = &setup.cfg.psy_global;
@@ -1088,7 +1162,7 @@ fn analyze_batch(
             |floors, (job, &amp)| {
                 let mapping = &setup.mappings[setup.modes[job.mode.mode_number].mapping];
                 let mut ampmax = amp;
-                let mut w = BitWriter::new();
+                let mut w: Vec<BitWriter> = (0..blobs).map(|_| BitWriter::new()).collect();
                 with_scratch(ch, |scratch| {
                     let n = job.pcm[0].len();
                     let n2 = n / 2;
@@ -1115,9 +1189,10 @@ fn analyze_batch(
                         false,
                     )
                 });
-                w.into_bytes()
+                w
             },
         )
+        .flat_map_iter(|w| w.into_iter().map(BitWriter::into_bytes))
         .collect()
 }
 

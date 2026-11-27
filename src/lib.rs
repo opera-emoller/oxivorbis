@@ -124,12 +124,15 @@ internal_mod!(psy);
 internal_mod!(mdct);
 internal_mod!(ogg_pages);
 
+mod bitrate;
 mod drft;
 mod encode;
 mod envelope;
 mod lpc;
 mod mapping0;
+mod mapping0_managed;
 mod quality;
+mod ratecontrol;
 mod setup;
 mod setup_gen;
 mod setup_templates;
@@ -138,6 +141,8 @@ mod window;
 mod planar;
 mod writer;
 pub use writer::{OggWriter, S16LeWriter};
+
+pub use ratecontrol::{BitrateError, BitrateMode, BitrateTuning};
 
 use std::fmt;
 
@@ -405,6 +410,9 @@ pub struct Options {
     /// empty (including an empty key) is skipped. Values are written as
     /// given and may contain `=` and any UTF-8.
     pub comments: Vec<(String, String)>,
+    /// Bitrate-driven mode, set by [`Options::with_bitrate`]; `None` is
+    /// VBR at `quality`.
+    bitrate: Option<ratecontrol::BitrateRequest>,
 }
 
 impl Options {
@@ -448,6 +456,94 @@ impl Options {
         self
     }
 
+    /// Encode with a bitrate-driven [`BitrateMode`] (oggenc's `-b`, `-m`,
+    /// `-M` and `--managed`) instead of plain VBR, for input at `rate` and
+    /// `channels`.
+    ///
+    /// Returns an error if libvorbis 1.3.7 can't encode the request: it has
+    /// no setup for the bitrate at this rate and channel count (bitrate
+    /// modes only exist from 8 kHz to 50 kHz; see
+    /// [`BitrateMode::supported_kbps`]), or the request is inconsistent
+    /// (such as a minimum above the maximum). Encoding then never fails.
+    ///
+    /// The options remember `rate` and `channels`. Encoding other input
+    /// with them re-checks the request for that input's rate and channel
+    /// count, and panics if libvorbis can't encode it there.
+    ///
+    /// [`BitrateMode::QualityLimits`] uses [`Options::quality`] at the time
+    /// of encoding.
+    ///
+    /// ```
+    /// use oxivorbis::{BitrateError, BitrateMode, Channels, Options, SampleRate};
+    ///
+    /// let opts = Options::default()
+    ///     .with_bitrate(SampleRate::HZ_44100, Channels::Stereo, BitrateMode::average(160))?;
+    /// let pcm = vec![0i16; 44_100 * 2];
+    /// let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
+    /// assert_eq!(&ogg[..4], b"OggS");
+    ///
+    /// // 8 kb/s is below libvorbis's range for 44.1 kHz stereo.
+    /// let low = Options::default()
+    ///     .with_bitrate(SampleRate::HZ_44100, Channels::Stereo, BitrateMode::average(8));
+    /// assert!(matches!(low, Err(BitrateError::OutOfRange { .. })));
+    /// # Ok::<(), BitrateError>(())
+    /// ```
+    pub fn with_bitrate(
+        self,
+        rate: SampleRate,
+        channels: Channels,
+        mode: BitrateMode,
+    ) -> Result<Self, BitrateError> {
+        self.with_bitrate_tuning(rate, channels, mode, BitrateTuning::default())
+    }
+
+    /// [`Options::with_bitrate`] with the bit reservoir tuned as oggenc's
+    /// `--advanced-encode-option`s do (see [`BitrateTuning`]).
+    ///
+    /// ```
+    /// use oxivorbis::{BitrateMode, BitrateTuning, Channels, Options, SampleRate};
+    ///
+    /// // oggenc --managed -b 96 --advanced-encode-option bit_reservoir_bias=0.5
+    /// let tuning = BitrateTuning::default().with_reservoir_bias(0.5);
+    /// let opts = Options::default()
+    ///     .with_bitrate_tuning(SampleRate::HZ_22050, Channels::Mono, BitrateMode::average(48), tuning)
+    ///     .unwrap();
+    /// # let _ = opts;
+    /// ```
+    pub fn with_bitrate_tuning(
+        mut self,
+        rate: SampleRate,
+        channels: Channels,
+        mode: BitrateMode,
+        tuning: BitrateTuning,
+    ) -> Result<Self, BitrateError> {
+        ratecontrol::plan(&mode, &tuning, self.quality, rate, channels)?;
+        self.bitrate = Some(ratecontrol::BitrateRequest {
+            mode,
+            tuning,
+            rate,
+            channels,
+        });
+        Ok(self)
+    }
+
+    /// Back to VBR at [`Options::quality`].
+    pub fn without_bitrate(mut self) -> Self {
+        self.bitrate = None;
+        self
+    }
+
+    /// The bitrate mode set by [`Options::with_bitrate`], if any.
+    pub fn bitrate(&self) -> Option<BitrateMode> {
+        self.bitrate.as_ref().map(|b| b.mode)
+    }
+
+    /// The bitrate tuning set by [`Options::with_bitrate_tuning`] (the
+    /// default for plain [`Options::with_bitrate`]), if a bitrate mode is set.
+    pub fn bitrate_tuning(&self) -> Option<BitrateTuning> {
+        self.bitrate.as_ref().map(|b| b.tuning)
+    }
+
     fn core(&self, rate: SampleRate, channels: Channels) -> encode::EncoderCore {
         let vendor = self.vendor.as_deref().unwrap_or(DEFAULT_VENDOR);
         let comments: Vec<Vec<u8>> = self
@@ -455,14 +551,28 @@ impl Options {
             .iter()
             .filter_map(|(k, v)| comment_bytes(k, v))
             .collect();
-        encode::EncoderCore::new(
-            rate,
-            channels,
-            self.quality.base(),
-            self.serial.unwrap_or(DEFAULT_SERIAL),
-            vendor.as_bytes(),
-            &comments,
-        )
+        let serial = self.serial.unwrap_or(DEFAULT_SERIAL);
+        let Some(req) = &self.bitrate else {
+            return encode::EncoderCore::new(
+                rate,
+                channels,
+                self.quality.base(),
+                serial,
+                vendor.as_bytes(),
+                &comments,
+            );
+        };
+        let plan = ratecontrol::plan(&req.mode, &req.tuning, self.quality, rate, channels)
+            .unwrap_or_else(|e| {
+                // A request validated for this rate and channel count can't
+                // fail here (QualityLimits only depends on the quality's
+                // template family, i.e. on the rate).
+                panic!(
+                    "Options::with_bitrate was checked for {} {:?}, but the input is {rate} {channels:?}: {e}",
+                    req.rate, req.channels
+                )
+            });
+        encode::EncoderCore::with_plan(rate, channels, &plan, serial, vendor.as_bytes(), &comments)
     }
 }
 
@@ -523,6 +633,13 @@ impl Encoder {
     /// New encoder for `rate` / `channels` with the given options. The
     /// header pages are produced right away and returned by the first
     /// `write` (or by `finish`).
+    ///
+    /// # Panics
+    ///
+    /// Only if `options` carry a bitrate mode ([`Options::with_bitrate`])
+    /// checked for a different rate or channel count that libvorbis can't
+    /// encode at `rate` / `channels`. The same holds for every other way
+    /// of encoding with such options.
     pub fn new(rate: SampleRate, channels: Channels, options: &Options) -> Self {
         Self {
             core: Box::new(options.core(rate, channels)),
@@ -671,6 +788,36 @@ pub fn encode_f32_with_base_quality_and_meta(
     let mut core = internal_core(rate, channels, base_quality, serial, vendor, encoder_tag);
     core.feed(samples, encode::f32_sample);
     core.finish()
+}
+
+/// One-shot encode in a bitrate mode, with the quality given as an exact
+/// libvorbis `base_quality` (only [`BitrateMode::QualityLimits`] reads
+/// it). `Err` where [`Options::with_bitrate`] would fail.
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_bitrate_with_meta(
+    samples: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+    mode: BitrateMode,
+    tuning: BitrateTuning,
+    serial: u32,
+    vendor: Option<&[u8]>,
+) -> Result<Vec<u8>, BitrateError> {
+    let quality = Quality::from_base_quality(base_quality).expect("base_quality in range");
+    let plan = ratecontrol::plan(&mode, &tuning, quality, rate, channels)?;
+    let mut core = encode::EncoderCore::with_plan(
+        rate,
+        channels,
+        &plan,
+        serial,
+        vendor.unwrap_or(DEFAULT_VENDOR.as_bytes()),
+        &[],
+    );
+    core.feed(samples, encode::i16_to_f32);
+    Ok(core.finish())
 }
 
 /// Q5 [`encode_with_base_quality_and_meta`].
