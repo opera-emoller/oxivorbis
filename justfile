@@ -277,5 +277,47 @@ debug-dump-rust:
 debug-diff: debug-dump-c debug-dump-rust
     cargo run -p debug-diff
 
+# --- C API (ffi/) -----------------------------------------------------------
+
+# Regenerate ffi/include/oxivorbis.h from ffi/src with cbindgen
+# (`cargo install cbindgen@0.29.4 --locked`; CI checks with that version).
+ffi-header:
+    cbindgen --config ffi/cbindgen.toml --crate oxivorbis-ffi --output ffi/include/oxivorbis.h ffi
+
+# Fail if the committed header differs from a fresh cbindgen run.
+ffi-header-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+    cbindgen --config ffi/cbindgen.toml --crate oxivorbis-ffi --output "$tmp" ffi
+    diff -u ffi/include/oxivorbis.h "$tmp" \
+        || { echo "ffi/include/oxivorbis.h is stale: run 'just ffi-header'"; exit 1; }
+
+# C API tests: the C test (shared + static library) and the C++ header
+# smoke test, byte-compared with oxivorbis::encode; then the Python binding
+# (byte-compared with the CLI).
+ffi-test:
+    cargo test -p oxivorbis-ffi
+    cargo build -p oxivorbis-ffi -p oxivorbis-cli
+    python3 ffi/bindings/python/test_oxivorbis.py
+
+# The C test under AddressSanitizer, plus `leaks --atExit` on macOS or
+# valgrind on Linux (when installed).
+ffi-sanitize:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    leak=""
+    if [ "$(uname -s)" = Darwin ]; then
+        leak="leaks --atExit --"
+    elif command -v valgrind >/dev/null 2>&1; then
+        leak="valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=all"
+    fi
+    OXV_FFI_SANITIZE=address OXV_FFI_LEAK_CHECK="$leak" cargo test -p oxivorbis-ffi --test c_api
+
+# Install the C library, header, pkg-config file and CMake package.
+ffi-install prefix="/usr/local":
+    ./ffi/pkg/install.sh "{{prefix}}"
+
 clean:
     cargo clean

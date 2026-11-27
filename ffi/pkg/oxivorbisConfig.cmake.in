@@ -1,0 +1,48 @@
+# CMake package for liboxivorbis, installed by ffi/pkg/install.sh as
+# <prefix>/lib/cmake/oxivorbis/oxivorbisConfig.cmake.
+#
+#     find_package(oxivorbis REQUIRED)
+#     target_link_libraries(app PRIVATE oxivorbis::oxivorbis)         # shared
+#     target_link_libraries(app PRIVATE oxivorbis::oxivorbis_static)  # static
+
+set(oxivorbis_VERSION "@VERSION@")
+get_filename_component(_oxv_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+if(NOT TARGET oxivorbis::oxivorbis)
+  add_library(oxivorbis::oxivorbis SHARED IMPORTED)
+  set_target_properties(oxivorbis::oxivorbis PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_oxv_prefix}/include")
+  if(WIN32)
+    set_target_properties(oxivorbis::oxivorbis PROPERTIES
+      IMPORTED_LOCATION "${_oxv_prefix}/bin/oxivorbis.dll"
+      IMPORTED_IMPLIB "${_oxv_prefix}/lib/oxivorbis.dll.lib")
+  elseif(APPLE)
+    set_target_properties(oxivorbis::oxivorbis PROPERTIES
+      IMPORTED_LOCATION "${_oxv_prefix}/lib/liboxivorbis.dylib")
+  else()
+    set_target_properties(oxivorbis::oxivorbis PROPERTIES
+      IMPORTED_LOCATION "${_oxv_prefix}/lib/liboxivorbis.so")
+  endif()
+endif()
+
+if(NOT TARGET oxivorbis::oxivorbis_static)
+  add_library(oxivorbis::oxivorbis_static STATIC IMPORTED)
+  set_target_properties(oxivorbis::oxivorbis_static PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_oxv_prefix}/include")
+  if(WIN32)
+    # MSVC: system libraries the Rust standard library needs (see
+    # `cargo rustc -p oxivorbis-ffi --crate-type staticlib -- --print native-static-libs`).
+    set_target_properties(oxivorbis::oxivorbis_static PROPERTIES
+      IMPORTED_LOCATION "${_oxv_prefix}/lib/oxivorbis.lib"
+      INTERFACE_LINK_LIBRARIES "kernel32;advapi32;ntdll;userenv;ws2_32;dbghelp")
+  else()
+    set_target_properties(oxivorbis::oxivorbis_static PROPERTIES
+      IMPORTED_LOCATION "${_oxv_prefix}/lib/liboxivorbis.a")
+    if(NOT APPLE)
+      set_target_properties(oxivorbis::oxivorbis_static PROPERTIES
+        INTERFACE_LINK_LIBRARIES "pthread;dl;m")
+    endif()
+  endif()
+endif()
+
+unset(_oxv_prefix)
