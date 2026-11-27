@@ -255,7 +255,8 @@ pub enum BitrateError {
     /// [`BitrateMode::supported_kbps`] reports, `None` when the rate has
     /// no bitrate-managed setups at all.
     OutOfRange {
-        /// The nominal bitrate libvorbis looked up, in bits per second.
+        /// The nominal bitrate libvorbis looked up, in bits per second (0
+        /// for [`BitrateMode::QualityLimits`], which looks up a quality).
         bps: u32,
         /// The sample rate.
         rate: SampleRate,
@@ -280,17 +281,21 @@ impl fmt::Display for BitrateError {
                 channels,
                 supported,
             } => {
-                write!(
-                    f,
-                    "no libvorbis setup for {bps} b/s at {rate} {}",
-                    match channels.count() {
-                        1 => "mono",
-                        _ => "stereo",
-                    }
-                )?;
+                let ch = match channels.count() {
+                    1 => "mono",
+                    _ => "stereo",
+                };
                 match supported {
-                    Some(r) => write!(f, " (supported: {}..={} kb/s)", r.start(), r.end()),
-                    None => write!(f, " (bitrate modes need 8000..=50000 Hz)"),
+                    Some(r) => write!(
+                        f,
+                        "no libvorbis setup for {bps} b/s at {rate} {ch} (supported: {}..={} kb/s)",
+                        r.start(),
+                        r.end()
+                    ),
+                    None => write!(
+                        f,
+                        "libvorbis has no bitrate setups at {rate} {ch} (bitrate modes need 8000..=50000 Hz)"
+                    ),
                 }
             }
             BitrateError::Invalid(why) => write!(f, "invalid bitrate request: {why}"),
