@@ -787,12 +787,14 @@ fn post_Y(a: &[i32], b: &[i32], pos: usize) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Fits the floor posts into `output[..look.posts]`. Returns false (and
-/// leaves `output` unspecified) where libvorbis returns NULL.
+/// leaves `output` unspecified) where libvorbis returns NULL. `codes` is
+/// scratch for the fit codes (at least `look.n` long).
 pub(crate) fn floor1_fit(
     look: &Floor1State,
     logmdct: &[f32],
     logmask: &[f32],
     output: &mut [i32; FLOOR1_MAX_POSTS],
+    codes: &mut [i32],
 ) -> bool {
     let info = &look.vi;
     let n = look.n;
@@ -806,8 +808,7 @@ pub(crate) fn floor1_fit(
     let mut hineighbor = [1i32; VIF_POSIT + 2];
     let mut memo = [-1i32; VIF_POSIT + 2];
 
-    let mut codes_arr = [0i32; crate::window::MAX_LONG_HALF];
-    let codes = &mut codes_arr[..n as usize];
+    let codes = &mut codes[..n as usize];
     fit_codes(&logmask[..n as usize], &logmdct[..n as usize], info, codes);
     let codes = &*codes;
 

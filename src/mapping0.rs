@@ -451,7 +451,14 @@ pub(crate) fn mapping0_forward_spectra(
         if do_dump && i == 0 {
             dd::write_f32_bin("/tmp/lewtoff-debug/r_mask.bin", logmask);
         }
-        floor_used[i] = floor1_fit(floor_state, logmdct, logmask, &mut floor_posts[i]);
+        // iwork[i] is not written until floor1_encode: scratch for the fit.
+        floor_used[i] = floor1_fit(
+            floor_state,
+            logmdct,
+            logmask,
+            &mut floor_posts[i],
+            &mut iwork[i],
+        );
         let posts = &floor_posts[i][..floor_state.posts as usize];
         if do_dump && i == 0 && floor_used[i] {
             dd::write_i32_bin("/tmp/lewtoff-debug/r_floor_posts.bin", posts);
