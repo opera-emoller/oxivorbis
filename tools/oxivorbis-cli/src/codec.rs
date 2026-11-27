@@ -113,8 +113,16 @@ pub fn library_version() -> &'static str {
     oxivorbis::DEFAULT_VENDOR
 }
 
+/// Whether WAV/SMPTE channel order differs from Vorbis order for this
+/// many channels (3, 5, 6, 7 and 8 channels; 1, 2 and 4 are the same).
+pub fn wav_order_differs(channels: u16) -> bool {
+    Channels::new(channels)
+        .and_then(|c| c.wav_to_vorbis())
+        .is_some_and(|m| m.iter().enumerate().any(|(i, &v)| i != v))
+}
+
 /// A streaming encoder.
-pub struct Enc(Encoder);
+pub struct Enc(Encoder, Channels);
 
 impl Enc {
     /// New encoder, or a user-facing reason the rate/channels/quality
@@ -140,7 +148,13 @@ impl Enc {
         for (k, v) in &s.comments {
             opts = opts.with_comment(k.as_str(), v.as_str());
         }
-        Ok(Enc(Encoder::new(rate, channels, &opts)))
+        Ok(Enc(Encoder::new(rate, channels, &opts), channels))
+    }
+
+    /// Reorder whole interleaved frames in place from WAV/SMPTE to Vorbis
+    /// channel order (a no-op beyond 8 channels).
+    pub fn reorder_wav<T: Copy>(&self, interleaved: &mut [T]) {
+        oxivorbis::reorder_wav_to_vorbis(interleaved, self.1);
     }
 
     /// Encode interleaved 16-bit samples (the library's exact i16 path);

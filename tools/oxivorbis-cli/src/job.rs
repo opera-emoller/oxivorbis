@@ -250,7 +250,12 @@ impl Summary {
         } else {
             String::new()
         };
-        let ch = if self.channels == 1 { "mono" } else { "stereo" };
+        let ch = match self.channels {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            6 => "5.1".to_string(),
+            n => format!("{n}-channel"),
+        };
         format!(
             "{} -> {}: {}, {} Hz {ch} {}, {setting}, {}, {kbps}{speed}",
             job.input.name(),
@@ -325,11 +330,10 @@ pub fn run(job: &Job, cfg: &Config) -> Result<Summary> {
             (w.rate, w.channels, w.format, w.data_len)
         }
     };
-    if channels > 2 {
-        bail!(
-            "'{in_name}' has {channels} channels; oxivorbis currently encodes only mono or stereo"
-        );
-    }
+    // WAV stores 3..=8 channels in WAV/SMPTE order (5.1: L R C LFE BL BR);
+    // Vorbis wants its own (L C R BL BR LFE). Reorder as oggenc does. Raw
+    // input is taken to be in Vorbis order already.
+    let reorder = cfg.raw.is_none() && codec::wav_order_differs(channels);
     let settings = codec::Settings {
         quality: cfg.quality,
         rate_args: cfg.rate_args.clone(),
@@ -365,15 +369,27 @@ pub fn run(job: &Job, cfg: &Config) -> Result<Summary> {
         }
         filled += n;
         total += n as u64;
-        let whole = filled - filled % sample_bytes;
+        // Whole samples; whole frames when reordering channels.
+        let unit = if reorder {
+            frame_bytes as usize
+        } else {
+            sample_bytes
+        };
+        let whole = filled - filled % unit;
         if whole == 0 {
             continue;
         }
         let pages = if format == SampleFormat::S16 {
             pcm::to_i16(&buf[..whole], &mut ibuf);
+            if reorder {
+                enc.reorder_wav(&mut ibuf);
+            }
             enc.write_i16(&ibuf)
         } else {
             pcm::to_f32(format, &buf[..whole], &mut fbuf);
+            if reorder {
+                enc.reorder_wav(&mut fbuf);
+            }
             enc.write_f32(&fbuf)
         };
         sink.write(pages)?;
@@ -389,8 +405,8 @@ pub fn run(job: &Job, cfg: &Config) -> Result<Summary> {
         ))
         .with_context(read_ctx);
     }
-    // A trailing partial sample is dropped here, and a trailing unpaired
-    // stereo sample by the encoder.
+    // A trailing partial sample (or, when reordering, frame) is dropped
+    // here, and a trailing partial frame by the encoder.
     let tail = enc.finish();
     sink.write(&tail)?;
     let bytes = sink.commit()?;

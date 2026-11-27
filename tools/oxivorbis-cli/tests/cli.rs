@@ -422,6 +422,74 @@ fn s16_wav_matches_raw_and_library() {
     check_decodes(&want, ch, rate, frames);
 }
 
+/// More than two channels: WAV input in WAV/SMPTE order is reordered to
+/// Vorbis order (as oggenc does), raw input is encoded as given, and both
+/// match the library.
+#[test]
+fn multichannel_wav_is_reordered_raw_is_not() {
+    let dir = scratch();
+    let dir = dir.path();
+    for (ch, rate, map) in [
+        (6u16, 48_000u32, &[0usize, 2, 1, 4, 5, 3][..]),
+        (3, 44_100, &[0, 2, 1]),
+        (4, 32_000, &[0, 1, 2, 3]),
+        (8, 44_100, &[0, 2, 1, 6, 7, 4, 5, 3]),
+        (10, 22_050, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    ] {
+        let frames = 9_001;
+        let (data, vals) = quantize(Fmt::S16, &signal(frames, ch as usize));
+        let pcm = vals.unwrap();
+        let reordered: Vec<i16> = pcm
+            .chunks_exact(ch as usize)
+            .flat_map(|f| map.iter().map(|&m| f[m]))
+            .collect();
+        let want = lib_i16(&reordered, rate, ch, &opts(3.0));
+        let got = encode_file(
+            dir,
+            &format!("mc{ch}"),
+            &wav(Fmt::S16, ch, rate, &data, WavOpts::default()),
+            &[],
+        );
+        assert_eq!(
+            got, want,
+            "{ch}-channel WAV == library encode of Vorbis order"
+        );
+        check_decodes(&want, ch, rate, frames);
+        let ch_s = ch.to_string();
+        let rate_s = rate.to_string();
+        cmd()
+            .args(["-Q", "--raw", "--rate", &rate_s, "--channels", &ch_s, "-"])
+            .write_stdin(data.clone())
+            .assert()
+            .success()
+            .stdout(lib_i16(&pcm, rate, ch, &opts(3.0)));
+    }
+    // 32-bit float input goes through the same reordering.
+    let (data, vals) = quantize(Fmt::F32, &signal(5_000, 6));
+    let pcm = vals.unwrap_err();
+    let reordered: Vec<f32> = pcm
+        .chunks_exact(6)
+        .flat_map(|f| [0, 2, 1, 4, 5, 3].map(|m| f[m]))
+        .collect();
+    let got = encode_file(
+        dir,
+        "mcf",
+        &wav(Fmt::F32, 6, 44_100, &data, WavOpts::default()),
+        &[],
+    );
+    assert_eq!(got, lib_f32(&reordered, 44_100, 6, &opts(3.0)));
+    cmd()
+        .args(["-Q", "--raw", "-R", "44100", "-C", "5.1", "-"])
+        .write_stdin(quantize(Fmt::S16, &signal(100, 6)).0)
+        .assert()
+        .success();
+    cmd()
+        .args(["-Q", "--raw", "-R", "44100", "-C", "256", "-"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("want 1 to 255"));
+}
+
 #[test]
 fn stdin_to_stdout_and_derived_output_path() {
     let dir = scratch();
@@ -629,15 +697,15 @@ fn rejects_unsupported_inputs() {
             },
         )
     };
-    let six = {
-        let mut w = wav(Fmt::S16, 6, 48_000, &data, WavOpts::default());
+    let too_many = {
+        let mut w = wav(Fmt::S16, 256, 48_000, &data, WavOpts::default());
         w.truncate(w.len() - data.len());
         w
     };
     let cases: Vec<(&str, Vec<u8>, &str)> = vec![
         ("adpcm", tagged(2), "0x0002 (Microsoft ADPCM)"),
         ("mp3", tagged(0x55), "MP3"),
-        ("six", six, "6 channels"),
+        ("too_many", too_many, "256 channels"),
         (
             "rate",
             wav(Fmt::S16, 2, 384_000, &data, WavOpts::default()),

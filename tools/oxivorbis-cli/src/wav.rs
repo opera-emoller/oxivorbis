@@ -141,10 +141,9 @@ fn parse_fmt(b: &[u8]) -> Result<(u32, u16, SampleFormat), String> {
     if channels == 0 {
         return Err("WAV header says 0 channels".into());
     }
-    if channels > 2 {
+    if channels > 255 {
         return Err(format!(
-            "input has {channels} channels; oxivorbis currently encodes only mono or stereo \
-             (downmix first, e.g. `ffmpeg -i in.wav -ac 2 out.wav`)"
+            "input has {channels} channels; Vorbis encodes at most 255"
         ));
     }
     if rate == 0 {
@@ -400,7 +399,9 @@ mod tests {
         assert!(e(b"hi".to_vec()).contains("not a WAV"));
         assert!(e(b"RIFF\0\0".to_vec()).contains("RIFF header"));
         assert!(e(wav(&[chunk(b"fmt ", &fmt_body(2, 2, 44100, 4, 1))])).contains("ADPCM"));
-        assert!(e(wav(&[chunk(b"fmt ", &fmt_body(1, 6, 48000, 16, 2))])).contains("6 channels"));
+        assert!(
+            e(wav(&[chunk(b"fmt ", &fmt_body(1, 256, 48000, 16, 2))])).contains("256 channels")
+        );
         assert!(e(wav(&[chunk(b"fmt ", &fmt_body(1, 2, 48000, 12, 1))])).contains("12 bits"));
         assert!(e(wav(&[chunk(b"fmt ", &fmt_body(3, 1, 48000, 16, 2))])).contains("float"));
         assert!(e(wav(&[chunk(b"data", &[0; 4])])).contains("before"));

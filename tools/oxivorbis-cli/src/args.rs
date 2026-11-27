@@ -22,11 +22,14 @@ input file is never overwritten.";
 
 const AFTER_LONG_HELP: &str = "\
 Input formats:
-  WAV (RIFF, RF64/BW64, WAVE_FORMAT_EXTENSIBLE), mono or stereo:
+  WAV (RIFF, RF64/BW64, WAVE_FORMAT_EXTENSIBLE), 1 to 255 channels:
   8-bit unsigned, 16/24/32-bit signed integer, 32/64-bit float.
   16-bit samples go to the encoder unchanged as i16 (bit-exact with the
   library's `encode`). Other formats are converted exactly to f32:
   integers as x/2^(bits-1), floats passed through (f64 rounded once).
+  WAV with 3 to 8 channels is reordered from WAV order (5.1: L R C LFE
+  BL BR) to Vorbis order (L C R BL BR LFE), as oggenc does; raw input is
+  taken to be in Vorbis order.
 
 Exit status:
   0 ok, 1 encode or I/O error (any input), 2 usage error.
@@ -175,7 +178,8 @@ pub struct Cli {
     )]
     pub rate: Option<u32>,
 
-    /// Raw input channels: 1, 2, mono or stereo.
+    /// Raw input channels: 1 to 255, mono, stereo or 5.1. Interleaved in
+    /// Vorbis order (5.1: L C R BL BR LFE); raw input is not reordered.
     #[arg(
         short = 'C',
         long,
@@ -332,11 +336,12 @@ fn parse_channels(s: &str) -> Result<u16, String> {
     match s {
         "mono" => Ok(1),
         "stereo" => Ok(2),
+        "5.1" => Ok(6),
         _ => s
             .parse::<u16>()
             .ok()
-            .filter(|&n| n > 0)
-            .ok_or_else(|| "want 1, 2, mono or stereo".into()),
+            .filter(|n| (1..=255).contains(n))
+            .ok_or_else(|| "want 1 to 255, mono, stereo or 5.1".into()),
     }
 }
 

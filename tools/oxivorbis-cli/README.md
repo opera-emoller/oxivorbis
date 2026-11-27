@@ -91,7 +91,7 @@ supported as well.
 ## Input formats
 
 WAV (`RIFF`, `RF64`/`BW64`, plain or `WAVE_FORMAT_EXTENSIBLE` with the PCM
-or IEEE-float sub-format GUID), mono or stereo, at any sample rate the
+or IEEE-float sub-format GUID), 1 to 255 channels, at any sample rate the
 library supports. Chunks other than `fmt `/`ds64`/`data` (`LIST`, `fact`,
 `JUNK`, ...) are skipped, odd chunk sizes included. A `data` size of 0 or
 0xFFFFFFFF, which is what streamed WAVs such as `ffmpeg ... -f wav -`
@@ -110,11 +110,23 @@ says is reported as truncated (exit 1, no output file).
 Integer samples narrower than their container (for example 20 valid bits
 in 24) are left-justified by the WAV spec, so they're scaled by the
 container width. `--raw` takes the same formats as headerless
-little-endian PCM: `-F u8|s16le|s24le|s32le|f32le|f64le`.
+little-endian PCM: `-F u8|s16le|s24le|s32le|f32le|f64le`, and `-C` takes
+1 to 255, `mono`, `stereo` or `5.1`.
+
+**Channel order.** WAV files store 3 to 8 channels in WAV/SMPTE order
+(5.1: L, R, C, LFE, BL, BR); Vorbis uses its own (5.1: L, C, R, BL, BR,
+LFE). As oggenc does, WAV input with 3, 5, 6, 7 or 8 channels is
+reordered to Vorbis order assuming the default layout for its channel
+count (`oxivorbis::reorder_wav_to_vorbis`); 4 channels (quad) and more
+than 8 are passed through. Raw input is taken to be in Vorbis order and
+is never reordered, so `--raw` gives exactly `oxivorbis::encode`'s
+bytes for the same samples. 6 channels at 40 to 70 kHz use libvorbis's
+coupled 5.1 mode; other multichannel inputs encode each channel
+independently.
 
 The following are rejected with an error that names what was found:
 compressed WAV formats (ADPCM, A-law/mu-law, MP3, ...), other extensible
-sub-formats, more than two channels, and unsupported rates. FLAC and MP3
+sub-formats, more than 255 channels, and unsupported rates. FLAC and MP3
 input aren't supported directly; decode them first, for example with
 `ffmpeg -i in.flac -f wav - | oxivorbis -`.
 
