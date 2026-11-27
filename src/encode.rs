@@ -29,7 +29,11 @@ use crate::envelope::{EnvelopeLookup, VE_POST, VE_WIN};
 use crate::floor1::Floor1State;
 use crate::headers::{write_comment_header, write_id_header_with, write_setup_packet};
 use crate::lpc::{lpc_from_data, lpc_predict};
-use crate::mapping0::{BlockMode, MappingScratch, mapping0_forward};
+#[cfg(not(feature = "parallel"))]
+use crate::mapping0::mapping0_forward;
+use crate::mapping0::{BlockMode, MappingScratch};
+#[cfg(feature = "parallel")]
+use crate::mapping0::{channel_spectra, mapping0_forward_spectra};
 use crate::ogg_pages::OggStreamWriter;
 use crate::setup::{EncoderSetup, encoder_setup_for};
 use crate::window::{BlockSizes, apply_window_bs};
@@ -130,7 +134,11 @@ struct Block {
 
 #[cfg(feature = "parallel")]
 struct BlockJob {
+    /// Per channel, `n` floats: the windowed PCM until pass A, which
+    /// replaces it with the channel's spectra (see [`block_spectra`]).
     pcm: Vec<Vec<f32>>,
+    /// Per channel, the clamped local ampmax (set by pass A).
+    local_ampmax: [f32; 2],
     mode: BlockMode,
     blocktype: BlockType,
     granulepos: u64,
@@ -139,8 +147,8 @@ struct BlockJob {
 
 /// Upper bound on a parallel batch, in long-block samples: 256 blocks of
 /// 2048 (q0..q10) or 128 of 4096 (q-1), i.e. about 6 s of audio at
-/// 44.1 kHz and 4 MiB of windowed stereo PCM per batch, whatever the
-/// thread count.
+/// 44.1 kHz and 4 MiB of windowed stereo PCM (spectra after pass A) per
+/// batch, whatever the thread count.
 #[cfg(feature = "parallel")]
 const MAX_BATCH_SAMPLES: usize = 256 * 2048;
 
@@ -839,6 +847,7 @@ impl EncoderCore {
         self.dump_first_block(&pcm[0], block);
         self.jobs.push(BlockJob {
             pcm,
+            local_ampmax: [0.0; 2],
             mode: self.block_mode(block),
             blocktype: block.blocktype,
             granulepos: block.granulepos,
@@ -876,16 +885,17 @@ impl EncoderCore {
             return;
         }
         // Batches launched by earlier calls made outside the pool go first.
-        let jobs = std::mem::take(&mut self.jobs);
+        let mut jobs = std::mem::take(&mut self.jobs);
         while self.pass_a.is_some() || !self.pass_c.is_empty() {
             self.pipeline_async(true);
         }
         if jobs.is_empty() {
             return;
         }
+        let ch = self.ch;
         let local_max: Vec<f32> = jobs
-            .par_iter()
-            .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
+            .par_iter_mut()
+            .map(|job| block_spectra(job, ch))
             .collect();
         let input_ampmax = self.chain_ampmax(&jobs, &local_max);
         let packets = analyze_batch(&self.setup, &self.floor_seed, self.ch, &jobs, &input_ampmax);
@@ -940,12 +950,13 @@ impl EncoderCore {
         }
         // Pass A for the batch just filled.
         if !self.jobs.is_empty() {
-            let jobs = std::mem::take(&mut self.jobs);
+            let mut jobs = std::mem::take(&mut self.jobs);
             let (tx, rx) = channel();
+            let ch = self.ch;
             rayon::spawn(move || {
                 let local_max: Vec<f32> = jobs
-                    .par_iter()
-                    .map(|job| crate::mapping0::compute_block_local_ampmax_max(&job.pcm))
+                    .par_iter_mut()
+                    .map(|job| block_spectra(job, ch))
                     .collect();
                 let _ = tx.send((jobs, local_max));
             });
@@ -1012,8 +1023,40 @@ fn with_scratch<R>(ch: usize, f: impl FnOnce(&mut MappingScratch) -> R) -> R {
     })
 }
 
-/// Pass C of the parallel pipeline: `mapping0_forward` for every block of
-/// a batch, each starting from its chained `ampmax`.
+/// Pass A of the parallel pipeline for one block: the per-channel
+/// transforms of `mapping0_forward` ([`channel_spectra`]). They overwrite
+/// the job's windowed PCM in place, each channel's `n` floats becoming its
+/// log-FFT (first `n/2`) and MDCT (last `n/2`), so pass C doesn't redo them
+/// and a block in flight takes no more memory. Returns the block's local
+/// peak: the max of the channels' clamped local ampmax.
+#[cfg(feature = "parallel")]
+fn block_spectra(job: &mut BlockJob, ch: usize) -> f32 {
+    with_scratch(ch, |scratch| {
+        let mut max_local = f32::NEG_INFINITY;
+        for (c, pcm) in job.pcm.iter_mut().enumerate() {
+            let n2 = pcm.len() / 2;
+            let local = channel_spectra(
+                pcm,
+                &mut scratch.gmdct[0],
+                &mut scratch.logfft[0],
+                &mut scratch.fft_buf,
+                false,
+            );
+            pcm[..n2].copy_from_slice(&scratch.logfft[0][..n2]);
+            pcm[n2..].copy_from_slice(&scratch.gmdct[0][..n2]);
+            job.local_ampmax[c] = local;
+            if local > max_local {
+                max_local = local;
+            }
+        }
+        max_local
+    })
+}
+
+/// Pass C of the parallel pipeline: the rest of `mapping0_forward`
+/// ([`mapping0_forward_spectra`]) for every block of a batch, from the
+/// spectra pass A left in each job, each block starting from its chained
+/// `ampmax`.
 #[cfg(feature = "parallel")]
 fn analyze_batch(
     setup: &EncoderSetup,
@@ -1035,8 +1078,16 @@ fn analyze_batch(
                 let mut ampmax = amp;
                 let mut w = BitWriter::new();
                 with_scratch(ch, |scratch| {
-                    mapping0_forward(
-                        &job.pcm,
+                    let n = job.pcm[0].len();
+                    let n2 = n / 2;
+                    for (c, spectra) in job.pcm.iter().enumerate() {
+                        scratch.logfft[c][..n2].copy_from_slice(&spectra[..n2]);
+                        scratch.gmdct[c][..n2].copy_from_slice(&spectra[n2..]);
+                        scratch.local_ampmax[c] = job.local_ampmax[c];
+                    }
+                    mapping0_forward_spectra(
+                        n,
+                        ch,
                         &psy_looks[job.blocktype as usize],
                         gi,
                         &mut ampmax,
@@ -1049,6 +1100,7 @@ fn analyze_batch(
                         &setup.books,
                         scratch,
                         &mut w,
+                        false,
                     )
                 });
                 w.into_bytes()

@@ -760,10 +760,15 @@ pub(crate) fn res2_forward(
     n: usize,
     partword: &[Vec<i64>],
     books: &[Codebook],
+    work: &mut Vec<i32>,
 ) -> i32 {
     let mut used = 0usize;
 
-    let mut work: Vec<i32> = vec![0i32; ch * n];
+    // Every line of the interleave is written below.
+    if work.len() < ch * n {
+        work.resize(ch * n, 0);
+    }
+    let work = &mut work[..ch * n];
     for i in 0..ch {
         let pcm = in_[i];
         if nonzero[i] {
@@ -777,8 +782,7 @@ pub(crate) fn res2_forward(
     }
 
     if used > 0 {
-        let work_ref: &mut [i32] = &mut work;
-        let mut wrapped: [&mut [i32]; 1] = [work_ref];
+        let mut wrapped: [&mut [i32]; 1] = [work];
         _01forward(opb, info, look, &mut wrapped, &[0], partword, books)
     } else {
         0

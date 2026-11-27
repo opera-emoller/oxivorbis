@@ -22,6 +22,8 @@ use crate::codebook::Codebook;
 
 const FLOOR1_RANGEDB: i32 = 140;
 const VIF_POSIT: usize = 63;
+/// Most posts a floor1 can have (`VIF_POSIT + 2`).
+pub(crate) const FLOOR1_MAX_POSTS: usize = VIF_POSIT + 2;
 const VIF_CLASS: usize = 16;
 const VIF_PARTS: usize = 31;
 
@@ -678,7 +680,14 @@ fn post_Y(a: &[i32], b: &[i32], pos: usize) -> i32 {
 // floor1_fit — port of floor1_fit in floor1.c
 // ---------------------------------------------------------------------------
 
-pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -> Option<Vec<i32>> {
+/// Fits the floor posts into `output[..look.posts]`. Returns false (and
+/// leaves `output` unspecified) where libvorbis returns NULL.
+pub(crate) fn floor1_fit(
+    look: &Floor1State,
+    logmdct: &[f32],
+    logmask: &[f32],
+    output: &mut [i32; FLOOR1_MAX_POSTS],
+) -> bool {
     let info = &look.vi;
     let n = look.n;
     let posts = look.posts;
@@ -831,8 +840,6 @@ pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -
             }
         }
 
-        let mut output = vec![0i32; posts as usize];
-
         output[0] = post_Y(&fit_valueA, &fit_valueB, 0);
         output[1] = post_Y(&fit_valueA, &fit_valueB, 1);
 
@@ -857,9 +864,9 @@ pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -
             }
         }
 
-        Some(output)
+        true
     } else {
-        None
+        false
     }
 }
 
@@ -881,7 +888,7 @@ pub(crate) fn floor1_fit(look: &Floor1State, logmdct: &[f32], logmask: &[f32]) -
 pub(crate) fn floor1_encode(
     opb: &mut BitWriter,
     look: &mut Floor1State,
-    post: Option<&mut Vec<i32>>,
+    post: Option<&mut [i32]>,
     ilogmask: &mut Vec<i32>,
     books: &[Codebook],
     pcmend: usize,

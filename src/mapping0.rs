@@ -14,7 +14,7 @@
 use crate::bitpack::BitWriter;
 use crate::debug_dump as dd;
 use crate::drft::drft_forward_n;
-use crate::floor1::{Floor1State, floor1_encode, floor1_fit};
+use crate::floor1::{FLOOR1_MAX_POSTS, Floor1State, floor1_encode, floor1_fit};
 use crate::mdct::mdct_forward_n;
 use crate::psy::{
     VorbisInfoPsyGlobal, VorbisLookPsy, to_db, vp_ampmax_decay, vp_noisemask, vp_offset_and_mix,
@@ -80,7 +80,11 @@ pub(crate) struct MappingScratch {
     pub tone_bufs: Vec<Vec<f32>>,
     pub iwork: Vec<Vec<i32>>,
     pub nonzero: Vec<i32>,
-    pub floor_posts: Vec<Option<Vec<i32>>>,
+    /// Per channel: the fitted floor posts, valid when `floor_used`.
+    pub floor_posts: Vec<[i32; FLOOR1_MAX_POSTS]>,
+    pub floor_used: Vec<bool>,
+    /// res2's channel-interleaved copy of the residue (`channels * n2`).
+    pub res_work: Vec<i32>,
     /// In-place FFT buffer (`MAX_LONG_BLOCK`; sliced to the block size).
     pub fft_buf: Vec<f32>,
     pub psy: crate::psy::PsyScratch,
@@ -100,49 +104,75 @@ impl MappingScratch {
             tone_bufs: make_vv_f32(),
             iwork: make_vv_i32(),
             nonzero: vec![0i32; channels],
-            floor_posts: (0..channels).map(|_| None).collect(),
+            floor_posts: vec![[0i32; FLOOR1_MAX_POSTS]; channels],
+            floor_used: vec![false; channels],
+            res_work: vec![0i32; channels * MAX_LONG_HALF],
             fft_buf: vec![0.0f32; MAX_LONG_BLOCK],
             psy: crate::psy::PsyScratch::new(),
         }
     }
 }
 
-/// Standalone equivalent of the FFT+local_ampmax slice of
-/// `mapping0_forward`'s first per-channel loop. Returns the max over
-/// channels of clamped local_ampmax, used by the parallel encode path
-/// (`encode.rs` under `feature = "parallel"`) to compute each block's
-/// starting ampmax in a sequential pre-pass.
-#[cfg(feature = "parallel")]
-pub(crate) fn compute_block_local_ampmax_max(pcm_blocks: &[Vec<f32>]) -> f32 {
-    let n = pcm_blocks[0].len();
+/// MDCT and log-magnitude FFT of one channel's windowed PCM (port of
+/// mapping0.c lines 254-337): `n/2` lines each into `gmdct` and `logfft`
+/// (`n` = `pcm.len()`; `fft_buf` holds at least `n`). Returns the
+/// channel's local ampmax, clamped to at most 0 as libvorbis does.
+pub(crate) fn channel_spectra(
+    pcm: &[f32],
+    gmdct: &mut [f32],
+    logfft: &mut [f32],
+    fft_buf: &mut [f32],
+    dump: bool,
+) -> f32 {
+    let n = pcm.len();
+    let n2 = n / 2;
+    // Scale factor for dB computation (port of `scale = 4.f/n; scale_dB = todB(&scale) + .345`)
     let scale = 4.0f32 / n as f32;
-    let scale_db = add_345(to_db(scale));
-    let mut max_local = f32::NEG_INFINITY;
-    let mut fft_storage = [0.0f32; MAX_LONG_BLOCK];
-    for ch_pcm in pcm_blocks {
-        let fft_buf = &mut fft_storage[..n];
-        fft_buf.copy_from_slice(ch_pcm);
-        drft_forward_n(fft_buf);
-        let mut local = add_345(scale_db + to_db(fft_buf[0]));
-        let mut j = 1usize;
-        while j < n - 1 {
-            let temp = fft_buf[j] * fft_buf[j] + fft_buf[j + 1] * fft_buf[j + 1];
-            let t = add_345(scale_db + 0.5_f32 * to_db(temp));
-            if t > local {
-                local = t;
-            }
-            j += 2;
-        }
-        if local > 0.0 {
-            local = 0.0;
-        }
-        if local > max_local {
-            max_local = local;
+    let scale_dB = add_345(to_db(scale));
+
+    // MDCT (mdct_forward(&b->transform[vb->W][0], pcm, gmdct[i]))
+    mdct_forward_n(pcm, &mut gmdct[..n2]);
+
+    // Compute log-magnitude spectrum via real FFT on the windowed PCM.
+    // Port of mapping0.c lines 308-337:
+    //   drft_forward(&b->fft_look[vb->W], pcm);
+    //   logfft[0] = scale_dB + todB(pcm) + .345;
+    //   for j=1; j<n-1; j+=2:
+    //     temp = pcm[j]^2 + pcm[j+1]^2
+    //     logfft[(j+1)>>1] = scale_dB + 0.5*todB(&temp) + .345
+    //     local_ampmax[i] = max(...)
+    let fft_buf = &mut fft_buf[..n];
+    fft_buf.copy_from_slice(pcm);
+    drft_forward_n(fft_buf);
+    if dump {
+        std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
+        dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", fft_buf);
+    }
+    let lf = &mut logfft[..n2];
+    // DC bin
+    let mut local = add_345(scale_dB + to_db(fft_buf[0]));
+    lf[0] = local;
+    // Bins 1..n/2: element-wise (vectorizes), then the running max in
+    // libvorbis's order.
+    for (o, p) in lf[1..].iter_mut().zip(fft_buf[1..n - 1].chunks_exact(2)) {
+        let temp = p[0] * p[0] + p[1] * p[1];
+        *o = add_345(scale_dB + 0.5_f32 * to_db(temp));
+    }
+    for &t in &lf[1..] {
+        if t > local {
+            local = t;
         }
     }
-    max_local
+    if dump {
+        dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", lf);
+    }
+    if local > 0.0 { 0.0 } else { local }
 }
 
+/// `mapping0_forward` for one block of windowed PCM (`blocksizes[W]`
+/// samples per channel): the per-channel transforms
+/// ([`channel_spectra`]), then [`mapping0_forward_spectra`].
+#[cfg_attr(feature = "parallel", allow(dead_code))]
 pub(crate) fn mapping0_forward(
     pcm_blocks: &[Vec<f32>], // per-channel windowed PCM, blocksizes[W] samples
     psy_look: &VorbisLookPsy,
@@ -161,44 +191,7 @@ pub(crate) fn mapping0_forward(
     let n = pcm_blocks[0].len();
     let n2 = n / 2;
     let channels = pcm_blocks.len();
-    // Reset scratch buffers (sized to MAX_LONG_HALF; touch only n2 worth).
-    for c in 0..channels {
-        scratch.gmdct[c][..n2].fill(0.0);
-        scratch.logfft[c][..n2].fill(0.0);
-        scratch.noise_bufs[c][..n2].fill(0.0);
-        scratch.tone_bufs[c][..n2].fill(0.0);
-        scratch.iwork[c][..n2].fill(0);
-        scratch.floor_posts[c] = None;
-    }
-    scratch.local_ampmax[..channels].fill(0.0);
-    scratch.nonzero[..channels].fill(0);
-    scratch.logmdct[..n2].fill(0.0);
-    scratch.logmask[..n2].fill(0.0);
-    // Disjoint &mut borrows of scratch fields. Rust 2024's improved field
-    // borrow analysis lets these be live simultaneously.
-    let gmdct: &mut Vec<Vec<f32>> = &mut scratch.gmdct;
-    let logfft: &mut Vec<Vec<f32>> = &mut scratch.logfft;
-    let local_ampmax: &mut Vec<f32> = &mut scratch.local_ampmax;
-    let scratch_logmdct: &mut Vec<f32> = &mut scratch.logmdct;
-    let scratch_logmask: &mut Vec<f32> = &mut scratch.logmask;
-    let noise_bufs: &mut Vec<Vec<f32>> = &mut scratch.noise_bufs;
-    let tone_bufs: &mut Vec<Vec<f32>> = &mut scratch.tone_bufs;
-    let iwork: &mut Vec<Vec<i32>> = &mut scratch.iwork;
-    let nonzero: &mut Vec<i32> = &mut scratch.nonzero;
-    let floor_posts: &mut Vec<Option<Vec<i32>>> = &mut scratch.floor_posts;
-    let fft_buf: &mut [f32] = &mut scratch.fft_buf[..n];
-    let psy_scratch = &mut scratch.psy;
-
     let do_dump = !block_mode.is_long && dd::dump_enabled() && dd::try_claim_mapping0_dump();
-
-    // Scale factor for dB computation (port of `scale = 4.f/n; scale_dB = todB(&scale) + .345`)
-    let scale = 4.0f32 / n as f32;
-    let scale_dB = add_345(to_db(scale));
-
-    // Apply ampmax decay at the START of each block (port of block.c _vp_ampmax_decay call).
-    // libvorbis decays g->ampmax before calling mapping0_forward, using the CURRENT block's n2.
-    // This ensures that a long block (n2=1024) decays more than a short block (n2=128).
-    *ampmax = vp_ampmax_decay(*ampmax, gi, n2, psy_look.rate);
 
     if crate::debug_flag!("LW_DEBUG_PCM") {
         for i in 0..channels {
@@ -232,60 +225,89 @@ pub(crate) fn mapping0_forward(
         }
         eprintln!("{}", s);
     }
-    // Apply window (already done by caller), MDCT, and compute log-FFT approx
-    // Port of: lines 254-360 in mapping0.c
     for i in 0..channels {
-        // MDCT (mdct_forward(&b->transform[vb->W][0], pcm, gmdct[i]))
-        mdct_forward_n(&pcm_blocks[i], &mut gmdct[i][..n2]);
-
-        // Compute log-magnitude spectrum via real FFT on the windowed PCM.
-        // Port of mapping0.c lines 308-337:
-        //   drft_forward(&b->fft_look[vb->W], pcm);
-        //   logfft[0] = scale_dB + todB(pcm) + .345;
-        //   for j=1; j<n-1; j+=2:
-        //     temp = pcm[j]^2 + pcm[j+1]^2
-        //     logfft[(j+1)>>1] = scale_dB + 0.5*todB(&temp) + .345
-        //     local_ampmax[i] = max(...)
-        fft_buf.copy_from_slice(&pcm_blocks[i]);
-        drft_forward_n(fft_buf);
-        if do_dump && i == 0 {
-            std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
-            dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", fft_buf);
-        }
-        // DC bin
-        let lam = add_345(scale_dB + to_db(fft_buf[0]));
-        logfft[i][0] = lam;
-        local_ampmax[i] = lam;
-        // Bins 1..n/2: element-wise (vectorizes), then the running max in
-        // libvorbis's order.
-        let lf = &mut logfft[i][..n2];
-        for (o, p) in lf[1..].iter_mut().zip(fft_buf[1..n - 1].chunks_exact(2)) {
-            let temp = p[0] * p[0] + p[1] * p[1];
-            *o = add_345(scale_dB + 0.5_f32 * to_db(temp));
-        }
-        for &t in &lf[1..] {
-            if t > local_ampmax[i] {
-                local_ampmax[i] = t;
-            }
-        }
-        if do_dump && i == 0 {
-            dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", &logfft[i]);
-        }
-        if local_ampmax[i] > 0.0 {
-            local_ampmax[i] = 0.0;
-        }
-        if local_ampmax[i] > *ampmax {
-            *ampmax = local_ampmax[i];
-        }
-        // DEBUG
+        scratch.local_ampmax[i] = channel_spectra(
+            &pcm_blocks[i],
+            &mut scratch.gmdct[i],
+            &mut scratch.logfft[i],
+            &mut scratch.fft_buf,
+            do_dump && i == 0,
+        );
         if crate::debug_flag!("LW_DEBUG_FFT") {
             eprintln!(
                 "ch={} n={} local_ampmax={:.2} logfft[0..5]={:?}",
                 i,
                 n,
-                local_ampmax[i],
-                &logfft[i][..5.min(logfft[i].len())]
+                scratch.local_ampmax[i],
+                &scratch.logfft[i][..5.min(n2)]
             );
+        }
+    }
+    mapping0_forward_spectra(
+        n,
+        channels,
+        psy_look,
+        gi,
+        ampmax,
+        floor_states,
+        residue_types,
+        residue_setups,
+        residue_looks,
+        mapping,
+        block_mode,
+        books,
+        scratch,
+        opb,
+        do_dump,
+    );
+}
+
+/// The rest of `mapping0_forward` once `scratch` holds each channel's
+/// [`channel_spectra`] output (`gmdct`, `logfft`, `local_ampmax`) for a
+/// block of `n` samples: ampmax update, masking, floor fit, coupling,
+/// quantization and the packet's bits.
+pub(crate) fn mapping0_forward_spectra(
+    n: usize,
+    channels: usize,
+    psy_look: &VorbisLookPsy,
+    gi: &VorbisInfoPsyGlobal,
+    ampmax: &mut f32,
+    floor_states: &mut [Floor1State],
+    residue_types: &[u16],
+    residue_setups: &[ResidueSetup],
+    residue_looks: &[ResidueLook],
+    mapping: &Mapping,
+    block_mode: &BlockMode,
+    books: &[crate::codebook::Codebook],
+    scratch: &mut MappingScratch,
+    opb: &mut BitWriter,
+    do_dump: bool,
+) {
+    let n2 = n / 2;
+    // Disjoint &mut borrows of scratch fields. Rust 2024's improved field
+    // borrow analysis lets these be live simultaneously. Every buffer is
+    // fully written (over its first n2 lines) before it is read.
+    let gmdct: &mut Vec<Vec<f32>> = &mut scratch.gmdct;
+    let logfft: &mut Vec<Vec<f32>> = &mut scratch.logfft;
+    let local_ampmax: &mut Vec<f32> = &mut scratch.local_ampmax;
+    let scratch_logmdct: &mut Vec<f32> = &mut scratch.logmdct;
+    let scratch_logmask: &mut Vec<f32> = &mut scratch.logmask;
+    let noise_bufs: &mut Vec<Vec<f32>> = &mut scratch.noise_bufs;
+    let tone_bufs: &mut Vec<Vec<f32>> = &mut scratch.tone_bufs;
+    let iwork: &mut Vec<Vec<i32>> = &mut scratch.iwork;
+    let nonzero: &mut Vec<i32> = &mut scratch.nonzero;
+    let floor_posts = &mut scratch.floor_posts;
+    let floor_used = &mut scratch.floor_used;
+    let res_work = &mut scratch.res_work;
+    let psy_scratch = &mut scratch.psy;
+
+    // Apply ampmax decay at the START of each block (port of block.c _vp_ampmax_decay call).
+    // libvorbis decays g->ampmax before calling mapping0_forward, using the CURRENT block's n2.
+    // This ensures that a long block (n2=1024) decays more than a short block (n2=128).
+    *ampmax = vp_ampmax_decay(*ampmax, gi, n2, psy_look.rate);
+    for i in 0..channels {
+        if local_ampmax[i] > *ampmax {
+            *ampmax = local_ampmax[i];
         }
     }
 
@@ -429,14 +451,13 @@ pub(crate) fn mapping0_forward(
         if do_dump && i == 0 {
             dd::write_f32_bin("/tmp/lewtoff-debug/r_mask.bin", logmask);
         }
-        floor_posts[i] = floor1_fit(floor_state, logmdct, logmask);
-        if do_dump && i == 0 {
-            if let Some(ref posts) = floor_posts[i] {
-                dd::write_i32_bin("/tmp/lewtoff-debug/r_floor_posts.bin", posts);
-            }
+        floor_used[i] = floor1_fit(floor_state, logmdct, logmask, &mut floor_posts[i]);
+        let posts = &floor_posts[i][..floor_state.posts as usize];
+        if do_dump && i == 0 && floor_used[i] {
+            dd::write_i32_bin("/tmp/lewtoff-debug/r_floor_posts.bin", posts);
         }
         if crate::debug_flag!("LW_DEBUG_FLOOR") {
-            if let Some(ref posts) = floor_posts[i] {
+            if floor_used[i] {
                 eprintln!(
                     "LW_FLOOR ch={} n={} ampmax={:.2} floor_posts={:?}",
                     i, n, *ampmax, posts
@@ -465,10 +486,6 @@ pub(crate) fn mapping0_forward(
         opb.write(if block_mode.next_window { 1 } else { 0 }, 1);
     }
 
-    // Per-channel ilogmask (integer quantized floor)
-    let mut iwork: Vec<Vec<i32>> = vec![vec![0i32; n2]; channels];
-    let mut nonzero = vec![0i32; channels];
-
     let bits_before_floor = if do_dump { opb.bit_len() } else { 0 };
     for i in 0..channels {
         let submap = mapping.chmuxlist[i];
@@ -478,7 +495,11 @@ pub(crate) fn mapping0_forward(
         nonzero[i] = floor1_encode(
             opb,
             floor_state,
-            floor_posts[i].as_mut(),
+            if floor_used[i] {
+                Some(&mut floor_posts[i][..])
+            } else {
+                None
+            },
             &mut iwork[i],
             books,
             n,
@@ -517,48 +538,44 @@ pub(crate) fn mapping0_forward(
         let res_setup = &residue_setups[res_idx];
         let res_look = &residue_looks[res_idx];
 
-        // Gather channels in this submap
-        let mut couple_bundle_indices: Vec<usize> = Vec::new();
+        // Channels in this submap, in channel order. Residue coding is the
+        // last reader of iwork, so the bundle is coded in place.
+        let mut zerobundle = [false; MAX_BUNDLE];
+        let mut ch_in_bundle = 0usize;
         for j in 0..channels {
             if mapping.chmuxlist[j] == submap_idx {
-                couple_bundle_indices.push(j);
+                zerobundle[ch_in_bundle] = nonzero[j] != 0;
+                ch_in_bundle += 1;
             }
         }
-        let ch_in_bundle = couple_bundle_indices.len();
-
-        let zerobundle: Vec<bool> = couple_bundle_indices
-            .iter()
-            .map(|&ci| nonzero[ci] != 0)
+        let zerobundle = &zerobundle[..ch_in_bundle];
+        let mut bundle: Vec<&mut [i32]> = iwork
+            .iter_mut()
+            .zip(&mapping.chmuxlist)
+            .filter(|&(_, &m)| m == submap_idx)
+            .map(|(v, _)| &mut v[..n2])
             .collect();
 
         match res_type {
             0 | 1 => {
                 // res1 (and res0, treated same for encode purposes)
-                // Classify (immutable)
-                let in_slices: Vec<&[i32]> = couple_bundle_indices
-                    .iter()
-                    .map(|&ci| iwork[ci].as_slice())
-                    .collect();
-                let mut in_slices_for_class: Vec<&[i32]> = in_slices;
-                let partword = res1_class(
-                    res_setup,
-                    res_look,
-                    &mut in_slices_for_class,
-                    &zerobundle,
-                    ch_in_bundle,
-                );
+                let partword = {
+                    let mut in_slices: Vec<&[i32]> = bundle.iter().map(|v| &**v).collect();
+                    res1_class(
+                        res_setup,
+                        res_look,
+                        &mut in_slices,
+                        zerobundle,
+                        ch_in_bundle,
+                    )
+                };
                 if let Some(pw) = partword {
-                    // Clone the relevant channel data, encode with mutable access, write back
-                    let mut local: Vec<Vec<i32>> = couple_bundle_indices
-                        .iter()
-                        .map(|&ci| iwork[ci].clone())
-                        .collect();
                     if crate::debug_dump::dump_enabled() {
                         use std::sync::atomic::{AtomicBool, Ordering};
                         static FIRED: AtomicBool = AtomicBool::new(false);
                         if !FIRED.swap(true, Ordering::Relaxed) {
                             let mut bytes = Vec::new();
-                            for v in local[0].iter() {
+                            for v in bundle[0].iter() {
                                 bytes.extend_from_slice(&v.to_le_bytes());
                             }
                             let _ =
@@ -573,44 +590,35 @@ pub(crate) fn mapping0_forward(
                             let _ = std::fs::write("/tmp/lewtoff-debug/r_partword.bin", &pw_bytes);
                         }
                     }
-                    {
-                        let mut in_mut: Vec<&mut [i32]> =
-                            local.iter_mut().map(|v| v.as_mut_slice()).collect();
-                        res1_forward(
-                            opb,
-                            res_setup,
-                            res_look,
-                            &mut in_mut,
-                            &zerobundle,
-                            ch_in_bundle,
-                            &pw,
-                            books,
-                        );
-                    }
-                    for (k, &ci) in couple_bundle_indices.iter().enumerate() {
-                        iwork[ci].copy_from_slice(&local[k]);
-                    }
+                    res1_forward(
+                        opb,
+                        res_setup,
+                        res_look,
+                        &mut bundle,
+                        zerobundle,
+                        ch_in_bundle,
+                        &pw,
+                        books,
+                    );
                 }
             }
             2 => {
                 // res2: interleaved stereo
-                let in_slices: Vec<&[i32]> = couple_bundle_indices
-                    .iter()
-                    .map(|&ci| iwork[ci].as_slice())
-                    .collect();
+                let in_slices: Vec<&[i32]> = bundle.iter().map(|v| &**v).collect();
                 let partword =
-                    res2_class(res_setup, res_look, &in_slices, &zerobundle, ch_in_bundle);
+                    res2_class(res_setup, res_look, &in_slices, zerobundle, ch_in_bundle);
                 if let Some(pw) = partword {
                     res2_forward(
                         opb,
                         res_setup,
                         res_look,
                         &in_slices,
-                        &zerobundle,
+                        zerobundle,
                         ch_in_bundle,
                         n2,
                         &pw,
                         books,
+                        res_work,
                     );
                 }
             }
@@ -618,6 +626,10 @@ pub(crate) fn mapping0_forward(
         }
     }
 }
+
+/// Most channels one residue submap can bundle (lewtoff encodes mono or
+/// stereo).
+const MAX_BUNDLE: usize = 2;
 
 #[cfg(test)]
 mod tests {
