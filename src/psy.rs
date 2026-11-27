@@ -241,7 +241,7 @@ pub struct VorbisLookPsy {
 
 fn setup_tone_curves(
     curveatt_db: &[f32; P_BANDS],
-    bin_hz: f32,
+    geom: &ToneGeom,
     n: usize,
     center_boost: f32,
     center_decay_rate: f32,
@@ -249,7 +249,6 @@ fn setup_tone_curves(
     let mut workc = [[[0.0_f32; EHMER_MAX]; P_LEVELS]; P_BANDS];
     let mut athc = [[0.0_f32; EHMER_MAX]; P_LEVELS];
     let mut ath = [0.0_f32; EHMER_MAX];
-    let mut brute = vec![[0.0_f32; P_LEVELS]; n];
 
     // build return buffer
     let mut ret = Box::new([[[0.0_f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]);
@@ -354,12 +353,6 @@ fn setup_tone_curves(
         }
     }
 
-    // The spreading loops below map curve index j of half-octave band k to
-    // the bin range [lo, hi): `fromOC(j*.125+k*.5-2.0625)/binHz` and
-    // `fromOC(j*.125+k*.5-1.9375)/binHz+1`, clamped to [0, n]. libvorbis
-    // recomputes them (two exp() each) for every band, level and k; they
-    // depend only on (k, j), so they are computed once here, with the same
-    // expressions.
     // workc transposed to [band][j][level] for the all-levels spreading.
     let mut workt = [[[0.0_f32; P_LEVELS]; EHMER_MAX]; P_BANDS];
     for (wt, wc) in workt.iter_mut().zip(&workc) {
@@ -370,71 +363,17 @@ fn setup_tone_curves(
         }
     }
 
-    let bin_hz_d = bin_hz as f64;
-    let mut spread = [[(0usize, 0usize); EHMER_MAX]; P_BANDS];
-    for (k, row) in spread.iter_mut().enumerate() {
-        for (j, e) in row.iter_mut().enumerate() {
-            let lo_bin = (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
-            let hi_bin = (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
-            *e = (
-                lo_bin.max(0).min(n as i64) as usize,
-                hi_bin.max(0).min(n as i64) as usize,
-            );
-        }
-    }
-
     for i in 0..P_BANDS {
-        // C: `bin=floor(fromOC(i*.5)/binHz);` — double throughout.
-        // `toOC(bin*binHz+1)` / `toOC((bin+1)*binHz)`: int*float is float,
-        // so those arguments are float; the toOC results stay double.
-        let bin = (from_oc(i as f64 * 0.5) / bin_hz_d).floor() as i64;
-        let lo_curve_f = to_oc((bin as f32 * bin_hz + 1.0) as f64) * 2.0;
-        let hi_curve_f = to_oc(((bin + 1) as f32 * bin_hz) as f64) * 2.0;
-        let mut lo_curve = lo_curve_f.ceil() as i64;
-        let mut hi_curve = hi_curve_f.floor() as i64;
-        if lo_curve > i as i64 {
-            lo_curve = i as i64;
-        }
-        if lo_curve < 0 {
-            lo_curve = 0;
-        }
-        if hi_curve >= P_BANDS as i64 {
-            hi_curve = P_BANDS as i64 - 1;
-        }
+        let pull = &geom.pull[i];
 
-        // `fromOC(j*.125+i*.5-2.)/binHz`: the bin each curve point is read
-        // back from, the same for every level.
-        let mut pull = [0i64; EHMER_MAX];
-        for (j, b) in pull.iter_mut().enumerate() {
-            *b = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
-        }
-
-        // The spreading walk visits the same bins for every level m, so all
-        // P_LEVELS levels go through it together (`brute[l][m]`); each
-        // level's cell sees exactly libvorbis's sequence of min updates.
-        brute.fill([999.0; P_LEVELS]);
-        let mut spread_band = |row: &[(usize, usize); EHMER_MAX], w: &[[f32; P_LEVELS]; EHMER_MAX]| {
-            let mut l: usize = 0;
-            for j in 0..EHMER_MAX {
-                let (lo_bin, hi_bin) = row[j];
-                if lo_bin < l {
-                    l = lo_bin;
-                } // match C: if(lo_bin<l) l=lo_bin
-                while l < hi_bin && l < n {
-                    min_levels(&mut brute[l], &w[j]);
-                    l += 1;
-                }
-            }
-            for b in brute[l.min(n)..].iter_mut() {
-                min_levels(b, &w[EHMER_MAX - 1]);
-            }
-        };
-        for k in lo_curve..=hi_curve {
-            spread_band(&spread[k as usize], &workt[k as usize]);
-        }
-        // next half-octave
-        if i + 1 < P_BANDS {
-            spread_band(&spread[i], &workt[i + 1]);
+        // libvorbis spreads every curve into a per-bin `brute` buffer and
+        // then reads it back only at the `pull` bins. `geom.ops` lists, in
+        // the walk's order, just the min updates that land on those bins,
+        // so each `cell[j]` (= `brute[pull[j]]`, all levels at once) sees
+        // exactly libvorbis's sequence of `if (brute > w) brute = w`.
+        let mut cell = [[999.0_f32; P_LEVELS]; EHMER_MAX];
+        for &(src, j, c) in &geom.ops[geom.op_start[i]..geom.op_start[i + 1]] {
+            min_levels(&mut cell[c as usize], &workt[src as usize][j as usize]);
         }
 
         for m in 0..P_LEVELS {
@@ -444,7 +383,7 @@ fn setup_tone_curves(
                 if bin < 0 || bin >= n as i64 {
                     ret[i][m][j + 2] = -999.0;
                 } else {
-                    ret[i][m][j + 2] = brute[bin as usize][m];
+                    ret[i][m][j + 2] = cell[j][m];
                 }
             }
             // fenceposts
@@ -480,6 +419,269 @@ fn min_levels(b: &mut [f32; P_LEVELS], w: &[f32; P_LEVELS]) {
 }
 
 // ---------------------------------------------------------------------------
+// Quality-independent init geometry, cached per (n, rate, eighth_octave_lines)
+// ---------------------------------------------------------------------------
+
+/// The bin geometry of `setup_tone_curves`' spreading walk. It depends only
+/// on `binHz` (`rate*.5/n`) and `n`, not on the tone attenuations.
+struct ToneGeom {
+    /// `fromOC(j*.125+i*.5-2.)/binHz`: the bin curve point j of band i is
+    /// read back from, the same for every level.
+    pull: [[i64; EHMER_MAX]; P_BANDS],
+    /// The spreading walk's min updates that land on a pulled bin, in walk
+    /// order: `(src, j, c)` is `brute[pull[i][c]] min= workc[src][.][j]`.
+    /// Band i's are `ops[op_start[i]..op_start[i + 1]]`.
+    ops: Vec<(u8, u8, u8)>,
+    op_start: [usize; P_BANDS + 1],
+}
+
+impl ToneGeom {
+    fn new(bin_hz: f32, n: usize) -> Self {
+        let bin_hz_d = bin_hz as f64;
+        let mut spread = [[(0usize, 0usize); EHMER_MAX]; P_BANDS];
+        for (k, row) in spread.iter_mut().enumerate() {
+            for (j, e) in row.iter_mut().enumerate() {
+                let lo_bin =
+                    (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
+                let hi_bin =
+                    (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
+                *e = (
+                    lo_bin.max(0).min(n as i64) as usize,
+                    hi_bin.max(0).min(n as i64) as usize,
+                );
+            }
+        }
+        let mut curves = [(0i64, 0i64); P_BANDS];
+        let mut pull = [[0i64; EHMER_MAX]; P_BANDS];
+        for i in 0..P_BANDS {
+            // C: `bin=floor(fromOC(i*.5)/binHz);` — double throughout.
+            // `toOC(bin*binHz+1)` / `toOC((bin+1)*binHz)`: int*float is
+            // float, so those arguments are float; the toOC results stay
+            // double.
+            let bin = (from_oc(i as f64 * 0.5) / bin_hz_d).floor() as i64;
+            let lo_curve_f = to_oc((bin as f32 * bin_hz + 1.0) as f64) * 2.0;
+            let hi_curve_f = to_oc(((bin + 1) as f32 * bin_hz) as f64) * 2.0;
+            let mut lo_curve = lo_curve_f.ceil() as i64;
+            let mut hi_curve = hi_curve_f.floor() as i64;
+            if lo_curve > i as i64 {
+                lo_curve = i as i64;
+            }
+            if lo_curve < 0 {
+                lo_curve = 0;
+            }
+            if hi_curve >= P_BANDS as i64 {
+                hi_curve = P_BANDS as i64 - 1;
+            }
+            curves[i] = (lo_curve, hi_curve);
+            for (j, b) in pull[i].iter_mut().enumerate() {
+                *b = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
+            }
+        }
+
+        // Replay libvorbis's spreading walk on bin indices only. For band i
+        // it spreads `workc[k]` along `spread[k]` for k in
+        // lo_curve..=hi_curve, then `workc[i+1]` along `spread[i]` (the
+        // next half-octave). Each walk keeps a cursor l: curve point j sets
+        // `if (lo_bin < l) l = lo_bin`, then updates bins [l, hi_bin) (and
+        // l < n), leaving l there; bins from the final l to n get the last
+        // point. Only the updates of pulled bins are kept.
+        let mut ops = Vec::new();
+        let mut op_start = [0usize; P_BANDS + 1];
+        for i in 0..P_BANDS {
+            op_start[i] = ops.len();
+            // The pulled points inside [0, n), sorted by bin.
+            let mut order: Vec<usize> = (0..EHMER_MAX)
+                .filter(|&c| (0..n as i64).contains(&pull[i][c]))
+                .collect();
+            order.sort_by_key(|&c| pull[i][c]);
+            let bins: Vec<usize> = order.iter().map(|&c| pull[i][c] as usize).collect();
+            let covered = |lo: usize, hi: usize| {
+                &order[bins.partition_point(|&b| b < lo)..bins.partition_point(|&b| b < hi)]
+            };
+            let mut walk = |row: &[(usize, usize); EHMER_MAX], src: usize| {
+                let mut l: usize = 0;
+                for (j, &(lo_bin, hi_bin)) in row.iter().enumerate() {
+                    if lo_bin < l {
+                        l = lo_bin;
+                    }
+                    let first = l;
+                    if l < hi_bin.min(n) {
+                        l = hi_bin.min(n);
+                    }
+                    for &c in covered(first, l) {
+                        ops.push((src as u8, j as u8, c as u8));
+                    }
+                }
+                for &c in covered(l.min(n), n) {
+                    ops.push((src as u8, (EHMER_MAX - 1) as u8, c as u8));
+                }
+            };
+            let (lo_curve, hi_curve) = curves[i];
+            for k in lo_curve..=hi_curve {
+                walk(&spread[k as usize], k as usize);
+            }
+            if i + 1 < P_BANDS {
+                walk(&spread[i], i + 1);
+            }
+        }
+        op_start[P_BANDS] = ops.len();
+        ToneGeom {
+            pull,
+            ops,
+            op_start,
+        }
+    }
+}
+
+/// The parts of `_vp_psy_init` that depend only on the block size, the rate
+/// and `eighth_octave_lines`: the ATH curve, the octave and bark tables,
+/// the noise-offset band positions and the tone-curve spreading geometry.
+/// They are computed with exactly the expressions `vp_psy_init` used to
+/// evaluate inline, once per process instead of once per quality.
+struct PsyGeom {
+    key: (usize, i64, i32),
+    shiftoc: i32,
+    firstoc: i64,
+    total_octave_lines: i32,
+    ath: Vec<f32>,
+    octave: Vec<i32>,
+    /// `toBARK(rate/(2*n)*k)` for k in `-99..=n` (at index `k + 99`): every
+    /// argument the bark-window search can evaluate.
+    bark: Vec<f64>,
+    /// `toOC((i+.5)*rate/(2.*n))*2.` per bin, rounded to float.
+    halfoc: Vec<f32>,
+    tone: ToneGeom,
+}
+
+/// Lowest `lo` the bark-window search starts from.
+const BARK_LO0: i64 = -99;
+
+impl PsyGeom {
+    fn new(n: usize, rate: i64, eighth_octave_lines: i32) -> Self {
+        // libvorbis: `p->shiftoc = rint(log(gi->eighth_octave_lines*8.f)/log(2.f))-1;`
+        // log() is the f64 overload: f32 arg promotes to f64. f64 division.
+        // rint() rounds half-to-even.
+        let arg = (eighth_octave_lines * 8) as f32 as f64;
+        let two = 2.0_f32 as f64;
+        let shiftoc = (arg.ln() / two.ln()).round_ties_even() as i32 - 1;
+
+        // C: `toOC(.25f*rate*.5/n)` — `.25f*rate` is float, then double.
+        let firstoc = (to_oc((0.25_f32 * rate as f32) as f64 * 0.5 / n as f64)
+            * (1i64 << (shiftoc + 1)) as f64
+            - eighth_octave_lines as f64) as i64;
+        // C: `toOC((n+.25f)*rate*.5/n)*(1<<(shiftoc+1))+.5f` — `(n+.25f)*rate`
+        // is float, the rest double.
+        let maxoc = (to_oc(((n as f32 + 0.25) * rate as f32) as f64 * 0.5 / n as f64)
+            * (1i64 << (shiftoc + 1)) as f64
+            + 0.5) as i64;
+        let total_octave_lines = (maxoc - firstoc + 1) as i32;
+
+        // ATH setup
+        let mut ath = vec![0.0_f32; n];
+        {
+            let mut j: usize = 0;
+            for i in 0..(MAX_ATH - 1) {
+                // C: `rint(fromOC((i+1)*.125-2.)*2*n/rate)` — all double.
+                let endpos = (from_oc((i + 1) as f64 * 0.125 - 2.0) * 2.0 * n as f64
+                    / rate as f64)
+                    .round_ties_even() as usize;
+                let base = ATH[i];
+                if j < endpos {
+                    let delta = if endpos > j {
+                        (ATH[i + 1] - base) / (endpos - j) as f32
+                    } else {
+                        0.0
+                    };
+                    let mut b = base;
+                    while j < endpos && j < n {
+                        ath[j] = b + 100.0;
+                        b += delta;
+                        j += 1;
+                    }
+                }
+            }
+            while j < n {
+                ath[j] = ath[j - 1];
+                j += 1;
+            }
+        }
+
+        // libvorbis psy.c uses INTEGER division `rate/(2*n)*i` for the bark
+        // array, where rate is long and n/i are int (see vp_psy_init).
+        let bin_hz = rate / (2 * n as i64);
+        let bark = (BARK_LO0..=n as i64).map(|k| to_bark(bin_hz * k)).collect();
+
+        let octave = (0..n)
+            .map(|i| {
+                // C: `toOC((i+.25f)*.5*rate/n)*(1<<(shiftoc+1))+.5f` —
+                // `(i+.25f)` is float, everything after it double;
+                // truncated into a long.
+                (to_oc((i as f32 + 0.25) as f64 * 0.5 * rate as f64 / n as f64)
+                    * (1i32 << (shiftoc + 1)) as f64
+                    + 0.5) as i32
+            })
+            .collect();
+
+        let halfoc = (0..n)
+            .map(|i| {
+                // C: `float halfoc=toOC((i+.5)*rate/(2.*n))*2.;` — double
+                // argument and double result, rounded to float once on
+                // assignment.
+                (to_oc((i as f64 + 0.5) * rate as f64 / (2.0 * n as f64)) * 2.0) as f32
+            })
+            .collect();
+
+        // C passes `rate*.5/n` (double) to setup_tone_curves' float binHz.
+        let tone = ToneGeom::new((rate as f64 * 0.5 / n as f64) as f32, n);
+
+        PsyGeom {
+            key: (n, rate, eighth_octave_lines),
+            shiftoc,
+            firstoc,
+            total_octave_lines,
+            ath,
+            octave,
+            bark,
+            halfoc,
+            tone,
+        }
+    }
+
+    /// `toBARK(rate/(2*n)*k)`.
+    #[inline]
+    fn bark_at(&self, k: i64) -> f64 {
+        self.bark[(k - BARK_LO0) as usize]
+    }
+}
+
+/// Distinct geometries kept. Real encodes use at most 8 (two block sizes
+/// at each of two rates, for each of the two block-size pairs); the cap
+/// only bounds callers of the internal `vp_psy_init` with arbitrary sizes.
+const PSY_GEOM_CAP: usize = 16;
+
+static PSY_GEOM: std::sync::Mutex<Vec<std::sync::Arc<PsyGeom>>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn psy_geom(n: usize, rate: i64, eighth_octave_lines: i32) -> std::sync::Arc<PsyGeom> {
+    use std::sync::Arc;
+    let key = (n, rate, eighth_octave_lines);
+    let find = |v: &[Arc<PsyGeom>]| v.iter().find(|g| g.key == key).cloned();
+    if let Some(g) = find(&PSY_GEOM.lock().unwrap_or_else(|e| e.into_inner())) {
+        return g;
+    }
+    // Built outside the lock; a racing builder computes identical data.
+    let built = Arc::new(PsyGeom::new(n, rate, eighth_octave_lines));
+    let mut cache = PSY_GEOM.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(g) = find(&cache) {
+        return g;
+    }
+    if cache.len() < PSY_GEOM_CAP {
+        cache.push(Arc::clone(&built));
+    }
+    built
+}
+
+// ---------------------------------------------------------------------------
 // _vp_psy_init
 // ---------------------------------------------------------------------------
 
@@ -503,39 +705,24 @@ pub(crate) fn vp_psy_init_reusing(
     rate: i64,
     earlier: &[VorbisLookPsy],
 ) -> VorbisLookPsy {
+    let geom = psy_geom(n, rate, gi.eighth_octave_lines);
     let mut p = VorbisLookPsy {
         n,
         vi: vi.clone(),
         tonecurves: Box::new([[[0.0; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]),
         noiseoffset: vec![vec![0.0; n]; P_NOISECURVES],
-        ath: vec![0.0; n],
-        octave: vec![0; n],
+        // ATH setup (quality-independent; see PsyGeom::new)
+        ath: geom.ath.clone(),
+        // octave array (likewise)
+        octave: geom.octave.clone(),
         bark: vec![0; n],
-        firstoc: 0,
-        shiftoc: 0,
+        firstoc: geom.firstoc,
+        shiftoc: geom.shiftoc,
         eighth_octave_lines: gi.eighth_octave_lines,
-        total_octave_lines: 0,
+        total_octave_lines: geom.total_octave_lines,
         rate,
         m_val: 1.0,
     };
-
-    // libvorbis: `p->shiftoc = rint(log(gi->eighth_octave_lines*8.f)/log(2.f))-1;`
-    // log() is the f64 overload: f32 arg promotes to f64. f64 division.
-    // rint() rounds half-to-even.
-    let arg = (gi.eighth_octave_lines * 8) as f32 as f64;
-    let two = 2.0_f32 as f64;
-    p.shiftoc = (arg.ln() / two.ln()).round_ties_even() as i32 - 1;
-
-    // C: `toOC(.25f*rate*.5/n)` — `.25f*rate` is float, then double.
-    p.firstoc = (to_oc((0.25_f32 * rate as f32) as f64 * 0.5 / n as f64)
-        * (1i64 << (p.shiftoc + 1)) as f64
-        - gi.eighth_octave_lines as f64) as i64;
-    // C: `toOC((n+.25f)*rate*.5/n)*(1<<(shiftoc+1))+.5f` — `(n+.25f)*rate`
-    // is float, the rest double.
-    let maxoc = (to_oc(((n as f32 + 0.25) * rate as f32) as f64 * 0.5 / n as f64)
-        * (1i64 << (p.shiftoc + 1)) as f64
-        + 0.5) as i64;
-    p.total_octave_lines = (maxoc - p.firstoc + 1) as i32;
     debug_assert!(
         p.total_octave_lines <= MAX_OCTAVE_LINES as i32,
         "total_octave_lines={} exceeds MAX_OCTAVE_LINES; bump const",
@@ -552,34 +739,6 @@ pub(crate) fn vp_psy_init_reusing(
         p.m_val = 1.275;
     }
 
-    // ATH setup
-    {
-        let mut j: usize = 0;
-        for i in 0..(MAX_ATH - 1) {
-            // C: `rint(fromOC((i+1)*.125-2.)*2*n/rate)` — all double.
-            let endpos = (from_oc((i + 1) as f64 * 0.125 - 2.0) * 2.0 * n as f64 / rate as f64)
-                .round_ties_even() as usize;
-            let base = ATH[i];
-            if j < endpos {
-                let delta = if endpos > j {
-                    (ATH[i + 1] - base) / (endpos - j) as f32
-                } else {
-                    0.0
-                };
-                let mut b = base;
-                while j < endpos && j < n {
-                    p.ath[j] = b + 100.0;
-                    b += delta;
-                    j += 1;
-                }
-            }
-        }
-        while j < n {
-            p.ath[j] = p.ath[j - 1];
-            j += 1;
-        }
-    }
-
     // bark array
     //
     // libvorbis psy.c uses INTEGER division `rate/(2*n)*i` here, where rate
@@ -588,23 +747,22 @@ pub(crate) fn vp_psy_init_reusing(
     // window-edge calculation depends on this so the integer truncation must
     // be reproduced literally — using float division here flips a few bark
     // window `hi` values by 1 bin (visible in noise[] starting around bin
-    // 118 for some inputs).
+    // 118 for some inputs). `geom.bark_at(k)` is `toBARK(rate/(2*n)*k)`.
     {
-        let bin_hz = rate / (2 * n as i64); // integer division to match C
-        let mut lo: i64 = -99;
+        let mut lo: i64 = BARK_LO0;
         let mut hi: i64 = 1;
         for i in 0..n {
-            let bark = to_bark(bin_hz * i as i64) as f32;
+            let bark = geom.bark_at(i as i64) as f32;
 
             while lo + (vi.noisewindowlomin as i64) < i as i64
-                && to_bark(bin_hz * lo) < (bark - vi.noisewindowlo) as f64
+                && geom.bark_at(lo) < (bark - vi.noisewindowlo) as f64
             {
                 lo += 1;
             }
 
             while hi <= n as i64
                 && (hi < i as i64 + vi.noisewindowhimin as i64
-                    || to_bark(bin_hz * hi) < (bark + vi.noisewindowhi) as f64)
+                    || geom.bark_at(hi) < (bark + vi.noisewindowhi) as f64)
             {
                 hi += 1;
             }
@@ -615,15 +773,6 @@ pub(crate) fn vp_psy_init_reusing(
                 eprintln!("LW_BARK_INIT n={} i={}: lo={} hi={}", n, i, lo, hi);
             }
         }
-    }
-
-    // octave array
-    for i in 0..n {
-        // C: `toOC((i+.25f)*.5*rate/n)*(1<<(shiftoc+1))+.5f` — `(i+.25f)`
-        // is float, everything after it double; truncated into a long.
-        p.octave[i] = (to_oc((i as f32 + 0.25) as f64 * 0.5 * rate as f64 / n as f64)
-            * (1i32 << (p.shiftoc + 1)) as f64
-            + 0.5) as i32;
     }
 
     // tone curves
@@ -648,8 +797,7 @@ pub(crate) fn vp_psy_init_reusing(
         Some(e) => e.tonecurves.clone(),
         None => setup_tone_curves(
             &vi.toneatt,
-            // C passes `rate*.5/n` (double) to a float parameter.
-            (rate as f64 * 0.5 / n as f64) as f32,
+            &geom.tone,
             n,
             vi.tone_centerboost,
             vi.tone_decay,
@@ -674,9 +822,8 @@ pub(crate) fn vp_psy_init_reusing(
     // noise offsets
     let mut halfoc_dump = Vec::with_capacity(n);
     for i in 0..n {
-        // C: `float halfoc=toOC((i+.5)*rate/(2.*n))*2.;` — double argument
-        // and double result, rounded to float once on assignment.
-        let mut halfoc = (to_oc((i as f64 + 0.5) * rate as f64 / (2.0 * n as f64)) * 2.0) as f32;
+        // C: `float halfoc=toOC((i+.5)*rate/(2.*n))*2.;` (see PsyGeom::new).
+        let mut halfoc = geom.halfoc[i];
         halfoc_dump.push(halfoc);
         if halfoc < 0.0 {
             halfoc = 0.0;
