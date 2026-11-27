@@ -1176,9 +1176,42 @@ fn max_seeds(
 // bark_noise_hybridmp
 // ---------------------------------------------------------------------------
 
+/// The bark-window loop bounds of `bark_noise_hybridmp` (they depend only
+/// on `b`): `e2` ends the leading run of windows that start below 0
+/// (mirrored), `e3` the following run that lies inside [0, n). Same tests
+/// as libvorbis's loop conditions; each run is scanned 8 entries at a time
+/// with a branch-free AND, then finished entry by entry.
+fn hyb_bounds(n: usize, b: &[i64]) -> (usize, usize) {
+    let n_i = n as i64;
+    let lo = |v: i64| v >> 16;
+    let hi = |v: i64| v & 0xffff;
+    // lo < 0 && |lo| < n && hi < n
+    let mirrored = |v: i64| (lo(v) < 0) & (lo(v) > -n_i) & (hi(v) < n_i);
+    // 0 <= lo < n && hi < n
+    let inside = |v: i64| (lo(v) >= 0) & (lo(v) < n_i) & (hi(v) < n_i);
+    fn run(b: &[i64], start: usize, stay: impl Fn(i64) -> bool) -> usize {
+        let mut i = start;
+        while let Some(chunk) = b.get(i..i + 8) {
+            if !chunk.iter().fold(true, |acc, &v| acc & stay(v)) {
+                break;
+            }
+            i += 8;
+        }
+        while i < b.len() && stay(b[i]) {
+            i += 1;
+        }
+        i
+    }
+    let b = &b[..n];
+    let e2 = run(b, 0, mirrored);
+    (e2, run(b, e2, inside))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bark_noise_hybridmp(
     n: usize,
     b: &[i64],
+    bounds: (usize, usize),
     f: &[f32],
     noise: &mut [f32],
     offset: f32,
@@ -1257,22 +1290,7 @@ fn bark_noise_hybridmp(
     // each body is element-wise in i and runs HYB_LANES at a time with
     // per-lane gathers (every lane does the scalar ops in scalar order).
     let lohi = |i: usize| (b[i] >> 16, (b[i] & 0xffff) as usize);
-    let mut e2 = 0;
-    while e2 < n {
-        let (lo, hi) = lohi(e2);
-        if lo >= 0 || lo.unsigned_abs() as usize >= n || hi >= n {
-            break;
-        }
-        e2 += 1;
-    }
-    let mut e3 = e2;
-    while e3 < n {
-        let (lo, hi) = lohi(e3);
-        if lo < 0 || lo as usize >= n || hi >= n {
-            break;
-        }
-        e3 += 1;
-    }
+    let (e2, e3) = bounds;
     let mirrored = |i: usize| {
         let (lo, hi) = lohi(i);
         (lo.unsigned_abs() as usize, hi)
@@ -1486,13 +1504,23 @@ pub fn vp_noisemask(
     let pre = &mut scratch.prefix[..];
     let work = &mut scratch.work[..n];
 
-    bark_noise_hybridmp(n, &p.bark, logmdct, logmask, 140.0, -1, pre);
+    let bounds = hyb_bounds(n, &p.bark);
+    bark_noise_hybridmp(n, &p.bark, bounds, logmdct, logmask, 140.0, -1, pre);
 
     for i in 0..n {
         work[i] = logmdct[i] - logmask[i];
     }
 
-    bark_noise_hybridmp(n, &p.bark, work, logmask, 0.0, p.vi.noisewindowfixed, pre);
+    bark_noise_hybridmp(
+        n,
+        &p.bark,
+        bounds,
+        work,
+        logmask,
+        0.0,
+        p.vi.noisewindowfixed,
+        pre,
+    );
 
     for i in 0..n {
         work[i] = logmdct[i] - work[i];
