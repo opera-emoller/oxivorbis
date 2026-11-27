@@ -335,6 +335,11 @@ fn cpp_header_smoke() {
         .arg(ffi_dir().join("tests/c/smoke.cpp"))
         .arg("-o")
         .arg(&exe);
+    if cfg!(windows) {
+        // Newer MSVC STLs refuse a clang older than they were tested with
+        // (STL1000); the smoke test only needs our header to compile.
+        cxx.arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
+    }
     link_shared(&mut cxx, &libs, &dir);
     run(&mut cxx);
     run(&mut Command::new(&exe));
