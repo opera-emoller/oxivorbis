@@ -42,19 +42,21 @@ impl BitWriter {
     pub fn write_bits_from(&mut self, src: &[u8], bits: usize) {
         let full = bits / 8;
         let rem = (bits % 8) as u32;
-        if self.bytes.is_empty() || self.bits_in_last == 8 {
-            // Byte-aligned: the bytes are appended as they are.
-            self.bytes.extend_from_slice(&src[..full]);
-            if full > 0 {
-                self.bits_in_last = 8;
-            }
-        } else {
-            let shift = self.bits_in_last;
-            self.bytes.reserve(full);
-            for &b in &src[..full] {
-                *self.bytes.last_mut().expect("not aligned, so not empty") |= b << shift;
-                self.bytes.push(b >> (8 - shift));
-            }
+        let mut i = 0;
+        if self.pending == 0 {
+            // Word-aligned (nothing in the accumulator): whole 32-bit words
+            // of `src` can be appended as they are.
+            let words = full / 4 * 4;
+            self.bytes.extend_from_slice(&src[..words]);
+            i = words;
+        }
+        while i + 4 <= full {
+            let w = u32::from_le_bytes(src[i..i + 4].try_into().expect("4 bytes"));
+            self.write(w, 32);
+            i += 4;
+        }
+        for &b in &src[i..full] {
+            self.write(b as u32, 8);
         }
         if rem != 0 {
             self.write(src[full] as u32, rem);

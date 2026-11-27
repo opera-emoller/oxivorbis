@@ -987,8 +987,8 @@ mod tests {
             let book = Codebook {
                 entries,
                 dim: D,
-                codewords: vec![0; entries],
-                codeword_lengths: lengths,
+                codewords: vec![0; entries].into(),
+                codeword_lengths: lengths.into(),
                 maptype: 1,
                 quantvals: qv,
                 minval,
