@@ -384,6 +384,24 @@ fn render_line0(n: i32, x0: i32, x1: i32, y0: i32, y1: i32, d: &mut [i32]) {
         d[x as usize] = y;
     }
 
+    // Lines x0 < x < n: whole strides from the lanes, then serially.
+    const L: usize = LINE_LANES;
+    let end = n - x0; // lines k = 1..end
+    if end > L as i32 {
+        let end = end as usize;
+        let mut lanes = LineLanes::new(y0, base, sy, ady, adx);
+        let out = &mut d[x0 as usize + 1..n as usize];
+        let mut k0 = 1usize;
+        while k0 + L <= end {
+            out[k0 - 1..k0 - 1 + L].copy_from_slice(&lanes.ys);
+            lanes.advance();
+            k0 += L;
+        }
+        let k = (k0 - 1) as i32;
+        (y, err) = line_at(y0, base, sy, ady, adx, k);
+        x = x0 + k;
+    }
+
     loop {
         x += 1;
         if x >= n {
@@ -397,6 +415,64 @@ fn render_line0(n: i32, x0: i32, x1: i32, y0: i32, y1: i32, d: &mut [i32]) {
             y += base;
         }
         d[x as usize] = y;
+    }
+}
+
+/// Lines a floor1 line walk ([`render_line0`], [`inspect_error`]) handles
+/// per stride.
+const LINE_LANES: usize = 8;
+
+/// `y` and `err` of libvorbis's Bresenham walk from `(x0, y0)` after `k`
+/// steps (err += ady; when err >= adx, err -= adx and y += sy, else
+/// y += base; 0 <= ady < adx): y = y0 + k*base + (sy-base)*floor(k*ady/adx)
+/// and err = k*ady % adx.
+fn line_at(y0: i32, base: i32, sy: i32, ady: i32, adx: i32, k: i32) -> (i32, i32) {
+    (y0 + k * base + (sy - base) * (k * ady / adx), k * ady % adx)
+}
+
+/// [`LINE_LANES`] consecutive lines of a Bresenham walk (see [`line_at`]).
+/// Each lane runs libvorbis's recurrence a stride of `LINE_LANES` steps at
+/// a time: err += the stride's remainder, the same carry test, and y += the
+/// stride's whole steps plus the carry. That gives every line's exact y
+/// without the walk's serial dependency, so per-line work vectorizes.
+struct LineLanes {
+    /// Lane j is at line k0 + j (k0 = 1, then 1 + LINE_LANES, ...).
+    ys: [i32; LINE_LANES],
+    errs: [i32; LINE_LANES],
+    adx: i32,
+    /// The stride's remainder, whole steps of y, and the carry's extra step.
+    sr: i32,
+    ystride: i32,
+    step: i32,
+}
+
+impl LineLanes {
+    fn new(y0: i32, base: i32, sy: i32, ady: i32, adx: i32) -> Self {
+        let mut ys = [0i32; LINE_LANES];
+        let mut errs = [0i32; LINE_LANES];
+        for j in 0..LINE_LANES {
+            (ys[j], errs[j]) = line_at(y0, base, sy, ady, adx, j as i32 + 1);
+        }
+        let stride = LINE_LANES as i32 * ady;
+        let step = sy - base;
+        Self {
+            ys,
+            errs,
+            adx,
+            sr: stride % adx,
+            ystride: LINE_LANES as i32 * base + step * (stride / adx),
+            step,
+        }
+    }
+
+    #[inline(always)]
+    fn advance(&mut self) {
+        for j in 0..LINE_LANES {
+            let e = self.errs[j] + self.sr;
+            let carry = e >= self.adx;
+            self.errs[j] = if carry { e - self.adx } else { e };
+            self.ys[j] += self.ystride + if carry { self.step } else { 0 };
+        }
     }
 }
 
@@ -422,9 +498,6 @@ fn vorbis_dBquant(x: f32) -> i32 {
 
 /// Bit set in a fit code when `mdct + twofitatten >= flr` for that line.
 const FIT_ABOVE: i32 = 1 << 16;
-
-/// Lines inspect_error tests per stride.
-const INSPECT_LANES: usize = 8;
 
 /// For each line x < n: `vorbis_dBquant(flr[x])`, with [`FIT_ABOVE`] set
 /// when `mdct[x] + twofitatten >= flr[x]`. libvorbis recomputes both inside
@@ -623,15 +696,10 @@ fn inspect_error(x0: i32, x1: i32, y0: i32, y1: i32, codes: &[i32], info: &Floor
         }
     }
 
-    // The rest of the line, x0 < x < x1. libvorbis steps y with Bresenham
-    // (err += ady; carry into sy when err >= adx, else base), so after k
-    // steps y = y0 + k*base + (sy-base)*floor(k*ady/adx) and
-    // err = k*ady % adx. INSPECT_LANES lanes each run that recurrence
-    // INSPECT_LANES steps at a time (the same carry test, with the stride's
-    // quotient and remainder), giving every line's exact y without the
-    // serial dependency, so the tests vectorize. Any failing line returns
-    // 1 and mse is an integer sum, so neither depends on the order the
-    // lines are visited in; failures are checked once per stride.
+    // The rest of the line, x0 < x < x1: whole strides from the lanes
+    // (see LineLanes), so the tests vectorize, then serially. Any failing
+    // line returns 1 and mse is an integer sum, so neither depends on the
+    // order the lines are visited in; failures are checked once per stride.
     let check = |y: i32, c: i32, mse: &mut i32| {
         let val = c & 0xffff;
         *mse += (y - val) * (y - val);
@@ -641,45 +709,29 @@ fn inspect_error(x0: i32, x1: i32, y0: i32, y1: i32, codes: &[i32], info: &Floor
         let under = (y as f32) - info.maxunder > val as f32;
         checked & (over | under)
     };
-    const L: usize = INSPECT_LANES;
+    const L: usize = LINE_LANES;
     let end = (x1 - x0) as usize; // lines k = 1..end
-    let mut k0 = 1usize;
     if end > L {
-        let step = sy - base;
-        let mut ys = [0i32; L];
-        let mut errs = [0i32; L];
-        for j in 0..L {
-            let k = (j + 1) as i32;
-            ys[j] = y0 + k * base + step * (k * ady / adx);
-            errs[j] = k * ady % adx;
-        }
-        let stride = L as i32 * ady;
-        let (sq, sr) = (stride / adx, stride % adx);
-        let ystride = L as i32 * base + step * sq;
+        let mut lanes = LineLanes::new(y0, base, sy, ady, adx);
         let mut mses = [0i32; L];
         let lines = &codes[x0 as usize + 1..x1 as usize];
+        let mut k0 = 1usize;
         while k0 + L <= end {
             let cs: &[i32; L] = lines[k0 - 1..k0 - 1 + L].try_into().expect("L lines");
             let mut bad = false;
             for j in 0..L {
-                bad |= check(ys[j], cs[j], &mut mses[j]);
+                bad |= check(lanes.ys[j], cs[j], &mut mses[j]);
             }
             if bad {
                 return 1;
             }
-            for j in 0..L {
-                let e = errs[j] + sr;
-                let carry = e >= adx;
-                errs[j] = if carry { e - adx } else { e };
-                ys[j] += ystride + if carry { step } else { 0 };
-            }
+            lanes.advance();
             k0 += L;
         }
         mse += mses.iter().sum::<i32>();
         // Resume the serial walk at line k0 - 1.
         let k = (k0 - 1) as i32;
-        y = y0 + k * base + step * (k * ady / adx);
-        err = k * ady % adx;
+        (y, err) = line_at(y0, base, sy, ady, adx, k);
         x = x0 + k;
     }
     n += end as i32 - 1;
