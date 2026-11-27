@@ -2229,15 +2229,27 @@ mod tests {
 
     fn libm_robust_over(rates: impl Iterator<Item = u32> + Send, ulps: i64) {
         let rates: Vec<u32> = rates.collect();
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        let chunk = rates.len().div_ceil(threads).max(1);
-        let bad: Vec<(u32, usize, i64)> = std::thread::scope(|sc| {
-            let hs: Vec<_> = rates
-                .chunks(chunk)
-                .map(|c| sc.spawn(move || c.iter().flat_map(|&r| libm_robust_at(r, ulps)).collect::<Vec<_>>()))
-                .collect();
-            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
-        });
+        // wasm32-wasip1 has no threads (spawn fails), so run serially there;
+        // the check matters most on wasm, whose libm differs from the host's.
+        #[cfg(target_family = "wasm")]
+        let bad: Vec<(u32, usize, i64)> =
+            rates.iter().flat_map(|&r| libm_robust_at(r, ulps)).collect();
+        #[cfg(not(target_family = "wasm"))]
+        let bad: Vec<(u32, usize, i64)> = {
+            let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let chunk = rates.len().div_ceil(threads).max(1);
+            std::thread::scope(|sc| {
+                let hs: Vec<_> = rates
+                    .chunks(chunk)
+                    .map(|c| {
+                        sc.spawn(move || {
+                            c.iter().flat_map(|&r| libm_robust_at(r, ulps)).collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+            })
+        };
         assert!(bad.is_empty(), "{} (rate, n, ulps) depend on libm's last bits: {:?}", bad.len(), &bad[..bad.len().min(20)]);
     }
 
