@@ -7,6 +7,17 @@ A pure-Rust Ogg Vorbis **encoder** that produces the same bytes as
 libvorbis 1.3.7. It supports VBR mode at oggenc qualities -1 to 10,
 including fractional ones.
 
+**Faster than libvorbis itself: 1.5–1.7× `oggenc` on one core, and
+7–9× with the `parallel` feature.**
+
+| 261 s stereo track, q5 | `oggenc` (libvorbis) | oxivorbis | oxivorbis `parallel` |
+|---|---|---|---|
+| Apple M4 | 1.29 s | **0.77 s** | **0.18 s** |
+| Intel Core Ultra 7 (x86_64) | 1.80 s | **1.17 s** | **0.20 s** |
+
+Same output bytes as libvorbis, so the speed doesn't come from cutting
+corners. Details and other qualities are under [Performance](#performance).
+
 - No `unsafe`, no C, no build script. The only runtime dependency is
   [`ogg`](https://crates.io/crates/ogg), used for page framing and CRC.
 - Works on `wasm32-unknown-unknown`.
@@ -14,8 +25,8 @@ including fractional ones.
   input. Streaming memory stays bounded however long the input is.
 - No `Result`s and no panics. Rates, channel layouts and qualities are
   typed, and every input encodes.
-- An optional `parallel` feature encodes long inputs several times
-  faster. Its output is byte-identical to the serial path.
+- An optional `parallel` feature spreads long inputs across all cores
+  (7–9× `oggenc` above). Its output is byte-identical to the serial path.
 
 Pairs naturally with [lewton](https://github.com/RustAudio/lewton), the
 pure-Rust Vorbis decoder.
