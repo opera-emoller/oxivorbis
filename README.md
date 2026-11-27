@@ -260,15 +260,15 @@ looser arithmetic.
 
 | Machine | Quality | oggenc | lewtoff serial | lewtoff `parallel` |
 |---|---|---|---|---|
-| Apple M4 (10 cores) | q-1 | 1.66 s | **1.19 s** | **0.27 s** |
-| | q5 | 1.29 s | **1.09 s** | **0.26 s** |
-| | q10 | 1.46 s | **1.25 s** | **0.30 s** |
-| Intel Core Ultra 7 356H (16 cores, serial pinned to a P-core) | q-1 | 2.16 s | **1.56 s** | **0.26 s** |
-| | q5 | 1.79 s | **1.53 s** | **0.25 s** |
-| | q10 | 2.06 s | **1.79 s** | **0.29 s** |
+| Apple M4 (10 cores) | q-1 | 1.67 s | **0.93 s** | **0.20 s** |
+| | q5 | 1.29 s | **0.77 s** | **0.18 s** |
+| | q10 | 1.46 s | **0.90 s** | **0.20 s** |
+| Intel Core Ultra 7 356H (16 cores, serial pinned to a P-core) | q-1 | 2.17 s | **1.26 s** | **0.20 s** |
+| | q5 | 1.80 s | **1.17 s** | **0.20 s** |
+| | q10 | 2.06 s | **1.40 s** | **0.23 s** |
 
-Serial lewtoff is 13–30% faster than oggenc. With `parallel`, it is 5–8×
-faster on long inputs, at about 1.8× the total CPU time of serial.
+Serial lewtoff is about 1.5–1.8× as fast as oggenc. With `parallel` it is
+7–11× faster on long inputs, at about 1.6× the total CPU time of serial.
 
 Memory: streaming through `Encoder` peaks at about 3–4 MB serial and
 about 17–19 MB with `parallel` (M4/x86), whatever the input length.
