@@ -86,121 +86,131 @@ pub(crate) fn mdct_tables(n: usize) -> &'static MdctTables {
 
 /* Generic versions that accept a trig table slice */
 
-fn mdct_butterfly_8_g(x: &mut [f32], base: usize) {
-    let r0 = x[base + 6] + x[base + 2];
-    let r1 = x[base + 6] - x[base + 2];
-    let r2 = x[base + 4] + x[base + 0];
-    let r3 = x[base + 4] - x[base + 0];
+// The 8/16/32-point butterflies work on fixed-size views (no bounds checks)
+// and are force-inlined into the per-size MDCT instances: out of line, the
+// x86_64 SLP vectorizer turns them into shuffle-heavy code that is slower
+// than the bounds-checked scalar original.
 
-    x[base + 6] = r0 + r2;
-    x[base + 4] = r0 - r2;
+#[inline(always)]
+fn mdct_butterfly_8_g(x: &mut [f32; 8]) {
+    let r0 = x[6] + x[2];
+    let r1 = x[6] - x[2];
+    let r2 = x[4] + x[0];
+    let r3 = x[4] - x[0];
 
-    let r0 = x[base + 5] - x[base + 1];
-    let r2 = x[base + 7] - x[base + 3];
-    x[base + 0] = r1 + r0;
-    x[base + 2] = r1 - r0;
+    x[6] = r0 + r2;
+    x[4] = r0 - r2;
 
-    let r0 = x[base + 5] + x[base + 1];
-    let r1 = x[base + 7] + x[base + 3];
-    x[base + 3] = r2 + r3;
-    x[base + 1] = r2 - r3;
-    x[base + 7] = r1 + r0;
-    x[base + 5] = r1 - r0;
+    let r0 = x[5] - x[1];
+    let r2 = x[7] - x[3];
+    x[0] = r1 + r0;
+    x[2] = r1 - r0;
+
+    let r0 = x[5] + x[1];
+    let r1 = x[7] + x[3];
+    x[3] = r2 + r3;
+    x[1] = r2 - r3;
+    x[7] = r1 + r0;
+    x[5] = r1 - r0;
 }
 
-fn mdct_butterfly_16_g(x: &mut [f32], base: usize) {
-    let r0 = x[base + 1] - x[base + 9];
-    let r1 = x[base + 0] - x[base + 8];
+#[inline(always)]
+fn mdct_butterfly_16_g(x: &mut [f32; 16]) {
+    let r0 = x[1] - x[9];
+    let r1 = x[0] - x[8];
 
-    x[base + 8] += x[base + 0];
-    x[base + 9] += x[base + 1];
-    x[base + 0] = (r0 + r1) * CPI2_8;
-    x[base + 1] = (r0 - r1) * CPI2_8;
+    x[8] += x[0];
+    x[9] += x[1];
+    x[0] = (r0 + r1) * CPI2_8;
+    x[1] = (r0 - r1) * CPI2_8;
 
-    let r0 = x[base + 3] - x[base + 11];
-    let r1 = x[base + 10] - x[base + 2];
-    x[base + 10] += x[base + 2];
-    x[base + 11] += x[base + 3];
-    x[base + 2] = r0;
-    x[base + 3] = r1;
+    let r0 = x[3] - x[11];
+    let r1 = x[10] - x[2];
+    x[10] += x[2];
+    x[11] += x[3];
+    x[2] = r0;
+    x[3] = r1;
 
-    let r0 = x[base + 12] - x[base + 4];
-    let r1 = x[base + 13] - x[base + 5];
-    x[base + 12] += x[base + 4];
-    x[base + 13] += x[base + 5];
-    x[base + 4] = (r0 - r1) * CPI2_8;
-    x[base + 5] = (r0 + r1) * CPI2_8;
+    let r0 = x[12] - x[4];
+    let r1 = x[13] - x[5];
+    x[12] += x[4];
+    x[13] += x[5];
+    x[4] = (r0 - r1) * CPI2_8;
+    x[5] = (r0 + r1) * CPI2_8;
 
-    let r0 = x[base + 14] - x[base + 6];
-    let r1 = x[base + 15] - x[base + 7];
-    x[base + 14] += x[base + 6];
-    x[base + 15] += x[base + 7];
-    x[base + 6] = r0;
-    x[base + 7] = r1;
+    let r0 = x[14] - x[6];
+    let r1 = x[15] - x[7];
+    x[14] += x[6];
+    x[15] += x[7];
+    x[6] = r0;
+    x[7] = r1;
 
-    mdct_butterfly_8_g(x, base);
-    mdct_butterfly_8_g(x, base + 8);
+    let (a, b) = x.split_at_mut(8);
+    mdct_butterfly_8_g(a.try_into().unwrap());
+    mdct_butterfly_8_g(b.try_into().unwrap());
 }
 
-fn mdct_butterfly_32_g(x: &mut [f32], base: usize) {
-    let r0 = x[base + 30] - x[base + 14];
-    let r1 = x[base + 31] - x[base + 15];
-    x[base + 30] += x[base + 14];
-    x[base + 31] += x[base + 15];
-    x[base + 14] = r0;
-    x[base + 15] = r1;
+#[inline(always)]
+fn mdct_butterfly_32_g(x: &mut [f32; 32]) {
+    let r0 = x[30] - x[14];
+    let r1 = x[31] - x[15];
+    x[30] += x[14];
+    x[31] += x[15];
+    x[14] = r0;
+    x[15] = r1;
 
-    let r0 = x[base + 28] - x[base + 12];
-    let r1 = x[base + 29] - x[base + 13];
-    x[base + 28] += x[base + 12];
-    x[base + 29] += x[base + 13];
-    x[base + 12] = r0 * CPI1_8 - r1 * CPI3_8;
-    x[base + 13] = r0 * CPI3_8 + r1 * CPI1_8;
+    let r0 = x[28] - x[12];
+    let r1 = x[29] - x[13];
+    x[28] += x[12];
+    x[29] += x[13];
+    x[12] = r0 * CPI1_8 - r1 * CPI3_8;
+    x[13] = r0 * CPI3_8 + r1 * CPI1_8;
 
-    let r0 = x[base + 26] - x[base + 10];
-    let r1 = x[base + 27] - x[base + 11];
-    x[base + 26] += x[base + 10];
-    x[base + 27] += x[base + 11];
-    x[base + 10] = (r0 - r1) * CPI2_8;
-    x[base + 11] = (r0 + r1) * CPI2_8;
+    let r0 = x[26] - x[10];
+    let r1 = x[27] - x[11];
+    x[26] += x[10];
+    x[27] += x[11];
+    x[10] = (r0 - r1) * CPI2_8;
+    x[11] = (r0 + r1) * CPI2_8;
 
-    let r0 = x[base + 24] - x[base + 8];
-    let r1 = x[base + 25] - x[base + 9];
-    x[base + 24] += x[base + 8];
-    x[base + 25] += x[base + 9];
-    x[base + 8] = r0 * CPI3_8 - r1 * CPI1_8;
-    x[base + 9] = r1 * CPI3_8 + r0 * CPI1_8;
+    let r0 = x[24] - x[8];
+    let r1 = x[25] - x[9];
+    x[24] += x[8];
+    x[25] += x[9];
+    x[8] = r0 * CPI3_8 - r1 * CPI1_8;
+    x[9] = r1 * CPI3_8 + r0 * CPI1_8;
 
-    let r0 = x[base + 22] - x[base + 6];
-    let r1 = x[base + 7] - x[base + 23];
-    x[base + 22] += x[base + 6];
-    x[base + 23] += x[base + 7];
-    x[base + 6] = r1;
-    x[base + 7] = r0;
+    let r0 = x[22] - x[6];
+    let r1 = x[7] - x[23];
+    x[22] += x[6];
+    x[23] += x[7];
+    x[6] = r1;
+    x[7] = r0;
 
-    let r0 = x[base + 4] - x[base + 20];
-    let r1 = x[base + 5] - x[base + 21];
-    x[base + 20] += x[base + 4];
-    x[base + 21] += x[base + 5];
-    x[base + 4] = r1 * CPI1_8 + r0 * CPI3_8;
-    x[base + 5] = r1 * CPI3_8 - r0 * CPI1_8;
+    let r0 = x[4] - x[20];
+    let r1 = x[5] - x[21];
+    x[20] += x[4];
+    x[21] += x[5];
+    x[4] = r1 * CPI1_8 + r0 * CPI3_8;
+    x[5] = r1 * CPI3_8 - r0 * CPI1_8;
 
-    let r0 = x[base + 2] - x[base + 18];
-    let r1 = x[base + 3] - x[base + 19];
-    x[base + 18] += x[base + 2];
-    x[base + 19] += x[base + 3];
-    x[base + 2] = (r1 + r0) * CPI2_8;
-    x[base + 3] = (r1 - r0) * CPI2_8;
+    let r0 = x[2] - x[18];
+    let r1 = x[3] - x[19];
+    x[18] += x[2];
+    x[19] += x[3];
+    x[2] = (r1 + r0) * CPI2_8;
+    x[3] = (r1 - r0) * CPI2_8;
 
-    let r0 = x[base + 0] - x[base + 16];
-    let r1 = x[base + 1] - x[base + 17];
-    x[base + 16] += x[base + 0];
-    x[base + 17] += x[base + 1];
-    x[base + 0] = r1 * CPI3_8 + r0 * CPI1_8;
-    x[base + 1] = r1 * CPI1_8 - r0 * CPI3_8;
+    let r0 = x[0] - x[16];
+    let r1 = x[1] - x[17];
+    x[16] += x[0];
+    x[17] += x[1];
+    x[0] = r1 * CPI3_8 + r0 * CPI1_8;
+    x[1] = r1 * CPI1_8 - r0 * CPI3_8;
 
-    mdct_butterfly_16_g(x, base);
-    mdct_butterfly_16_g(x, base + 16);
+    let (a, b) = x.split_at_mut(16);
+    mdct_butterfly_16_g(a.try_into().unwrap());
+    mdct_butterfly_16_g(b.try_into().unwrap());
 }
 
 /// One 8-float step of libvorbis's generic/first butterflies: `hi` is the
@@ -291,6 +301,7 @@ fn mdct_butterfly_generic_g(
     }
 }
 
+#[inline(always)]
 fn mdct_butterflies_g(trig: &[f32], log2n: usize, x: &mut [f32], x_base: usize, points: usize) {
     let mut stages: i32 = (log2n - 5) as i32;
 
@@ -314,13 +325,12 @@ fn mdct_butterflies_g(trig: &[f32], log2n: usize, x: &mut [f32], x_base: usize, 
         i += 1;
     }
 
-    let mut j = x_base;
-    while j < x_base + points {
-        mdct_butterfly_32_g(x, j);
-        j += 32;
+    for c in x[x_base..x_base + points].chunks_exact_mut(32) {
+        mdct_butterfly_32_g(c.try_into().unwrap());
     }
 }
 
+#[inline(always)]
 fn mdct_bitreverse_g(trig: &[f32], bitrev: &[u32], n: usize, w: &mut [f32]) {
     let n2 = n / 2;
     let n4 = n / 4;
@@ -382,18 +392,18 @@ pub(crate) fn mdct_forward_with(t: &MdctTables, input: &[f32], output: &mut [f32
     let n = t.n;
     assert_eq!(input.len(), n, "mdct: input length must equal MDCT size");
     assert_eq!(output.len(), n / 2, "mdct: output length must be n/2");
-    // Stack scratch sized to the call (avoids per-call heap alloc and keeps
-    // the frequent 128-point envelope MDCT from zeroing 16 KiB). Every
-    // element of `w` is written before it is read, so contents don't matter.
-    if n <= 256 {
-        let mut w = [0f32; 256];
-        mdct_forward_core(input, output, t, &mut w[..n]);
-    } else if n <= N {
-        let mut w = [0f32; N];
-        mdct_forward_core(input, output, t, &mut w[..n]);
-    } else {
-        let mut w = [0f32; MDCT_MAX_N];
-        mdct_forward_core(input, output, t, &mut w[..n]);
+    // One instance per size, on that size's static tables, so every length
+    // and stage count is a compile-time constant. Stack scratch of exactly
+    // n floats (avoids per-call heap alloc and keeps the frequent 128-point
+    // envelope MDCT cheap). Every element of `w` is written before it is
+    // read, so its contents don't matter.
+    match n {
+        128 => mdct_forward_core(input, output, &MDCT_128, &mut [0f32; 128]),
+        256 => mdct_forward_core(input, output, &MDCT_256, &mut [0f32; 256]),
+        512 => mdct_forward_core(input, output, &MDCT_512, &mut [0f32; 512]),
+        2048 => mdct_forward_core(input, output, &MDCT_2048, &mut [0f32; 2048]),
+        4096 => mdct_forward_core(input, output, &MDCT_4096, &mut [0f32; MDCT_MAX_N]),
+        _ => panic!("mdct: unsupported size {n}"),
     }
 }
 
@@ -425,6 +435,7 @@ fn mdct_prerot(
     }
 }
 
+#[inline(always)]
 fn mdct_forward_core(input: &[f32], output: &mut [f32], tab: &MdctTables, w: &mut [f32]) {
     let n = tab.n;
     let log2n = tab.log2n;
