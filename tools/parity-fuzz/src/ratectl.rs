@@ -1,14 +1,17 @@
 //! `--bitrate`: a random bitrate mode per case, drawn from the case seed,
-//! and its oggenc-style oracle flags (`tools/oracle-encoder/main.c`).
+//! and its oggenc-style oracle flags (`tools/oracle-encoder/main.c`). Some
+//! cases are VBR with only libvorbis's lowpass / impulse / coupling ctls
+//! (`EncoderTuning`), and some bitrate modes get those too.
 
 use crate::generate::Rng;
-use oxivorbis::{BitrateMode, BitrateTuning, Channels, SampleRate};
+use oxivorbis::{BitrateMode, BitrateTuning, Channels, EncoderTuning, SampleRate};
 
-/// One case's rate control.
+/// One case's rate control. `mode: None` is VBR.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RateCtl {
-    pub mode: BitrateMode,
+    pub mode: Option<BitrateMode>,
     pub tuning: BitrateTuning,
+    pub enc: EncoderTuning,
 }
 
 /// A mode at `rate` / `ch`: every kind, average bitrates anywhere in (and
@@ -39,6 +42,7 @@ pub fn pick(seed: u64, rate: u32, ch: u16) -> RateCtl {
         (v as u32).max(1)
     };
     let opt = |r: &mut Rng, v: u32| (r.below(2) == 0).then_some(v);
+    let vbr = r.below(8) == 0;
     let mode = match r.below(7) {
         0 => BitrateMode::Nominal { kbps: kbps(&mut r) },
         1 => BitrateMode::average(kbps(&mut r)),
@@ -108,7 +112,30 @@ pub fn pick(seed: u64, rate: u32, ch: u16) -> RateCtl {
             tuning = tuning.with_average_damping([0.1, 1.0, 7.5][r.below(3)]);
         }
     }
-    RateCtl { mode, tuning }
+    let mut enc = EncoderTuning::default();
+    if vbr || r.below(6) == 0 {
+        if r.below(2) == 0 {
+            enc = enc.with_lowpass_khz([1.0, 2.0, 4.5, 11.0, 16.0, 20.5, 60.0][r.below(7)]);
+        }
+        if r.below(2) == 0 {
+            enc = enc.with_impulse_noisetune([2.0, 0.0, -1.5, -6.0, -15.0, -30.0][r.below(6)]);
+        }
+        if r.below(2) == 0 {
+            enc = enc.with_coupling_disabled();
+        }
+    }
+    if vbr {
+        return RateCtl {
+            mode: None,
+            tuning: BitrateTuning::default(),
+            enc,
+        };
+    }
+    RateCtl {
+        mode: Some(mode),
+        tuning,
+        enc,
+    }
 }
 
 /// The oracle flags oggenc would get.
@@ -123,21 +150,22 @@ pub fn oracle_args(c: &RateCtl) -> Vec<String> {
         }
     };
     match c.mode {
-        BitrateMode::Nominal { kbps } => a.extend(["-b".into(), kbps.to_string()]),
-        BitrateMode::Average {
+        None => {}
+        Some(BitrateMode::Nominal { kbps }) => a.extend(["-b".into(), kbps.to_string()]),
+        Some(BitrateMode::Average {
             kbps,
             min_kbps,
             max_kbps,
-        } => {
+        }) => {
             a.extend(["--managed".into(), "-b".into(), kbps.to_string()]);
             lim(&mut a, min_kbps, max_kbps);
         }
-        BitrateMode::Limits { min_kbps, max_kbps } => lim(&mut a, min_kbps, max_kbps),
-        BitrateMode::QualityLimits { min_kbps, max_kbps } => {
+        Some(BitrateMode::Limits { min_kbps, max_kbps }) => lim(&mut a, min_kbps, max_kbps),
+        Some(BitrateMode::QualityLimits { min_kbps, max_kbps }) => {
             a.push("-q".into());
             lim(&mut a, min_kbps, max_kbps);
         }
-        _ => unreachable!("unknown BitrateMode"),
+        Some(_) => unreachable!("unknown BitrateMode"),
     }
     let t = &c.tuning;
     if let Some(b) = t.reservoir_bits {
@@ -149,6 +177,16 @@ pub fn oracle_args(c: &RateCtl) -> Vec<String> {
     if let Some(d) = t.average_damping {
         a.extend(["-A".into(), format!("bitrate_average_damping={d}")]);
     }
+    let e = &c.enc;
+    if let Some(k) = e.lowpass_khz {
+        a.extend(["-A".into(), format!("lowpass_frequency={k}")]);
+    }
+    if let Some(d) = e.impulse_noisetune {
+        a.extend(["-A".into(), format!("impulse_noisetune={d}")]);
+    }
+    if e.disable_coupling {
+        a.extend(["-A".into(), "disable_coupling".into()]);
+    }
     a
 }
 
@@ -158,6 +196,7 @@ pub fn parse(spec: &str) -> Option<RateCtl> {
     let (mut min, mut max) = (None, None);
     let (mut managed, mut q) = (false, false);
     let mut tuning = BitrateTuning::default();
+    let mut enc = EncoderTuning::default();
     let mut it = spec.split_whitespace();
     while let Some(t) = it.next() {
         match t {
@@ -167,8 +206,15 @@ pub fn parse(spec: &str) -> Option<RateCtl> {
             "--managed" => managed = true,
             "-q" => q = true,
             "-A" => {
-                let (k, v) = it.next()?.split_once('=')?;
+                let kv = it.next()?;
+                if kv == "disable_coupling" {
+                    enc.disable_coupling = true;
+                    continue;
+                }
+                let (k, v) = kv.split_once('=')?;
                 match k {
+                    "lowpass_frequency" => enc.lowpass_khz = Some(v.parse().ok()?),
+                    "impulse_noisetune" => enc.impulse_noisetune = Some(v.parse().ok()?),
                     "bit_reservoir_bits" => tuning.reservoir_bits = Some(v.parse().ok()?),
                     "bit_reservoir_bias" => tuning.reservoir_bias = Some(v.parse().ok()?),
                     "bitrate_average_damping" => tuning.average_damping = Some(v.parse().ok()?),
@@ -177,6 +223,15 @@ pub fn parse(spec: &str) -> Option<RateCtl> {
             }
             _ => return None,
         }
+    }
+    let any = b.is_some() || min.is_some() || max.is_some();
+    if !any {
+        // VBR (oggenc's quality mode; --managed alone changes nothing).
+        return Some(RateCtl {
+            mode: None,
+            tuning,
+            enc,
+        });
     }
     let mode = match (q, b, managed || min.is_some() || max.is_some()) {
         (true, _, _) => BitrateMode::QualityLimits {
@@ -194,7 +249,11 @@ pub fn parse(spec: &str) -> Option<RateCtl> {
             max_kbps: max,
         },
     };
-    Some(RateCtl { mode, tuning })
+    Some(RateCtl {
+        mode: Some(mode),
+        tuning,
+        enc,
+    })
 }
 
 #[cfg(test)]

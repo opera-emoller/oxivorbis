@@ -308,3 +308,28 @@ fn edges_do_not_panic() {
         }
     }
 }
+
+/// `EncoderTuning`: the default changes nothing, NaN is ignored, and the
+/// values libvorbis clamps encode like the clamped value.
+#[test]
+fn encoder_tuning_defaults_nan_and_clamps() {
+    use oxivorbis::EncoderTuning;
+    let (r, c) = (SampleRate::HZ_44100, Channels::Stereo);
+    let pcm = music(3, 2, 44100);
+    let enc = |t: EncoderTuning| {
+        let o = Options::default().with_encoder_tuning(t);
+        assert_eq!(format!("{:?}", o.encoder_tuning()), format!("{t:?}"));
+        oxivorbis::encode(&pcm, r, c, &o)
+    };
+    let plain = oxivorbis::encode(&pcm, r, c, &Options::default());
+    assert!(enc(EncoderTuning::default()) == plain);
+    let nan = EncoderTuning::default()
+        .with_lowpass_khz(f64::NAN)
+        .with_impulse_noisetune(f64::NAN);
+    assert!(enc(nan) == plain);
+    let lp = |k| enc(EncoderTuning::default().with_lowpass_khz(k));
+    assert!(lp(150.0) == lp(99.0) && lp(0.1) == lp(2.0) && lp(12.0) != plain);
+    let it = |d| enc(EncoderTuning::default().with_impulse_noisetune(d));
+    assert!(it(5.0) == plain && it(-99.0) == it(-15.0));
+    assert!(enc(EncoderTuning::default().with_coupling_disabled()) != plain);
+}

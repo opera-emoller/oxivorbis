@@ -17,35 +17,45 @@
 //!   clamp many times over.
 //! - `bitrate_rejects_like_libvorbis`: requests outside the templates fail
 //!   on both sides.
+//! - `encoder_tuning::*`: libvorbis's lowpass, impulse-noisetune and
+//!   coupling ctls (oggenc's `lowpass_frequency`, `impulse_noisetune`,
+//!   `disable_coupling`), in VBR and bitrate modes, clamps included.
 
 #![cfg(feature = "oracle")]
 
 mod common;
 
 use common::{Sig, extract_comment_strings, extract_serial, first_diff, signal_i16};
-use oxivorbis::{BitrateMode, BitrateTuning, Channels, SampleRate};
+use oxivorbis::{BitrateMode, BitrateTuning, Channels, EncoderTuning, SampleRate};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-fn oracle_args(mode: BitrateMode, tuning: &BitrateTuning) -> Vec<String> {
-    common::bitrate_oracle_args(mode, tuning)
+/// The oracle flags oggenc would get: the bitrate mode's, then the
+/// encoder-tuning advanced options.
+fn oracle_args(bitrate: Option<(BitrateMode, BitrateTuning)>, enc: &EncoderTuning) -> Vec<String> {
+    let mut a = bitrate
+        .map(|(m, t)| common::bitrate_oracle_args(m, &t))
+        .unwrap_or_default();
+    if let Some(k) = enc.lowpass_khz {
+        a.extend(["-A".into(), format!("lowpass_frequency={k}")]);
+    }
+    if let Some(d) = enc.impulse_noisetune {
+        a.extend(["-A".into(), format!("impulse_noisetune={d}")]);
+    }
+    if enc.disable_coupling {
+        a.extend(["-A".into(), "disable_coupling".into()]);
+    }
+    a
 }
 
 /// The oracle's stream, or `None` if it (libvorbis) refused the setup.
-fn oracle(
-    pcm: &[i16],
-    rate: u32,
-    ch: u16,
-    base_quality: f32,
-    mode: BitrateMode,
-    tuning: &BitrateTuning,
-) -> Option<Vec<u8>> {
+fn oracle(pcm: &[i16], rate: u32, ch: u16, base_quality: f32, flags: &[String]) -> Option<Vec<u8>> {
     let raw: Vec<u8> = pcm.iter().flat_map(|&s| s.to_le_bytes()).collect();
     let bin = std::env::current_dir()
         .unwrap()
         .join("tools/oracle-encoder/oracle-encoder");
     let mut child = Command::new(&bin)
-        .args(oracle_args(mode, tuning))
+        .args(flags)
         .arg(rate.to_string())
         .arg(ch.to_string())
         .arg(base_quality.to_string())
@@ -74,27 +84,49 @@ fn check(
     mode: BitrateMode,
     tuning: BitrateTuning,
 ) -> Option<usize> {
-    let ch = channels.count();
-    let theirs = oracle(pcm, rate.hz(), ch, base_quality, mode, &tuning);
-    let (serial, vendor) = match &theirs {
-        Some(t) => (extract_serial(t), extract_comment_strings(t).0),
-        None => (1, Vec::new()),
-    };
-    let ours = oxivorbis::encode_bitrate_with_meta(
+    check_tuned(
         pcm,
         rate,
         channels,
         base_quality,
-        mode,
-        tuning,
+        Some((mode, tuning)),
+        EncoderTuning::default(),
+    )
+}
+
+/// [`check`] for VBR (`bitrate: None`) or a bitrate mode, with
+/// [`EncoderTuning`].
+fn check_tuned(
+    pcm: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+    bitrate: Option<(BitrateMode, BitrateTuning)>,
+    enc: EncoderTuning,
+) -> Option<usize> {
+    let ch = channels.count();
+    let flags = oracle_args(bitrate, &enc);
+    let theirs = oracle(pcm, rate.hz(), ch, base_quality, &flags);
+    let (serial, vendor) = match &theirs {
+        Some(t) => (extract_serial(t), extract_comment_strings(t).0),
+        None => (1, Vec::new()),
+    };
+    let ours = oxivorbis::encode_tuned_with_meta(
+        pcm,
+        rate,
+        channels,
+        base_quality,
+        bitrate,
+        enc,
         serial,
         Some(&vendor),
     );
+    let what = format!("{rate} {channels:?} q{base_quality} {}", flags.join(" "));
     let (ours, theirs) = match (ours, theirs) {
         (Ok(o), Some(t)) => (o, t),
         (Err(_), None) => return None,
         (o, t) => panic!(
-            "{rate} {channels:?} q{base_quality} {mode:?} {tuning:?}: oxivorbis {}, oracle {}",
+            "{what}: oxivorbis {}, oracle {}",
             match o {
                 Ok(_) => "ok".to_string(),
                 Err(e) => format!("rejected ({e})"),
@@ -105,7 +137,7 @@ fn check(
     if ours != theirs {
         let d = first_diff(&ours, &theirs);
         panic!(
-            "{rate} {channels:?} q{base_quality} {mode:?} {tuning:?}: diverged at byte {d} of {} (oracle {})",
+            "{what}: diverged at byte {d} of {} (oracle {})",
             ours.len(),
             theirs.len()
         );
@@ -611,5 +643,117 @@ fn bitrate_rejects_like_libvorbis() {
             None,
             "{hz} {mode:?}"
         );
+    }
+}
+
+mod encoder_tuning {
+    use super::*;
+
+    fn run(hz: u32, ch: Channels, q: f32, bitrate: Option<BitrateMode>, t: EncoderTuning) {
+        let pcm = music(6.0, ch.count() as usize, hz, 0x7E57 ^ hz as u64);
+        let b = bitrate.map(|m| (m, BitrateTuning::default()));
+        check_tuned(&pcm, rate(hz), ch, q, b, t).expect("accepted");
+    }
+
+    fn lowpass(k: f64) -> EncoderTuning {
+        EncoderTuning::default().with_lowpass_khz(k)
+    }
+    fn impulse(d: f64) -> EncoderTuning {
+        EncoderTuning::default().with_impulse_noisetune(d)
+    }
+    fn uncoupled() -> EncoderTuning {
+        EncoderTuning::default().with_coupling_disabled()
+    }
+
+    #[test]
+    fn lowpass_vbr() {
+        for (hz, ch, q, k) in [
+            (44100, Channels::Stereo, 0.5, 12.0),
+            (44100, Channels::Mono, -0.1, 18.5),
+            (48000, Channels::Stereo, 1.0, 30.0),
+            (22050, Channels::Mono, 0.3, 5.0),
+            (8000, Channels::Stereo, 0.5, 3.3),
+            (96000, Channels::Stereo, 0.5, 40.0),
+            (4000, Channels::Mono, 0.5, 2.0),
+        ] {
+            run(hz, ch, q, None, lowpass(k));
+        }
+    }
+    #[test]
+    fn lowpass_clamps() {
+        for k in [0.5, -3.0, 150.0, f64::INFINITY] {
+            run(44100, Channels::Stereo, 0.5, None, lowpass(k));
+        }
+    }
+    #[test]
+    fn impulse_noisetune_vbr() {
+        for (hz, ch, q, d) in [
+            (44100, Channels::Stereo, 0.5, -6.0),
+            (48000, Channels::Mono, -0.1, -15.0),
+            (22050, Channels::Stereo, 0.8, -2.5),
+            (11025, Channels::Mono, 0.0, -9.0),
+        ] {
+            run(hz, ch, q, None, impulse(d));
+        }
+    }
+    #[test]
+    fn impulse_noisetune_clamps() {
+        for d in [3.0, -40.0] {
+            run(44100, Channels::Stereo, 0.5, None, impulse(d));
+        }
+    }
+    #[test]
+    fn disable_coupling_vbr() {
+        for (hz, q) in [
+            (44100, 0.5),
+            (44100, -0.1),
+            (48000, 1.0),
+            (32000, 0.4),
+            (22050, 0.5),
+            (16000, 0.05),
+            (11025, 0.5),
+            (8000, 0.9),
+            (96000, 0.5),
+            (4000, 0.5),
+        ] {
+            run(hz, Channels::Stereo, q, None, uncoupled());
+        }
+        // Mono already uses the uncoupled templates.
+        run(44100, Channels::Mono, 0.5, None, uncoupled());
+    }
+    #[test]
+    fn all_three_vbr() {
+        let t = lowpass(14.0)
+            .with_impulse_noisetune(-4.0)
+            .with_coupling_disabled();
+        run(44100, Channels::Stereo, 0.6, None, t);
+    }
+    #[test]
+    fn with_bitrate_modes() {
+        let cbr = BitrateMode::Average {
+            kbps: 128,
+            min_kbps: Some(128),
+            max_kbps: Some(128),
+        };
+        run(44100, Channels::Stereo, 0.5, Some(cbr), lowpass(11.0));
+        run(44100, Channels::Stereo, 0.5, Some(cbr), impulse(-8.0));
+        // Coupling can't be switched off in the bitrate modes (libvorbis
+        // finds no uncoupled template for the request).
+        run(44100, Channels::Stereo, 0.5, Some(cbr), uncoupled());
+        run(
+            22050,
+            Channels::Stereo,
+            0.5,
+            Some(BitrateMode::Nominal { kbps: 64 }),
+            uncoupled(),
+        );
+        let ql = BitrateMode::QualityLimits {
+            min_kbps: None,
+            max_kbps: Some(112),
+        };
+        let t = lowpass(16.0)
+            .with_impulse_noisetune(-3.0)
+            .with_coupling_disabled();
+        run(48000, Channels::Stereo, 0.5, Some(ql), t);
     }
 }

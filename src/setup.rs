@@ -375,15 +375,21 @@ pub(crate) struct SetupKey {
     pub template: usize,
     pub base_setting: f64,
     pub managed: bool,
+    /// `hi->impulse_noisetune` (0 unless set by `OV_ECTL_IBLOCK_SET`).
+    pub impulse_noisetune: f64,
+    /// `hi->lowpass_kHz` if set by `OV_ECTL_LOWPASS_SET`.
+    pub lowpass_khz: Option<f64>,
 }
 
-type CacheKey = (u32, usize, usize, u64, bool);
+type CacheKey = (u32, usize, usize, u64, bool, u64, Option<u64>);
 
 static CACHE: Mutex<Vec<(CacheKey, Arc<EncoderSetup>)>> = Mutex::new(Vec::new());
 
 fn build_encoder_setup(rate: u32, channels: usize, key: SetupKey) -> EncoderSetup {
     let hl = HighLevel {
         managed: key.managed,
+        impulse_noisetune: key.impulse_noisetune,
+        lowpass_khz: key.lowpass_khz,
     };
     let cfg = setting_config(key.template, key.base_setting, rate, channels, &hl);
     let generated = crate::setup_gen::build_setup_managed(
@@ -453,6 +459,8 @@ pub(crate) fn encoder_setup_for(
             template,
             base_setting,
             managed: false,
+            impulse_noisetune: 0.,
+            lowpass_khz: None,
         },
     )
 }
@@ -470,6 +478,8 @@ pub(crate) fn encoder_setup_for_key(
         setup.template,
         setup.base_setting.to_bits(),
         setup.managed,
+        setup.impulse_noisetune.to_bits(),
+        setup.lowpass_khz.map(f64::to_bits),
     );
     {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());

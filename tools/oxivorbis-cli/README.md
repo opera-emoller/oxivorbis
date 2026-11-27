@@ -58,7 +58,9 @@ supported as well.
   it.) Fractional values such as `-q 4.5` work.
 - **Bitrate.** `-b`, `-m`, `-M`, `--managed` and
   `--advanced-encode-option` (`bit_reservoir_bits`, `bit_reservoir_bias`,
-  `bitrate_average_damping`) mean what they mean to oggenc 1.4.3, and the
+  `bitrate_average_damping`, and also `lowpass_frequency`,
+  `impulse_noisetune` and `disable_coupling`, which work in quality mode
+  too) mean what they mean to oggenc 1.4.3, and the
   output matches libvorbis set up the way oggenc sets it up: `-b N` alone
   is VBR with the setup for about N kb/s, `--managed -b N` manages the
   average, `-m`/`-M` add hard limits (and imply `--managed`), and with

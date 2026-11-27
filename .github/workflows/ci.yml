@@ -128,6 +128,8 @@ jobs:
           parity_bitrate bitrate_tuning::|7
           parity_bitrate bitrate_long::|9
           parity_bitrate bitrate_rejects_like_libvorbis|1
+          parity_bitrate encoder_tuning::|7
+          bitrate encoder_tuning_defaults_nan_and_clamps|1
           bitrate chunking_invariance_managed|1
           bitrate bitrates_hit_their_targets|1
           bitrate errors|1

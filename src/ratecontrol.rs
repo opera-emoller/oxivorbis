@@ -197,6 +197,55 @@ impl BitrateTuning {
     }
 }
 
+/// libvorbis's other encoder controls, as oggenc's
+/// `--advanced-encode-option lowpass_frequency=`, `impulse_noisetune=` and
+/// `disable_coupling` set them (`OV_ECTL_LOWPASS_SET`,
+/// `OV_ECTL_IBLOCK_SET`, `OV_ECTL_COUPLING_SET`). Set with
+/// [`Options::with_encoder_tuning`]; they apply to VBR and the bitrate
+/// modes alike, except where noted. The default changes nothing.
+///
+/// Values are clamped as libvorbis clamps them. NaN, which libvorbis would
+/// carry into undefined float-to-int conversions, is ignored (the setting
+/// keeps its default).
+///
+/// [`Options::with_encoder_tuning`]: crate::Options::with_encoder_tuning
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct EncoderTuning {
+    /// Lowpass frequency in kHz (`lowpass_frequency`), clamped to
+    /// 2.0..=99.0. `None` keeps the setup's own lowpass.
+    pub lowpass_khz: Option<f64>,
+    /// Extra noise-curve bias in dB for impulse (short, transient) blocks
+    /// (`impulse_noisetune`), clamped to -15.0..=0.0; more negative
+    /// spends more bits on transients.
+    pub impulse_noisetune: Option<f64>,
+    /// Encode stereo without channel coupling (`disable_coupling`), with
+    /// libvorbis's uncoupled template. VBR only: libvorbis finds no
+    /// uncoupled template for a bitrate request, so in the bitrate modes
+    /// this has no effect, as with oggenc.
+    pub disable_coupling: bool,
+}
+
+impl EncoderTuning {
+    /// Set [`lowpass_khz`](Self::lowpass_khz).
+    pub fn with_lowpass_khz(mut self, khz: f64) -> Self {
+        self.lowpass_khz = Some(khz);
+        self
+    }
+
+    /// Set [`impulse_noisetune`](Self::impulse_noisetune).
+    pub fn with_impulse_noisetune(mut self, db: f64) -> Self {
+        self.impulse_noisetune = Some(db);
+        self
+    }
+
+    /// Set [`disable_coupling`](Self::disable_coupling).
+    pub fn with_coupling_disabled(mut self) -> Self {
+        self.disable_coupling = true;
+        self
+    }
+}
+
 /// Why a [`BitrateMode`] can't be used.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -274,6 +323,10 @@ pub(crate) struct RatePlan {
     pub header_bitrates: [i32; 3],
     /// `ci->bi` (only filled in for managed setups).
     pub bitrate_info: Option<BitrateInfo>,
+    /// `hi->impulse_noisetune` (`OV_ECTL_IBLOCK_SET`; 0 by default).
+    pub impulse_noisetune: f64,
+    /// `hi->lowpass_kHz` if `OV_ECTL_LOWPASS_SET` altered it.
+    pub lowpass_khz: Option<f64>,
 }
 
 /// `highlevel_encode_setup`, the fields the bitrate paths touch.
@@ -435,6 +488,8 @@ impl Hi {
                 reservoir_bias: self.bitrate_reservoir_bias,
                 slew_damp: self.bitrate_av_damp,
             }),
+            impulse_noisetune: 0.,
+            lowpass_khz: None,
         }
     }
 }
@@ -452,6 +507,35 @@ impl RatePlan {
     /// Plain VBR (`vorbis_encode_init_vbr`).
     pub(crate) fn vbr(base_quality: f32, rate: u32, channels: usize) -> Self {
         Hi::setup_vbr(base_quality, rate, channels).finish(channels)
+    }
+
+    /// The [`EncoderTuning`] ctls, after the rate setup (as oggenc applies
+    /// its advanced options). `vbr_quality` is the request of a plain VBR
+    /// setup, the only kind `OV_ECTL_COUPLING_SET` can re-fetch a template
+    /// for.
+    pub(crate) fn tune(
+        mut self,
+        t: &EncoderTuning,
+        vbr_quality: Option<f32>,
+        rate: u32,
+        channels: usize,
+    ) -> Self {
+        if let Some(khz) = t.lowpass_khz.filter(|k| !k.is_nan()) {
+            self.lowpass_khz = Some(khz.clamp(2., 99.));
+        }
+        if let Some(db) = t.impulse_noisetune.filter(|d| !d.is_nan()) {
+            self.impulse_noisetune = db.clamp(-15., 0.);
+        }
+        if let (true, Some(q)) = (t.disable_coupling, vbr_quality) {
+            let (template, base_setting) = crate::quality::select_template_uncoupled(q, rate)
+                .expect("every rate has an uncoupled template");
+            self.template = template;
+            self.base_setting = base_setting;
+            // VBR's nominal bitrate follows the new setting.
+            self.header_bitrates[1] =
+                setting_to_approx_bitrate(template, base_setting, channels) as i32;
+        }
+        self
     }
 }
 

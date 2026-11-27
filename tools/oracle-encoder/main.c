@@ -18,10 +18,11 @@
  *       -M KBPS      oggenc -M (hard maximum; implies --managed)
  *       --managed    oggenc --managed
  *       -q           oggenc -q given: quality mode at base_quality
- *       -A KEY=VAL   oggenc --advanced-encode-option KEY=VAL (the rate
- *                    management keys: bitrate_average_damping,
- *                    bitrate_average, bit_reservoir_bias,
- *                    bit_reservoir_bits, bitrate_hard_min, bitrate_hard_max)
+ *       -A KEY=VAL   oggenc --advanced-encode-option KEY=VAL, any of
+ *                    oggenc's: bitrate_average_damping, bitrate_average,
+ *                    bit_reservoir_bias, bit_reservoir_bits,
+ *                    bitrate_hard_min, bitrate_hard_max, lowpass_frequency,
+ *                    impulse_noisetune, and disable_coupling (no value)
  *
  * Compiled from the pristine libvorbis 1.3.7 and libogg 1.3.5 sources in
  * tools/libvorbis-1.3.7 and tools/libogg-1.3.5 by build.sh with
@@ -72,7 +73,7 @@ static int parse_kbps(const char *s) {
     return (int)v;
 }
 
-/* oggenc/encode.c set_advanced_encoder_options, rate management keys. */
+/* oggenc/encode.c set_advanced_encoder_options. */
 static void set_advanced_encoder_options(const struct bitrate_opts *o, vorbis_info *vi) {
     int manage = 0, i;
     struct ovectl_ratemanage2_arg ai;
@@ -97,6 +98,16 @@ static void set_advanced_encoder_options(const struct bitrate_opts *o, vorbis_in
         } else if (!strcmp(a, "bitrate_hard_max")) {
             ai.bitrate_limit_max_kbps = strtol(v, NULL, 10);
             manage = 1;
+        } else if (!strcmp(a, "disable_coupling")) {
+            int val = 0;
+            vorbis_encode_ctl(vi, OV_ECTL_COUPLING_SET, &val);
+        } else if (!strcmp(a, "impulse_noisetune")) {
+            double val = strtod(v, NULL);
+            vorbis_encode_ctl(vi, OV_ECTL_IBLOCK_SET, &val);
+        } else if (!strcmp(a, "lowpass_frequency")) {
+            double prev, val = strtod(v, NULL);
+            vorbis_encode_ctl(vi, OV_ECTL_LOWPASS_GET, &prev);
+            vorbis_encode_ctl(vi, OV_ECTL_LOWPASS_SET, &val);
         } else {
             die("unknown advanced option");
         }
@@ -190,10 +201,10 @@ int main(int argc, char **argv) {
             take = 2;
         } else if (argc > 2 && !strcmp(o, "-A")) {
             char *eq = strchr(argv[2], '=');
-            if (!eq || bopt.adv_count == MAX_ADV) die("invalid -A KEY=VALUE");
-            *eq = '\0';
+            if (bopt.adv_count == MAX_ADV) die("too many -A options");
+            if (eq) *eq = '\0';
             bopt.adv_arg[bopt.adv_count] = argv[2];
-            bopt.adv_val[bopt.adv_count] = eq + 1;
+            bopt.adv_val[bopt.adv_count] = eq ? eq + 1 : "";
             bopt.adv_count++;
             take = 2;
         } else {

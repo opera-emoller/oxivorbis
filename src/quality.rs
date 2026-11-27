@@ -124,9 +124,20 @@ pub(crate) fn select_template(
     rate: u32,
     channels: usize,
 ) -> Option<(usize, f64)> {
-    let (i, s) = get_setup_template(nudged_request(base_quality)?, rate, channels)?;
+    select_template_for(base_quality, rate, channels as i64)
+}
+
+/// [`select_template`] as `OV_ECTL_COUPLING_SET` with coupling off
+/// re-fetches it: only templates without a channel restriction (the
+/// uncoupled ones) match.
+pub(crate) fn select_template_uncoupled(base_quality: f32, rate: u32) -> Option<(usize, f64)> {
+    select_template_for(base_quality, rate, -1)
+}
+
+fn select_template_for(base_quality: f32, rate: u32, ch: i64) -> Option<(usize, f64)> {
+    let (i, s) = get_setup_template_by(nudged_request(base_quality)?, rate, ch, false)?;
     if s as usize >= t::SETUP_LIST[i].mappings {
-        return get_setup_template(0.9999_f64 as f32 as f64, rate, channels);
+        return get_setup_template_by(0.9999_f64 as f32 as f64, rate, ch, false);
     }
     Some((i, s))
 }
@@ -166,6 +177,7 @@ fn nudged_request(base_quality: f32) -> Option<f64> {
 /// `get_setup_template` (quality mode): the first template in
 /// `setup_list` whose channel restriction, rate range and quality range
 /// all match, and the `base_setting` within it.
+#[cfg(test)]
 fn get_setup_template(req: f64, rate: u32, channels: usize) -> Option<(usize, f64)> {
     get_setup_template_by(req, rate, channels as i64, false)
 }
@@ -256,6 +268,11 @@ pub(crate) struct HighLevel {
     /// `hi->managed`: per-packetblob stereo setup (and, in `setup_gen`, the
     /// managed residue books).
     pub managed: bool,
+    /// `hi->impulse_noisetune` (`OV_ECTL_IBLOCK_SET`, -15..=0): the user
+    /// bias on the impulse block's noise curves.
+    pub impulse_noisetune: f64,
+    /// `hi->lowpass_kHz` when `OV_ECTL_LOWPASS_SET` altered it (2..=99).
+    pub lowpass_khz: Option<f64>,
 }
 
 /// [`quality_config`] for an already selected template and
@@ -284,8 +301,10 @@ pub(crate) fn setting_config(
     ];
     let singleblock = blocksizes[0] == blocksizes[1];
 
-    // vorbis_encode_setup_setting (hi->*)
-    let lowpass_khz = lerp(tpl.psy_lowpass[is], tpl.psy_lowpass[is + 1], ds);
+    // vorbis_encode_setup_setting (hi->*), unless `lowpass_altered`
+    let lowpass_khz = hl
+        .lowpass_khz
+        .unwrap_or_else(|| lerp(tpl.psy_lowpass[is], tpl.psy_lowpass[is + 1], ds));
     let mut ath_floating_db = lerp(
         tpl.psy_ath_float[is] as f64,
         tpl.psy_ath_float[is + 1] as f64,
@@ -309,7 +328,18 @@ pub(crate) fn setting_config(
         hl.managed,
     );
 
-    let block = |b: usize| block_psy(tpl, s, b, ath_floating_db as f32, ath_absolute_db as f32);
+    // impulse_block_p is always set, so block 0 takes the user bias.
+    let block = |b: usize| {
+        let userbias = if b == 0 { hl.impulse_noisetune } else { 0. };
+        block_psy(
+            tpl,
+            s,
+            b,
+            ath_floating_db as f32,
+            ath_absolute_db as f32,
+            userbias,
+        )
+    };
     let (psys, psy) = if singleblock {
         let p1 = block(1);
         (2, [block(0), p1.clone(), p1.clone(), p1])
@@ -449,6 +479,7 @@ fn block_psy(
     block: usize,
     ath_adjatt: f32,
     ath_maxatt: f32,
+    userbias: f64,
 ) -> VorbisInfoPsy {
     let is = s as usize;
     let ds = s - is as f64;
@@ -510,7 +541,7 @@ fn block_psy(
         ds,
     ) as f32;
 
-    // vorbis_encode_noisebias_setup (userbias = impulse_noisetune = 0 for
+    // vorbis_encode_noisebias_setup (userbias = impulse_noisetune for
     // block 0, literal 0 otherwise)
     p.noisemaxsupp = lerp(
         tpl.psy_noise_dbsuppress[is] as f64,
@@ -532,7 +563,6 @@ fn block_psy(
             p.noiseoff[j][i] = lerp(bias[is][j][i] as f64, bias[is + 1][j][i] as f64, ds) as f32;
         }
     }
-    let userbias = 0.0_f64;
     for j in 0..P_NOISECURVES {
         let min = p.noiseoff[j][0] + 6.0;
         for i in 0..P_BANDS {

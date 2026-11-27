@@ -178,12 +178,16 @@ fn oxivorbis_encode_ctl<S: Sample>(
         1 => oxivorbis::Channels::Mono,
         _ => oxivorbis::Channels::Stereo,
     };
-    let opts = oxivorbis::Options::default()
+    let mut opts = oxivorbis::Options::default()
         .with_quality(oxivorbis::Quality::from_base_quality(quality).expect("validated"))
         .with_serial(serial)
         .with_vendor(String::from_utf8_lossy(vendor).into_owned())
-        .with_bitrate_tuning(r, c, ctl.mode, ctl.tuning)
-        .map_err(|e| e.to_string())?;
+        .with_encoder_tuning(ctl.enc);
+    if let Some(mode) = ctl.mode {
+        opts = opts
+            .with_bitrate_tuning(r, c, mode, ctl.tuning)
+            .map_err(|e| e.to_string())?;
+    }
     let mut enc = oxivorbis::Encoder::new(r, c, &opts);
     let mut out = Vec::new();
     let mut state = (pcm.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;

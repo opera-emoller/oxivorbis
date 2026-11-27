@@ -320,6 +320,8 @@ impl EncoderCore {
                 template: plan.template,
                 base_setting: plan.base_setting,
                 managed: plan.managed_setup,
+                impulse_noisetune: plan.impulse_noisetune,
+                lowpass_khz: plan.lowpass_khz,
             },
         );
         let cfg = &setup.cfg;

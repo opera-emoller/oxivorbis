@@ -102,9 +102,10 @@ pub struct Cli {
     #[arg(long, help_heading = "Encoding")]
     pub managed: bool,
 
-    /// Tune the bit reservoir, as oggenc: bit_reservoir_bits=N,
-    /// bit_reservoir_bias=0..1 or bitrate_average_damping=SECS
-    /// (repeatable; needs a bitrate mode).
+    /// As oggenc (repeatable): the bit reservoir's bit_reservoir_bits=N,
+    /// bit_reservoir_bias=0..1 and bitrate_average_damping=SECS (bitrate
+    /// modes only), and lowpass_frequency=KHZ, impulse_noisetune=DB
+    /// (-15..0) and disable_coupling.
     #[arg(
         long = "advanced-encode-option",
         value_name = "KEY=VALUE",
@@ -255,9 +256,25 @@ pub enum Advanced {
     ReservoirBits(u32),
     ReservoirBias(f64),
     AverageDamping(f64),
+    LowpassKhz(f64),
+    ImpulseNoisetune(f64),
+    DisableCoupling,
+}
+
+impl Advanced {
+    /// A bit-reservoir option (meaningless without a bitrate mode).
+    pub fn is_reservoir(&self) -> bool {
+        matches!(
+            self,
+            Advanced::ReservoirBits(_) | Advanced::ReservoirBias(_) | Advanced::AverageDamping(_)
+        )
+    }
 }
 
 fn parse_advanced(s: &str) -> Result<Advanced, String> {
+    if s == "disable_coupling" {
+        return Ok(Advanced::DisableCoupling);
+    }
     let (k, v) = s.split_once('=').ok_or("want KEY=VALUE")?;
     let num = || v.parse::<f64>().ok().filter(|x| x.is_finite());
     match k {
@@ -273,8 +290,15 @@ fn parse_advanced(s: &str) -> Result<Advanced, String> {
             .filter(|&d| d > 0.0)
             .map(Advanced::AverageDamping)
             .ok_or_else(|| "bitrate_average_damping wants a positive number of seconds".into()),
+        "lowpass_frequency" => num()
+            .map(Advanced::LowpassKhz)
+            .ok_or_else(|| "lowpass_frequency wants a frequency in kHz".into()),
+        "impulse_noisetune" => num()
+            .map(Advanced::ImpulseNoisetune)
+            .ok_or_else(|| "impulse_noisetune wants a number of dB".into()),
         _ => Err(format!(
-            "unsupported option {k:?} (bit_reservoir_bits, bit_reservoir_bias, bitrate_average_damping)"
+            "unsupported option {k:?} (bit_reservoir_bits, bit_reservoir_bias, \
+             bitrate_average_damping, lowpass_frequency, impulse_noisetune, disable_coupling)"
         )),
     }
 }
@@ -473,9 +497,11 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, clap::Error> {
         quality_set,
         advanced: cli.advanced,
     };
-    if !rate_args.advanced.is_empty() && crate::codec::mode(&rate_args).is_none() {
+    if rate_args.advanced.iter().any(Advanced::is_reservoir)
+        && crate::codec::mode(&rate_args).is_none()
+    {
         return Err(conflict(
-            "--advanced-encode-option needs a bitrate mode (-b, -m or -M)",
+            "the bit reservoir options need a bitrate mode (-b, -m or -M)",
         ));
     }
     Ok(Command::Encode(Config {
@@ -649,11 +675,21 @@ mod tests {
         ]);
         let (_, t) = crate::codec::mode(&c.rate_args).unwrap();
         assert_eq!(t.reservoir_bias, Some(0.5));
+        let c = cfg(&[
+            "--advanced-encode-option",
+            "lowpass_frequency=11.5",
+            "--advanced-encode-option",
+            "disable_coupling",
+            "x",
+        ]);
+        let t = crate::codec::encoder_tuning(&c.rate_args);
+        assert_eq!(t.lowpass_khz, Some(11.5));
+        assert!(t.disable_coupling);
         for bad in [
             &["--advanced-encode-option", "bit_reservoir_bias=0.5", "x"][..],
             &[
                 "--advanced-encode-option",
-                "lowpass_frequency=10",
+                "bitrate_hard_max=10",
                 "-b",
                 "96",
                 "x",

@@ -6,7 +6,9 @@
 //! needs edits here.
 
 use crate::args::{Advanced, RateArgs};
-use oxivorbis::{BitrateMode, BitrateTuning, Channels, Encoder, Options, Quality, SampleRate};
+use oxivorbis::{
+    BitrateMode, BitrateTuning, Channels, Encoder, EncoderTuning, Options, Quality, SampleRate,
+};
 
 /// Encoder settings in CLI terms.
 pub struct Settings {
@@ -52,9 +54,24 @@ pub fn mode(r: &RateArgs) -> Option<(BitrateMode, BitrateTuning)> {
             Advanced::ReservoirBits(b) => t.with_reservoir_bits(b),
             Advanced::ReservoirBias(b) => t.with_reservoir_bias(b),
             Advanced::AverageDamping(d) => t.with_average_damping(d),
+            _ => t,
         };
     }
     Some((mode, t))
+}
+
+/// The lowpass / impulse-noisetune / coupling advanced options.
+pub fn encoder_tuning(r: &RateArgs) -> EncoderTuning {
+    let mut t = EncoderTuning::default();
+    for a in &r.advanced {
+        t = match *a {
+            Advanced::LowpassKhz(k) => t.with_lowpass_khz(k),
+            Advanced::ImpulseNoisetune(d) => t.with_impulse_noisetune(d),
+            Advanced::DisableCoupling => t.with_coupling_disabled(),
+            _ => t,
+        };
+    }
+    t
 }
 
 /// The summary line's description of the setting, e.g. `q3` or
@@ -109,7 +126,9 @@ impl Enc {
         let channels = Channels::try_from(channels).map_err(|e| e.to_string())?;
         let quality = Quality::new(s.quality)
             .ok_or_else(|| format!("unsupported quality {}; want -1..10", s.quality))?;
-        let mut opts = Options::default().with_quality(quality);
+        let mut opts = Options::default()
+            .with_quality(quality)
+            .with_encoder_tuning(encoder_tuning(&s.rate_args));
         if let Some((mode, tuning)) = mode(&s.rate_args) {
             opts = opts
                 .with_bitrate_tuning(rate, channels, mode, tuning)

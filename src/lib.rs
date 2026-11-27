@@ -1,5 +1,7 @@
 //! oxivorbis: a pure-Rust Ogg Vorbis encoder whose audio packets are
-//! bit-identical to libvorbis 1.3.7 (VBR mode, oggenc qualities -1..10).
+//! bit-identical to libvorbis 1.3.7: VBR at oggenc qualities -1..10, and
+//! libvorbis's bitrate management (average bitrate, hard limits, quality
+//! with limits; see [`BitrateMode`]).
 //!
 //! Input is interleaved `i16` or `f32` PCM at any rate from 1 Hz to
 //! 200 kHz, mono or stereo. Encode a whole buffer at once with [`encode`] / [`encode_f32`],
@@ -31,6 +33,24 @@
 //!     ogg.extend_from_slice(enc.write_f32(&chunk)); // pages completed so far
 //! }
 //! ogg.extend_from_slice(&enc.finish());
+//! assert_eq!(&ogg[..4], b"OggS");
+//! ```
+//!
+//! # Bitrate modes
+//!
+//! [`Options::with_bitrate`] replaces VBR with one of the setups oggenc's
+//! `-b`, `-m`, `-M` and `--managed` give libvorbis. It checks the request
+//! against libvorbis's templates for the input's rate and channel count,
+//! so encoding stays infallible:
+//!
+//! ```
+//! use oxivorbis::{BitrateMode, Channels, Options, SampleRate};
+//!
+//! // oggenc --managed -b 96 (average bitrate)
+//! let opts = Options::default()
+//!     .with_bitrate(SampleRate::HZ_48000, Channels::Stereo, BitrateMode::average(96))
+//!     .expect("96 kb/s is in libvorbis's range for 48 kHz stereo");
+//! let ogg = oxivorbis::encode(&vec![0i16; 48_000 * 2], SampleRate::HZ_48000, Channels::Stereo, &opts);
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
@@ -142,7 +162,7 @@ mod planar;
 mod writer;
 pub use writer::{OggWriter, S16LeWriter};
 
-pub use ratecontrol::{BitrateError, BitrateMode, BitrateTuning};
+pub use ratecontrol::{BitrateError, BitrateMode, BitrateTuning, EncoderTuning};
 
 use std::fmt;
 
@@ -413,6 +433,8 @@ pub struct Options {
     /// Bitrate-driven mode, set by [`Options::with_bitrate`]; `None` is
     /// VBR at `quality`.
     bitrate: Option<ratecontrol::BitrateRequest>,
+    /// libvorbis's lowpass / impulse / coupling controls.
+    encoder_tuning: EncoderTuning,
 }
 
 impl Options {
@@ -527,6 +549,29 @@ impl Options {
         Ok(self)
     }
 
+    /// Set libvorbis's lowpass, impulse noise tuning and coupling controls
+    /// (oggenc's `lowpass_frequency`, `impulse_noisetune` and
+    /// `disable_coupling` advanced options); see [`EncoderTuning`].
+    ///
+    /// ```
+    /// use oxivorbis::{EncoderTuning, Options};
+    ///
+    /// // oggenc -q 4 --advanced-encode-option lowpass_frequency=15
+    /// let opts = Options::default()
+    ///     .with_quality(oxivorbis::Quality::new(4.0).unwrap())
+    ///     .with_encoder_tuning(EncoderTuning::default().with_lowpass_khz(15.0));
+    /// # let _ = opts;
+    /// ```
+    pub fn with_encoder_tuning(mut self, tuning: EncoderTuning) -> Self {
+        self.encoder_tuning = tuning;
+        self
+    }
+
+    /// The controls set by [`Options::with_encoder_tuning`].
+    pub fn encoder_tuning(&self) -> EncoderTuning {
+        self.encoder_tuning
+    }
+
     /// Back to VBR at [`Options::quality`].
     pub fn without_bitrate(mut self) -> Self {
         self.bitrate = None;
@@ -552,17 +597,32 @@ impl Options {
             .filter_map(|(k, v)| comment_bytes(k, v))
             .collect();
         let serial = self.serial.unwrap_or(DEFAULT_SERIAL);
+        let (hz, ch) = (rate.hz(), channels.count() as usize);
         let Some(req) = &self.bitrate else {
-            return encode::EncoderCore::new(
+            if self.encoder_tuning == EncoderTuning::default() {
+                return encode::EncoderCore::new(
+                    rate,
+                    channels,
+                    self.quality.base(),
+                    serial,
+                    vendor.as_bytes(),
+                    &comments,
+                );
+            }
+            let q = self.quality.base();
+            let plan =
+                ratecontrol::RatePlan::vbr(q, hz, ch).tune(&self.encoder_tuning, Some(q), hz, ch);
+            return encode::EncoderCore::with_plan(
                 rate,
                 channels,
-                self.quality.base(),
+                &plan,
                 serial,
                 vendor.as_bytes(),
                 &comments,
             );
         };
         let plan = ratecontrol::plan(&req.mode, &req.tuning, self.quality, rate, channels)
+            .map(|p| p.tune(&self.encoder_tuning, None, hz, ch))
             .unwrap_or_else(|e| {
                 // A request validated for this rate and channel count can't
                 // fail here (QualityLimits only depends on the quality's
@@ -806,8 +866,46 @@ pub fn encode_bitrate_with_meta(
     serial: u32,
     vendor: Option<&[u8]>,
 ) -> Result<Vec<u8>, BitrateError> {
+    encode_tuned_with_meta(
+        samples,
+        rate,
+        channels,
+        base_quality,
+        Some((mode, tuning)),
+        EncoderTuning::default(),
+        serial,
+        vendor,
+    )
+}
+
+/// [`encode_bitrate_with_meta`] with optional bitrate mode (`None` = VBR)
+/// and [`EncoderTuning`].
+#[cfg(feature = "__internal")]
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_tuned_with_meta(
+    samples: &[i16],
+    rate: SampleRate,
+    channels: Channels,
+    base_quality: f32,
+    bitrate: Option<(BitrateMode, BitrateTuning)>,
+    encoder_tuning: EncoderTuning,
+    serial: u32,
+    vendor: Option<&[u8]>,
+) -> Result<Vec<u8>, BitrateError> {
     let quality = Quality::from_base_quality(base_quality).expect("base_quality in range");
-    let plan = ratecontrol::plan(&mode, &tuning, quality, rate, channels)?;
+    let (hz, ch) = (rate.hz(), channels.count() as usize);
+    let plan =
+        match bitrate {
+            Some((mode, tuning)) => ratecontrol::plan(&mode, &tuning, quality, rate, channels)?
+                .tune(&encoder_tuning, None, hz, ch),
+            None => ratecontrol::RatePlan::vbr(base_quality, hz, ch).tune(
+                &encoder_tuning,
+                Some(base_quality),
+                hz,
+                ch,
+            ),
+        };
     let mut core = encode::EncoderCore::with_plan(
         rate,
         channels,
