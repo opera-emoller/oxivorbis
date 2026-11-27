@@ -1,134 +1,108 @@
-//! Thin CLI: read interleaved s16le PCM from stdin, encode to Ogg Vorbis,
-//! write to stdout. Exists for hyperfine-style benchmarking against
-//! `oggenc -q <quality>`. Usage:
+//! `oxivorbis`: a command-line Ogg Vorbis encoder on top of the
+//! `oxivorbis` library, modelled loosely on `oggenc`.
 //!
-//!     oxivorbis [--stream] <rate> <channels> [quality] < input.s16le > output.ogg
+//! ```text
+//! oxivorbis [options] <input.wav|-> ... [-o output.ogg]
+//! oxivorbis --raw --rate 44100 --channels 2 [--format s16le] - > out.ogg
+//! ```
 //!
-//! `rate` must be 44100 or 48000; `channels` must be 1 or 2 (or `mono`/`stereo`);
-//! `quality` is on oggenc's `-q` scale, -1..10 (fractional ok), default 5.
-//! Stdin is piped through `oxivorbis::Encoder` in 64 KiB reads and pages are
-//! written as they complete, so memory stays bounded for any input length
-//! and no copy of the whole input is ever made. The output is the same as
-//! one-shot `oxivorbis::encode` of the whole input (the encoder's output does
-//! not depend on how its input is split). `--stream` is accepted for
-//! compatibility; it is the only mode.
+//! Modules:
+//!
+//! - `args`: the clap definition (and the help text) and its conversion
+//!   to a plain `Config`.
+//! - `wav`: streaming RIFF/WAVE/RF64 header parser.
+//! - `pcm`: sample formats and their exact conversion to i16/f32.
+//! - `codec`: the only code that calls the library API.
+//! - `job`: one input to one output, with the overwrite policy.
+//! - `msg`: stderr messages (colored only on a terminal, honours NO_COLOR).
+//!
+//! Exit status: 0 ok, 1 if any input failed (I/O or input error), 2 for
+//! usage errors. A closed stdout (`| head`) ends quietly with status 0.
 
-use std::io::{Read, Write};
+mod args;
+mod codec;
+mod job;
+mod msg;
+mod pcm;
+mod wav;
 
-fn die(msg: &str) -> ! {
-    eprintln!("oxivorbis: {msg}");
-    eprintln!(
-        "usage: oxivorbis [--stream] <44100|48000> <1|2|mono|stereo> [quality -1..10] < in.s16le > out.ogg"
-    );
-    std::process::exit(2);
+use anyhow::Context;
+use clap::CommandFactory;
+use std::io::{IsTerminal, Write};
+use std::process::ExitCode;
+
+/// Print a man page or completion script for `oxivorbis` to stdout.
+fn generate(kind: args::Generate) -> anyhow::Result<()> {
+    use clap_complete::Shell;
+    let mut cmd = args::Cli::command();
+    let mut out = Vec::new();
+    let shell = match kind {
+        args::Generate::Man => {
+            clap_mangen::Man::new(cmd.clone())
+                .render(&mut out)
+                .context("failed to render the man page")?;
+            None
+        }
+        args::Generate::CompleteBash => Some(Shell::Bash),
+        args::Generate::CompleteZsh => Some(Shell::Zsh),
+        args::Generate::CompleteFish => Some(Shell::Fish),
+        args::Generate::CompletePowershell => Some(Shell::PowerShell),
+        args::Generate::CompleteElvish => Some(Shell::Elvish),
+    };
+    if let Some(shell) = shell {
+        clap_complete::generate(shell, &mut cmd, "oxivorbis", &mut out);
+    }
+    match std::io::stdout().write_all(&out) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            Err(e).context("failed to write stdout")
+        }
+        _ => Ok(()),
+    }
 }
 
-/// `r.read(buf)`, retried when a signal interrupts it (EINTR) before any
-/// data was read.
-fn read_retrying(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
-    loop {
-        match r.read(buf) {
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            other => return other,
+fn main() -> ExitCode {
+    let cfg = match args::parse(std::env::args_os().skip(1).collect()) {
+        Ok(args::Command::Encode(cfg)) => cfg,
+        Ok(args::Command::Generate(kind)) => {
+            return match generate(kind) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    msg::error(&e);
+                    ExitCode::FAILURE
+                }
+            };
         }
-    }
-}
-
-fn main() {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "--stream") {
-        args.remove(0);
-    }
-    if args.len() != 2 && args.len() != 3 {
-        die("expected 2 or 3 arguments: <rate> <channels> [quality]");
-    }
-    let quality = match args.get(2) {
-        None => oxivorbis::Quality::Q5,
-        Some(q) => q
-            .parse::<f32>()
-            .ok()
-            .and_then(oxivorbis::Quality::new)
-            .unwrap_or_else(|| die(&format!("unsupported quality {q:?}; want -1..10"))),
+        // Usage errors exit 2; --help and --version print and exit 0.
+        Err(e) => e.exit(),
     };
-    let opts = oxivorbis::Options::default().with_quality(quality);
-    let rate = match args[0].as_str() {
-        "44100" => oxivorbis::SampleRate::Hz44100,
-        "48000" => oxivorbis::SampleRate::Hz48000,
-        other => die(&format!("unsupported rate {other:?}; want 44100 or 48000")),
+    let jobs = job::plan(&cfg);
+    let usage = |m: &str| -> ! {
+        args::Cli::command()
+            .error(clap::error::ErrorKind::InvalidValue, m)
+            .exit()
     };
-    let channels = match args[1].as_str() {
-        "1" | "mono" => oxivorbis::Channels::Mono,
-        "2" | "stereo" => oxivorbis::Channels::Stereo,
-        other => die(&format!(
-            "unsupported channels {other:?}; want 1/2/mono/stereo"
-        )),
-    };
-
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    let mut enc = oxivorbis::Encoder::new(rate, channels, &opts);
-    let mut stdin = std::io::stdin().lock();
-    let mut buf = vec![0u8; 1 << 16];
-    let mut carry: Option<u8> = None;
-    let mut samples: Vec<i16> = Vec::with_capacity(buf.len() / 2 + 1);
-    loop {
-        let n = read_retrying(&mut stdin, &mut buf)
-            .unwrap_or_else(|e| die(&format!("read stdin failed: {e}")));
-        if n == 0 {
-            break;
-        }
-        samples.clear();
-        let mut bytes = &buf[..n];
-        if let Some(lo) = carry.take() {
-            samples.push(i16::from_le_bytes([lo, bytes[0]]));
-            bytes = &bytes[1..];
-        }
-        let mut it = bytes.chunks_exact(2);
-        samples.extend(it.by_ref().map(|c| i16::from_le_bytes([c[0], c[1]])));
-        carry = it.remainder().first().copied();
-        out.write_all(enc.write(&samples))
-            .expect("write stdout failed");
+    if jobs.iter().any(|j| matches!(j.output, job::Output::Stdout))
+        && std::io::stdout().is_terminal()
+    {
+        usage("refusing to write binary Ogg data to a terminal; use -o <FILE> or redirect stdout");
     }
-    // A trailing odd byte is not a sample; it is dropped, as is a
-    // trailing half stereo frame (see `Encoder::finish`).
-    out.write_all(&enc.finish()).expect("write stdout failed");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::read_retrying;
-    use std::io::{self, Read};
-
-    /// Fails with `Interrupted` on every other call.
-    struct Flaky<'a>(&'a [u8], bool);
-    impl Read for Flaky<'_> {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.1 = !self.1;
-            if self.1 {
-                return Err(io::ErrorKind::Interrupted.into());
+    if jobs.iter().any(|j| matches!(j.input, job::Input::Stdin)) && std::io::stdin().is_terminal() {
+        usage("input is stdin, but stdin is a terminal; pipe or redirect audio in");
+    }
+    let mut failed = false;
+    for j in &jobs {
+        match job::run(j, &cfg) {
+            Ok(summary) => {
+                if !cfg.quiet {
+                    msg::line(summary.line(j, cfg.quality));
+                }
             }
-            self.0.read(buf)
+            Err(e) => failed |= job::report(&e),
         }
     }
-
-    #[test]
-    fn retries_interrupted_reads() {
-        let mut r = Flaky(b"abc", false);
-        let mut buf = [0u8; 8];
-        assert_eq!(read_retrying(&mut r, &mut buf).unwrap(), 3);
-        assert_eq!(&buf[..3], b"abc");
-        assert_eq!(read_retrying(&mut r, &mut buf).unwrap(), 0);
-    }
-
-    #[test]
-    fn other_errors_propagate() {
-        struct Broken;
-        impl Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-        }
-        let err = read_retrying(&mut Broken, &mut [0u8; 4]).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }

@@ -1,7 +1,18 @@
 [package]
 name = "oxivorbis-cli"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Command-line Ogg Vorbis encoder (WAV/raw PCM in), byte-identical to libvorbis 1.3.7. Pure Rust."
+repository = "https://github.com/opera-emoller/oxivorbis"
+categories = ["command-line-utilities", "multimedia::audio"]
+keywords = ["vorbis", "ogg", "oggenc", "audio", "encoder"]
+readme = "README.md"
+# Not published yet. To publish: publish the `oxivorbis` library first,
+# make sure the `version` on the dependency below matches the API this
+# crate builds against, and drop this line. `cargo install oxivorbis-cli`
+# then works; `cargo install --path tools/oxivorbis-cli` works today.
 publish = false
 
 [[bin]]
@@ -9,7 +20,27 @@ name = "oxivorbis"
 path = "src/main.rs"
 
 [features]
+# Multi-core encoding of each file (see the library's `parallel`
+# feature). Off by default so workspace builds and the `just bench`
+# serial numbers are unaffected: `cargo install ... --features parallel`.
 parallel = ["oxivorbis/parallel"]
 
 [dependencies]
-oxivorbis = { path = "../.." }
+# CLI-only dependencies; the library itself depends on none of these.
+# clap (derive) for arguments and help, clap_complete/clap_mangen for
+# `--generate`, anyhow for error context, anstream/anstyle (already pulled
+# in by clap) for stderr colors that honour TTY detection and NO_COLOR.
+anstream = "1.0.0"
+anstyle = "1.0.14"
+anyhow = "1.0.105"
+clap = { version = "4.6.10", features = ["derive", "wrap_help"] }
+clap_complete = "4.6.12"
+clap_mangen = "0.3.4"
+oxivorbis = { path = "../..", version = "0.1" }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+# Decodes the CLI's output in tests/cli.rs.
+lewton = "0.10"
+predicates = "3.1.4"
+tempfile = "3.27.0"
