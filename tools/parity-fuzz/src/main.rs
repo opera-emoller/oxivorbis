@@ -12,6 +12,14 @@
 //!   --f32              feed f32 samples (`Encoder::write_f32` vs the oracle's
 //!                      f32 mode), incl. out-of-range values up to +-1e4,
 //!                      subnormals and -0.0
+//!   --bitrate          a random bitrate mode per case (`BitrateMode`: oggenc
+//!                      -b / --managed -b / -m / -M / -q with limits, and
+//!                      reservoir tuning), drawn from the case seed; rates
+//!                      must be 8000..=50000 (the default rates are 22050,
+//!                      44100, 48000 then). Requests libvorbis rejects must be
+//!                      rejected by oxivorbis too.
+//!   --mode "FLAGS"     replay with one fixed mode, given as oracle flags
+//!                      (as in a descriptor), e.g. "--managed -b 128 -M 160"
 //!
 //!   --keep-going       collect all failures instead of stopping at the first
 //!   --min-frames N     skip generated cases shorter than N frames (e.g. to
@@ -28,6 +36,7 @@
 mod det;
 mod generate;
 mod oggdiff;
+mod ratectl;
 
 use generate::{Case, Gen, Stereo, make_case, mix_seed};
 use std::cell::RefCell;
@@ -153,6 +162,50 @@ fn oxivorbis_encode<S: Sample>(
     out
 }
 
+/// [`oxivorbis_encode`] in a bitrate mode (through the public `Options`
+/// API); `Err` when oxivorbis rejects the request.
+fn oxivorbis_encode_ctl<S: Sample>(
+    pcm: &[S],
+    rate: u32,
+    channels: u16,
+    quality: f32,
+    ctl: &ratectl::RateCtl,
+    serial: u32,
+    vendor: &[u8],
+) -> Result<Vec<u8>, String> {
+    let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
+    let c = match channels {
+        1 => oxivorbis::Channels::Mono,
+        _ => oxivorbis::Channels::Stereo,
+    };
+    let opts = oxivorbis::Options::default()
+        .with_quality(oxivorbis::Quality::from_base_quality(quality).expect("validated"))
+        .with_serial(serial)
+        .with_vendor(String::from_utf8_lossy(vendor).into_owned())
+        .with_bitrate_tuning(r, c, ctl.mode, ctl.tuning)
+        .map_err(|e| e.to_string())?;
+    let mut enc = oxivorbis::Encoder::new(r, c, &opts);
+    let mut out = Vec::new();
+    let mut state = (pcm.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rest = pcm;
+    while !rest.is_empty() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let n = match state % 4 {
+            0 => 1,
+            1 => (state >> 8) as usize % 130,
+            2 => (state >> 8) as usize % 9000,
+            _ => rest.len(),
+        }
+        .min(rest.len());
+        out.extend_from_slice(S::write(&mut enc, &rest[..n]));
+        rest = &rest[n..];
+    }
+    out.extend_from_slice(&enc.finish());
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
@@ -174,13 +227,18 @@ struct Config {
     min_evals: usize,
     min_frames: usize,
     min_per_sig: usize,
+    /// `--bitrate`: draw a mode per case.
+    bitrate: bool,
+    /// The current case's mode (fixed for the run with `--mode`).
+    rate_ctl: Option<ratectl::RateCtl>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: parity-fuzz [--iters N] [--seed S] [--start I] [--quality Q] \
          [--rates 44100,48000] [--channels 1,2] [--jobs J] [--max-secs T] [--max-len SECS] \
-         [--keep-going] [--no-minimize] [--min-evals N] [--min-frames N] [--minimize-per-sig N] [--out DIR] [--oracle PATH] [--pcm FILE] [--f32]"
+         [--keep-going] [--no-minimize] [--min-evals N] [--min-frames N] [--minimize-per-sig N] [--out DIR] [--oracle PATH] [--pcm FILE] [--f32] \
+         [--bitrate] [--mode \"ORACLE FLAGS\"]"
     );
     std::process::exit(2)
 }
@@ -208,8 +266,11 @@ fn parse_args() -> Config {
         min_evals: 300,
         min_frames: 0,
         min_per_sig: 2,
+        bitrate: false,
+        rate_ctl: None,
     };
     let mut rates = vec![44100u32, 48000];
+    let mut rates_given = false;
     let mut chans = vec![1u16, 2];
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -230,8 +291,18 @@ fn parse_args() -> Config {
             "--pcm" => cfg.pcm = Some(PathBuf::from(val())),
             "--keep-going" => cfg.keep_going = true,
             "--f32" => cfg.f32 = true,
+            "--bitrate" => cfg.bitrate = true,
+            "--mode" => {
+                let spec = val();
+                cfg.rate_ctl = Some(ratectl::parse(&spec).unwrap_or_else(|| {
+                    eprintln!("parity-fuzz: can't parse --mode {spec:?}");
+                    usage()
+                }));
+                cfg.bitrate = true;
+            }
             "--no-minimize" => cfg.minimize = false,
             "--rates" => {
+                rates_given = true;
                 rates = val()
                     .split(',')
                     .map(|s| s.trim().parse().unwrap_or_else(|_| usage()))
@@ -254,6 +325,15 @@ fn parse_args() -> Config {
         eprintln!(
             "parity-fuzz: --quality {} outside libvorbis base_quality -0.1..=1.0",
             cfg.quality
+        );
+        std::process::exit(2);
+    }
+    if cfg.bitrate && !rates_given {
+        rates = vec![22050, 44100, 48000];
+    }
+    if cfg.bitrate && rates.iter().any(|r| !(8000..=50000).contains(r)) {
+        eprintln!(
+            "parity-fuzz: --bitrate needs rates in 8000..=50000 (libvorbis has no bitrate setups elsewhere)"
         );
         std::process::exit(2);
     }
@@ -341,9 +421,11 @@ fn run_oracle<S: Sample>(
     rate: u32,
     ch: u16,
     q: f32,
+    flags: &[String],
 ) -> Result<Vec<u8>, String> {
     let raw = S::to_le(pcm);
     let mut child = Command::new(oracle)
+        .args(flags)
         .arg(rate.to_string())
         .arg(ch.to_string())
         .arg(q.to_string())
@@ -354,6 +436,7 @@ fn run_oracle<S: Sample>(
         .spawn()
         .map_err(|e| format!("spawn oracle: {e}"))?;
     let mut stdin = child.stdin.take().unwrap();
+    // (The oracle exits without reading when libvorbis rejects a setup.)
     let writer = std::thread::spawn(move || stdin.write_all(&raw));
     let out = child
         .wait_with_output()
@@ -370,7 +453,10 @@ fn run_oracle<S: Sample>(
 }
 
 fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
-    let oracle = match run_oracle(&cfg.oracle, pcm, rate, ch, cfg.quality) {
+    if let Some(ctl) = &cfg.rate_ctl {
+        return run_case_ctl(cfg, ctl, pcm, rate, ch);
+    }
+    let oracle = match run_oracle(&cfg.oracle, pcm, rate, ch, cfg.quality, &[]) {
         Ok(o) => o,
         Err(e) => {
             // Still see whether oxivorbis survives the same input.
@@ -445,6 +531,96 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
             message: String::new(),
             signature: String::new(),
         },
+    }
+}
+
+/// [`run_case`] in a bitrate mode. Both sides rejecting the request is a
+/// pass; one side rejecting it is a failure.
+fn run_case_ctl<S: Sample>(
+    cfg: &Config,
+    ctl: &ratectl::RateCtl,
+    pcm: &[S],
+    rate: u32,
+    ch: u16,
+) -> Outcome {
+    let flags = ratectl::oracle_args(ctl);
+    let oracle = run_oracle(&cfg.oracle, pcm, rate, ch, cfg.quality, &flags);
+    let (serial, vendor) = match &oracle {
+        Ok(o) => (
+            oggdiff::extract_serial(o).unwrap_or(0),
+            oggdiff::extract_comment_strings(o).unwrap_or_default().0,
+        ),
+        Err(_) => (0, Vec::new()),
+    };
+    let lw = std::panic::catch_unwind(|| {
+        oxivorbis_encode_ctl(pcm, rate, ch, cfg.quality, ctl, serial, &vendor)
+    });
+    let pass = |oracle, oxivorbis| Outcome {
+        class: None,
+        oracle,
+        oxivorbis,
+        message: String::new(),
+        signature: String::new(),
+    };
+    match (oracle, lw) {
+        (_, Err(_)) => {
+            let message = PANIC_MSG
+                .with(|m| m.borrow_mut().take())
+                .unwrap_or_else(|| "<unknown panic>".into());
+            Outcome {
+                class: Some(Class::OxivorbisPanic),
+                oracle: vec![],
+                oxivorbis: vec![],
+                signature: format!(
+                    "panic/{}",
+                    message.rsplit(" at ").next().unwrap_or_default()
+                ),
+                message,
+            }
+        }
+        (Err(_), Ok(Err(_))) => pass(vec![], vec![]),
+        (Err(e), Ok(Ok(lw))) => Outcome {
+            class: Some(Class::OracleFail),
+            oracle: vec![],
+            oxivorbis: lw,
+            message: format!("{e}; oxivorbis accepted {}", flags.join(" ")),
+            signature: "oracle-fail/accepted".into(),
+        },
+        (Ok(o), Ok(Err(e))) => Outcome {
+            class: Some(Class::Mismatch),
+            oracle: o,
+            oxivorbis: vec![],
+            message: format!(
+                "oxivorbis rejected {} ({e}); libvorbis accepted it",
+                flags.join(" ")
+            ),
+            signature: "mismatch/rejected".into(),
+        },
+        (Ok(o), Ok(Ok(lw))) if lw != o => {
+            let frames = pcm.len() / ch as usize;
+            let len_class = match frames {
+                0 => "empty",
+                1..=3071 => "short",
+                _ => "long",
+            };
+            let rep = oggdiff::analyze(&lw, &o);
+            Outcome {
+                class: Some(Class::Mismatch),
+                message: format!(
+                    "mode {}: first divergent byte {} (oxivorbis len {}, oracle len {})\n{}\n{}",
+                    flags.join(" "),
+                    rep.first_byte,
+                    rep.oxivorbis_len,
+                    rep.oracle_len,
+                    rep.location,
+                    rep.summary
+                ),
+                oracle: o,
+                oxivorbis: lw,
+                signature: format!("mismatch/{}/{len_class}", rep.position),
+            }
+        }
+        (Ok(o), Ok(Ok(lw))) => pass(o, lw),
     }
 }
 
@@ -616,6 +792,7 @@ struct Meta<'a> {
     quality: f32,
     case: Option<&'a Case>,
     note: &'a str,
+    mode: Option<&'a ratectl::RateCtl>,
 }
 
 fn save<S: Sample>(dir: &Path, m: &Meta, pcm: &[S], o: &Outcome) -> std::io::Result<()> {
@@ -656,12 +833,15 @@ fn save<S: Sample>(dir: &Path, m: &Meta, pcm: &[S], o: &Outcome) -> std::io::Res
         esc(&o.message),
         esc(&case_dbg),
         esc(&format!(
-            "cargo run -p parity-fuzz --release -- --pcm {} --rates {} --channels {} --quality {}{} --no-minimize",
+            "cargo run -p parity-fuzz --release -- --pcm {} --rates {} --channels {} --quality {}{}{} --no-minimize",
             input.display(),
             m.rate,
             m.ch,
             m.quality,
-            if S::FORMAT == "f32" { " --f32" } else { "" }
+            if S::FORMAT == "f32" { " --f32" } else { "" },
+            m.mode
+                .map(|c| format!(" --mode \"{}\"", ratectl::oracle_args(c).join(" ")))
+                .unwrap_or_default()
         )),
     );
     std::fs::write(dir.join("descriptor.json"), json)?;
@@ -710,6 +890,7 @@ fn handle_failure<S: Sample>(
         quality: cfg.quality,
         case,
         note: "original",
+        mode: cfg.rate_ctl.as_ref(),
     };
     if let Err(e) = save(&dir, &meta, pcm, o) {
         eprintln!("save {}: {e}", dir.display());
@@ -827,6 +1008,8 @@ fn run<S: Sample>(cfg: Config) {
     let next = Arc::new(AtomicUsize::new(cfg.start));
     let done = Arc::new(AtomicUsize::new(0));
     let skipped = Arc::new(AtomicUsize::new(0));
+    // --bitrate cases both sides rejected (no stream to compare).
+    let rejected = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     // Per (rate, ch) combo: (cases run, failures).
     let per_combo: Arc<Vec<(AtomicUsize, AtomicUsize)>> = Arc::new(
@@ -854,6 +1037,7 @@ fn run<S: Sample>(cfg: Config) {
 
     let mut handles = vec![];
     for _ in 0..cfg.jobs {
+        let rejected = rejected.clone();
         let (cfg, next, done, skipped, stop, per_combo, state, frames_total) = (
             cfg.clone(),
             next.clone(),
@@ -888,8 +1072,20 @@ fn run<S: Sample>(cfg: Config) {
                     continue;
                 }
                 let pcm = S::render(&case);
-                let o = run_case(&cfg, &pcm, rate, ch);
+                let case_cfg;
+                let cfg = if cfg.bitrate && cfg.rate_ctl.is_none() {
+                    let mut c = Config::clone(&cfg);
+                    c.rate_ctl = Some(ratectl::pick(case_seed, rate, ch));
+                    case_cfg = c;
+                    &case_cfg
+                } else {
+                    &cfg
+                };
+                let o = run_case(cfg, &pcm, rate, ch);
                 per_combo[ci].0.fetch_add(1, Ordering::Relaxed);
+                if o.class.is_none() && o.oracle.is_empty() {
+                    rejected.fetch_add(1, Ordering::Relaxed);
+                }
                 frames_total.fetch_add(case.frames(), Ordering::Relaxed);
                 if let Some(class) = o.class {
                     per_combo[ci].1.fetch_add(1, Ordering::Relaxed);
@@ -921,7 +1117,7 @@ fn run<S: Sample>(cfg: Config) {
                         if minimize { " — minimizing..." } else { "" }
                     );
                     let s = handle_failure(
-                        &cfg,
+                        cfg,
                         &id,
                         Some(i),
                         Some(case_seed),
@@ -974,6 +1170,12 @@ fn run<S: Sample>(cfg: Config) {
         skipped.load(Ordering::Relaxed),
         st.count
     );
+    if cfg.bitrate {
+        println!(
+            "  bitrate modes: {} of them rejected by both libvorbis and oxivorbis",
+            rejected.load(Ordering::Relaxed)
+        );
+    }
     for (k, &(r, c)) in cfg.combos.iter().enumerate() {
         println!(
             "  {r} Hz {c}ch: {} cases, {} failures",
