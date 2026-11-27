@@ -282,8 +282,9 @@ impl fmt::Display for BitrateError {
                 supported,
             } => {
                 let ch = match channels.count() {
-                    1 => "mono",
-                    _ => "stereo",
+                    1 => "mono".to_string(),
+                    2 => "stereo".to_string(),
+                    n => format!("{n} channels"),
                 };
                 match supported {
                     Some(r) => write!(
@@ -294,7 +295,7 @@ impl fmt::Display for BitrateError {
                     ),
                     None => write!(
                         f,
-                        "libvorbis has no bitrate setups at {rate} {ch} (bitrate modes need 8000..=50000 Hz)"
+                        "libvorbis has no bitrate setups at {rate} {ch} (bitrate modes need 8000..=50000 Hz, or up to 70000 Hz for 6 channels)"
                     ),
                 }
             }
@@ -721,6 +722,56 @@ mod tests {
         for hz in [7999, 50001, 96000] {
             let rate = SampleRate::new(hz).unwrap();
             assert_eq!(BitrateMode::supported_kbps(rate, Channels::STEREO), None);
+        }
+    }
+
+    /// The same for more than two channels: libvorbis divides the bitrate
+    /// by the channel count before the `rate_mapping` lookup, 6 channels
+    /// at 40..=70 kHz use the 5.1 template (and fall back to the uncoupled
+    /// one past its range), every other count the uncoupled templates.
+    /// Every kbps in range is planned, which also runs
+    /// `select_template_bitrate`'s check that `j + del` never rounds up.
+    #[test]
+    fn supported_range_is_contiguous_multichannel() {
+        let cases: &[(u32, u16, Option<RangeInclusive<u32>>)] = &[
+            (7999, 6, None),
+            (50001, 4, None),
+            (44100, 6, Some(84..=1440)),
+            (48000, 6, Some(84..=1440)),
+            (40000, 6, Some(84..=1440)),
+            (50001, 6, Some(84..=1440)),
+            (70000, 6, Some(84..=1440)),
+            (70001, 6, None),
+            (39999, 6, Some(180..=1140)),
+            (32000, 6, Some(180..=1140)),
+            (22050, 6, Some(96..=540)),
+            (8000, 3, Some(24..=126)),
+            (44100, 3, Some(96..=720)),
+            (44100, 4, Some(128..=960)),
+            (48000, 8, Some(256..=1920)),
+            (11025, 5, Some(60..=250)),
+            (16000, 7, Some(112..=700)),
+            (44100, 255, Some(8160..=61200)),
+        ];
+        for (hz, n, want) in cases {
+            let rate = SampleRate::new(*hz).unwrap();
+            let ch = Channels::new(*n).unwrap();
+            let r = BitrateMode::supported_kbps(rate, ch);
+            assert_eq!(&r, want, "{hz} {n}");
+            let Some(r) = r else { continue };
+            let step = if *n > 8 { 97 } else { 1 };
+            for k in r.clone().step_by(step).chain([*r.end()]) {
+                let m = BitrateMode::average(k);
+                assert!(
+                    plan(&m, &BitrateTuning::default(), Quality::Q5, rate, ch).is_ok(),
+                    "{hz} {n} {k} in {r:?}"
+                );
+            }
+            for k in [r.start() - 1, r.end() + 1] {
+                let m = BitrateMode::average(k);
+                let e = plan(&m, &BitrateTuning::default(), Quality::Q5, rate, ch);
+                assert!(matches!(e, Err(BitrateError::OutOfRange { .. })), "{k}");
+            }
         }
     }
 

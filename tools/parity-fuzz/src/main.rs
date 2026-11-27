@@ -170,10 +170,7 @@ fn oxivorbis_encode_ctl<S: Sample>(
     vendor: &[u8],
 ) -> Result<Vec<u8>, String> {
     let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
-    let c = match channels {
-        1 => oxivorbis::Channels::MONO,
-        _ => oxivorbis::Channels::STEREO,
-    };
+    let c = oxivorbis::Channels::new(channels).expect("channels validated at CLI");
     let mut opts = oxivorbis::Options::default()
         .with_quality(oxivorbis::Quality::from_base_quality(quality).expect("validated"))
         .with_serial(serial)
@@ -331,12 +328,6 @@ fn parse_args() -> Config {
     if cfg.bitrate && !rates_given {
         rates = vec![22050, 44100, 48000];
     }
-    if cfg.bitrate && rates.iter().any(|r| !(8000..=50000).contains(r)) {
-        eprintln!(
-            "parity-fuzz: --bitrate needs rates in 8000..=50000 (libvorbis has no bitrate setups elsewhere)"
-        );
-        std::process::exit(2);
-    }
     for &r in &rates {
         if oxivorbis::SampleRate::new(r).is_none() {
             eprintln!("parity-fuzz: unsupported rate {r} (1..=200000)");
@@ -351,6 +342,19 @@ fn parse_args() -> Config {
     }
     for &r in &rates {
         for &c in &chans {
+            let has_bitrate_setups = || {
+                oxivorbis::SampleRate::new(r)
+                    .zip(oxivorbis::Channels::new(c))
+                    .and_then(|(r, c)| oxivorbis::BitrateMode::supported_kbps(r, c))
+                    .is_some()
+            };
+            if cfg.bitrate && !has_bitrate_setups() {
+                eprintln!(
+                    "parity-fuzz: --bitrate: libvorbis has no bitrate setups at {r} Hz, {c} channels \
+                     (8000..=50000 Hz; 6 channels also up to 70000 Hz)"
+                );
+                std::process::exit(2);
+            }
             cfg.combos.push((r, c));
         }
     }

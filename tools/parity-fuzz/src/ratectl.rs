@@ -19,11 +19,7 @@ pub struct RateCtl {
 /// and then reservoir tuning.
 pub fn pick(seed: u64, rate: u32, ch: u16) -> RateCtl {
     let mut r = Rng::new(seed ^ 0xB17_7A7E);
-    let channels = if ch == 1 {
-        Channels::MONO
-    } else {
-        Channels::STEREO
-    };
+    let channels = Channels::new(ch).expect("channels validated at CLI");
     let range = SampleRate::new(rate)
         .and_then(|sr| BitrateMode::supported_kbps(sr, channels))
         .unwrap_or(16..=128);
