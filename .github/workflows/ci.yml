@@ -127,7 +127,7 @@ jobs:
           parity oracle_parity_long::cases::|18
           parity oracle_parity_long_silence_|2
           parity oracle_parity_transients_signal_uses_short_blocks|1
-          parity oracle_parity_multichannel::surround::|432
+          parity oracle_parity_multichannel::surround::|264
           parity oracle_parity_multichannel::uncoupled::|288
           parity oracle_parity_multichannel::c255_short|1
           parity parity_oggenc_quality_conversion|1

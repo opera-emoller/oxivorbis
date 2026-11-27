@@ -5,7 +5,9 @@
 //! ```
 //!
 //! `quality` is on oggenc's `-q` scale (-1..10, default 5). The WAV must be
-//! 16-bit integer PCM, 1 Hz to 200 kHz, mono or stereo. The RIFF parser
+//! 16-bit integer PCM, 1 Hz to 200 kHz, 1 to 255 channels. WAV stores 3
+//! to 8 channels in WAV/SMPTE order (5.1: L R C LFE BL BR), so they are
+//! reordered to Vorbis order (L C R BL BR LFE) first. The RIFF parser
 //! below is deliberately minimal (no dependencies); use a crate such as
 //! `hound` or `symphonia` for anything more general.
 
@@ -86,9 +88,11 @@ fn run() -> Result<(), String> {
     };
 
     let bytes = std::fs::read(input).map_err(|e| format!("{input}: {e}"))?;
-    let wav = parse_wav(&bytes).map_err(|e| format!("{input}: {e}"))?;
+    let mut wav = parse_wav(&bytes).map_err(|e| format!("{input}: {e}"))?;
     let rate = SampleRate::try_from(wav.rate).map_err(|e| e.to_string())?;
     let channels = Channels::try_from(wav.channels).map_err(|e| e.to_string())?;
+    // A no-op for 1, 2, 4 and more than 8 channels.
+    oxivorbis::reorder_wav_to_vorbis(&mut wav.samples, channels);
 
     let opts = Options::default().with_quality(quality);
     let ogg = oxivorbis::encode(&wav.samples, rate, channels, &opts);

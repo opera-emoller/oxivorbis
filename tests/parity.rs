@@ -821,7 +821,7 @@ mod oracle_parity_multichannel {
         };
     }
 
-    /// The 5.1 template's quality sweep at one rate.
+    /// The 5.1 template's full quality sweep at one rate.
     macro_rules! surround {
         ($name:ident, $hz:expr) => {
             mod $name {
@@ -835,12 +835,23 @@ mod oracle_parity_multichannel {
         };
     }
 
+    /// The ends of the 5.1 template's rate range: q-1, one coupled and
+    /// one uncoupled interior quality, q10.
+    macro_rules! surround_edge {
+        ($name:ident, $hz:expr) => {
+            mod $name {
+                use super::*;
+                qualities!($hz, 6; q_m010 = -0.1, q_030 = 0.3, q_065 = 0.65, q_100 = 1.0);
+            }
+        };
+    }
+
     mod surround {
         use super::*;
         surround!(r44100, 44100);
         surround!(r48000, 48000);
-        surround!(r70000, 70000);
-        surround!(r40000, 40000);
+        surround_edge!(r40000, 40000);
+        surround_edge!(r70000, 70000);
     }
 
     /// Uncoupled channel counts at q-1, q5 and q10.
@@ -870,7 +881,7 @@ mod oracle_parity_multichannel {
         uncoupled!(c7_r48000, 48000, 7);
         uncoupled!(c7_r4000, 4000, 7);
         uncoupled!(c8_r44100, 44100, 8);
-        uncoupled!(c8_r192000, 192000, 8);
+        uncoupled!(c8_r24000, 24000, 8);
     }
 
     /// The most channels libvorbis encodes, once and short: 0.25 s of

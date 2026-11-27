@@ -10,7 +10,10 @@
 //! `BufWriter<File>`. Pages reach the output file as they are completed,
 //! so memory use does not depend on the input length.
 //!
-//! The WAV must be 16-bit integer PCM, 44100 or 48000 Hz, mono or stereo.
+//! The WAV must be 16-bit integer PCM, 44100 or 48000 Hz, 1 to 255
+//! channels. The bytes are copied as they are, so channels stay in the
+//! file's order; for 3 to 8 channels that is WAV order, not Vorbis order
+//! (see `encode_wav`, which reorders, and `oxivorbis::reorder_wav_to_vorbis`).
 
 use oxivorbis::{Channels, Options, Quality, S16LeWriter, SampleRate};
 use std::fs::File;
