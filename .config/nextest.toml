@@ -26,3 +26,11 @@ slow-timeout = { period = "60s", terminate-after = 4 }
 [[profile.default.overrides]]
 filter = 'test(chunking_invariance)'
 slow-timeout = { period = "60s", terminate-after = 20 }
+
+# Bitrate-managed long parity cases (parity_bitrate bitrate_long::*, 30-120 s
+# of audio encoded as all 15 packetblobs on both sides) and the 20 s
+# target-bitrate check: ~1-3 min each in a debug build on an M4, longer on a
+# loaded CI runner.
+[[profile.default.overrides]]
+filter = 'test(bitrate_long::) | test(bitrates_hit_their_targets)'
+slow-timeout = { period = "60s", terminate-after = 8 }

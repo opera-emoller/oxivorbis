@@ -410,9 +410,10 @@ it up. The real-audio corpus is byte-identical at 44.1 kHz stereo with
 `--managed -b 128 -m 128 -M 128`, `--managed -b 160`, `-q 5 -M 128` and
 `-b 128`, and at 22.05 kHz mono with `--managed -b 40 -m 40 -M 40`,
 `--managed -b 32`, `-q 5 -M 40` and `-m 24 -M 48` (53,224 encodes). The
-differential fuzzer has run more than 95,000 cases with random bitrate modes,
-limits and reservoir tuning across 8 to 50 kHz (i16 and f32, macOS arm64
-and Linux x86_64), and CI runs 264 bitrate parity tests per platform.
+differential fuzzer has run more than 100,000 cases with random bitrate
+modes, limits, reservoir and encoder tuning across 8 to 50 kHz (i16 and
+f32, macOS arm64 and Linux x86_64, and against an AddressSanitizer build
+of the oracle), and CI runs 264 bitrate parity tests per platform.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
 ## Features
