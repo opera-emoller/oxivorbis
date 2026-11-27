@@ -183,6 +183,30 @@ without `-f`, and generates its own shell completions and man page
 `oxivorbis::encode`. See its README for each format's conversion, the
 exit codes and the overwrite policy.
 
+## Use from C and other languages
+
+[`ffi/`](ffi/README.md) builds `liboxivorbis`, a C API (header
+[`ffi/include/oxivorbis.h`](ffi/include/oxivorbis.h)) for C, C++, Python,
+C#, Swift, Godot, Unity and anything else with a C FFI. Its output is
+byte-identical to the Rust API.
+
+```sh
+cargo build --release -p oxivorbis-ffi   # liboxivorbis.{so,dylib,a} / oxivorbis.dll
+```
+
+```c
+oxv_buffer ogg;
+if (oxv_encode_i16(pcm, samples, 44100, 2, NULL, &ogg) == OXV_STATUS_OK) {
+    fwrite(ogg.data, 1, ogg.len, f);
+    oxv_buffer_free(&ogg);
+}
+```
+
+It has a streaming encoder, a callback writer and an options handle, and
+it reports errors as status codes. See [ffi/README.md](ffi/README.md) for
+linking (pkg-config, CMake), ownership and threading rules, and a Python
+ctypes binding.
+
 ## Supported input
 
 | | |
