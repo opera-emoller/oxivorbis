@@ -51,7 +51,12 @@ static int failures = 0;
 
 /* ---- deterministic input (mirrored in c_api.rs) ------------------------ */
 
-enum { STEREO_FRAMES = 44100 + 4321, MONO_FRAMES = 15000, EDGE_FRAMES = 3000 };
+enum {
+    STEREO_FRAMES = 44100 + 4321,
+    MONO_FRAMES = 15000,
+    EDGE_FRAMES = 3000,
+    SURROUND_FRAMES = 30000
+};
 
 /* Interleaved i16: a square wave per channel plus LCG noise. */
 static void gen_i16(int16_t *out, size_t frames, unsigned channels, uint32_t seed) {
@@ -156,6 +161,9 @@ static int16_t left[STEREO_FRAMES], right[STEREO_FRAMES];
 static float left_f[STEREO_FRAMES], right_f[STEREO_FRAMES];
 static int16_t mono[MONO_FRAMES];
 static float mono_f[MONO_FRAMES];
+/* 5.1 in Vorbis order: L, C, R, rear L, rear R, LFE. */
+static int16_t surround[SURROUND_FRAMES * 6];
+static float surround_f[SURROUND_FRAMES * 6];
 
 static void deinterleave(void) {
     size_t i;
@@ -254,8 +262,192 @@ static void test_options_errors(void) {
     CHECK_STATUS(oxv_options_add_comment(o, "K", NULL), OXV_STATUS_INVALID_ARGUMENT);
     CHECK_STATUS(oxv_options_add_comment(o, "K", "\xc3"), OXV_STATUS_INVALID_ARGUMENT);
     CHECK_STATUS(oxv_options_add_comment(NULL, "K", "v"), OXV_STATUS_INVALID_ARGUMENT);
+    /* Bitrate arguments a mode doesn't take, unknown modes. */
+    CHECK_STATUS(oxv_options_set_bitrate(NULL, OXV_BITRATE_MODE_AVERAGE, 128, 0, 0),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, 99, 128, 0, 0), OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, -1, 128, 0, 0), OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_VBR, 128, 0, 0),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_NOMINAL, 128, 0, 160),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_LIMITS, 128, 96, 0),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_QUALITY_LIMITS, 1, 0, 160),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate_tuning(NULL, -1, NAN, NAN),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_STATUS(oxv_options_set_bitrate_tuning(o, (int64_t)UINT32_MAX + 1, NAN, NAN),
+                 OXV_STATUS_INVALID_ARGUMENT);
+    CHECK_OK(oxv_options_set_bitrate_tuning(o, UINT32_MAX, NAN, NAN));
+    CHECK_OK(oxv_options_set_bitrate_tuning(o, -1, NAN, NAN));
+    /* Rejected calls left the options at VBR. */
+    CHECK_OK(oxv_options_check(o, 96000, 2, NULL, 0));
     oxv_options_free(o);
     oxv_options_free(NULL);
+}
+
+/* ---- bitrate modes and 5.1 ------------------------------------------------ */
+
+static int append_cb(void *user_data, const uint8_t *data, size_t len);
+
+/* Options "C": quality 6 (for QUALITY_LIMITS), serial 7. */
+static oxv_options *options_c(int mode, uint32_t kbps, uint32_t min, uint32_t max) {
+    oxv_options *o = oxv_options_new();
+    CHECK(o != NULL);
+    CHECK_OK(oxv_options_set_quality(o, 6.0f));
+    CHECK_OK(oxv_options_set_serial(o, 7));
+    CHECK_OK(oxv_options_set_bitrate(o, mode, kbps, min, max));
+    return o;
+}
+
+static void test_bitrate(void) {
+    oxv_options *o;
+    oxv_encoder *enc = NULL;
+    oxv_writer *w = NULL;
+    oxv_buffer buf = {NULL, 0};
+    bytes out = {NULL, 0, 0};
+    const uint8_t *p;
+    size_t n, i, chunk;
+    uint32_t lo = 1, hi = 1;
+    char msg[256];
+
+    /* Supported ranges. */
+    CHECK_OK(oxv_bitrate_supported_kbps(44100, 2, &lo, &hi));
+    CHECK(lo == 45 && hi == 500);
+    CHECK_OK(oxv_bitrate_supported_kbps(48000, 6, &lo, &hi));
+    CHECK(lo == 84 && hi == 1440);
+    CHECK_STATUS(oxv_bitrate_supported_kbps(96000, 2, &lo, &hi), OXV_STATUS_UNSUPPORTED);
+    CHECK(lo == 0 && hi == 0);
+    CHECK_STATUS(oxv_bitrate_supported_kbps(44100, 0, &lo, &hi), OXV_STATUS_UNSUPPORTED);
+    CHECK_STATUS(oxv_bitrate_supported_kbps(44100, 2, NULL, &hi), OXV_STATUS_INVALID_ARGUMENT);
+
+    /* "CBR" 128 kb/s stereo, streamed in odd chunks. */
+    o = options_c(OXV_BITRATE_MODE_AVERAGE, 128, 128, 128);
+    CHECK_OK(oxv_encoder_new(44100, 2, o, &enc));
+    oxv_options_free(o);
+    for (i = 0; i < STEREO_FRAMES * 2; i += chunk) {
+        chunk = STEREO_FRAMES * 2 - i < 3333 ? STEREO_FRAMES * 2 - i : 3333;
+        CHECK_OK(oxv_encoder_write_i16(enc, stereo + i, chunk, &p, &n));
+        bytes_append(&out, p, n);
+    }
+    CHECK_OK(oxv_encoder_finish(enc, &p, &n));
+    bytes_append(&out, p, n);
+    save("managed_cbr_encoder", out.data, out.len);
+    oxv_encoder_free(enc);
+    out.len = 0;
+
+    /* ABR 5.1 at 48 kHz with reservoir tuning, one-shot f32. */
+    o = options_c(OXV_BITRATE_MODE_AVERAGE, 384, 0, 0);
+    CHECK_OK(oxv_options_set_bitrate_tuning(o, -1, 0.3, NAN));
+    CHECK_OK(oxv_encode_f32(surround_f, SURROUND_FRAMES * 6, 48000, 6, o, &buf));
+    save("managed_51_abr_oneshot", buf.data, buf.len);
+    oxv_buffer_free(&buf);
+    oxv_options_free(o);
+
+    /* Quality 6 capped at 160 kb/s, through the callback writer. */
+    o = options_c(OXV_BITRATE_MODE_QUALITY_LIMITS, 0, 0, 160);
+    CHECK_OK(oxv_writer_new(44100, 2, o, append_cb, &out, &w));
+    oxv_options_free(o);
+    CHECK_OK(oxv_writer_write_i16(w, stereo, STEREO_FRAMES * 2));
+    CHECK_OK(oxv_writer_finish(w));
+    save("managed_qlimits_writer", out.data, out.len);
+    oxv_writer_free(w);
+    out.len = 0;
+
+    /* -b 96 (nominal, unmanaged) then back to VBR: plain VBR again. */
+    o = options_c(OXV_BITRATE_MODE_NOMINAL, 96, 0, 0);
+    CHECK_OK(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_VBR, 0, 0, 0));
+    CHECK_OK(oxv_encode_i16(stereo, STEREO_FRAMES * 2, 44100, 2, o, &buf));
+    save("managed_back_to_vbr", buf.data, buf.len);
+    oxv_buffer_free(&buf);
+    oxv_options_free(o);
+
+    /* One set of options, valid at 44.1 kHz and not at 96 kHz: every
+     * constructor reports UNSUPPORTED there, and still works at 44.1. */
+    o = options_c(OXV_BITRATE_MODE_AVERAGE, 160, 0, 0);
+    enc = (oxv_encoder *)&enc;
+    CHECK_STATUS(oxv_encoder_new(96000, 2, o, &enc), OXV_STATUS_UNSUPPORTED);
+    CHECK(enc == NULL);
+    w = (oxv_writer *)&w;
+    CHECK_STATUS(oxv_writer_new(96000, 2, o, append_cb, &out, &w), OXV_STATUS_UNSUPPORTED);
+    CHECK(w == NULL && out.len == 0);
+    CHECK_STATUS(oxv_encode_i16(stereo, 2000, 96000, 2, o, &buf), OXV_STATUS_UNSUPPORTED);
+    CHECK(buf.data == NULL && buf.len == 0);
+    CHECK_STATUS(oxv_encode_f32(stereo_f, 2000, 7999, 2, o, &buf), OXV_STATUS_UNSUPPORTED);
+    CHECK_STATUS(oxv_options_check(o, 96000, 2, msg, sizeof msg), OXV_STATUS_UNSUPPORTED);
+    CHECK(strstr(msg, "no bitrate setups at 96000 Hz stereo") != NULL);
+    CHECK_OK(oxv_options_check(o, 44100, 2, msg, sizeof msg));
+    CHECK(msg[0] == '\0');
+    CHECK_OK(oxv_encoder_new(44100, 2, o, &enc));
+    oxv_encoder_free(enc);
+    /* The channel count matters too: 1000 kb/s fits 5.1, not stereo. */
+    CHECK_OK(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_AVERAGE, 1000, 0, 0));
+    CHECK_OK(oxv_options_check(o, 48000, 6, NULL, 0));
+    CHECK_STATUS(oxv_options_check(o, 48000, 2, msg, sizeof msg), OXV_STATUS_UNSUPPORTED);
+    CHECK(strstr(msg, "supported: 45..=500 kb/s") != NULL);
+    /* Truncated messages stay NUL-terminated. */
+    msg[5] = 'x';
+    CHECK_STATUS(oxv_options_check(o, 48000, 2, msg, 5), OXV_STATUS_UNSUPPORTED);
+    CHECK(strlen(msg) == 4 && msg[5] == 'x');
+    CHECK_STATUS(oxv_options_check(o, 0, 2, msg, sizeof msg), OXV_STATUS_UNSUPPORTED);
+    CHECK(strstr(msg, "sample rate") != NULL);
+    /* Inconsistent requests and tuning are reported at creation, too. */
+    CHECK_OK(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_AVERAGE, 128, 160, 0));
+    CHECK_STATUS(oxv_encoder_new(44100, 2, o, &enc), OXV_STATUS_UNSUPPORTED);
+    CHECK_OK(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_LIMITS, 0, 0, 0));
+    CHECK_STATUS(oxv_options_check(o, 44100, 2, msg, sizeof msg), OXV_STATUS_UNSUPPORTED);
+    CHECK(strstr(msg, "invalid bitrate request") != NULL);
+    CHECK_OK(oxv_options_set_bitrate(o, OXV_BITRATE_MODE_AVERAGE, 128, 0, 0));
+    CHECK_OK(oxv_options_set_bitrate_tuning(o, -1, 1.5, NAN));
+    CHECK_STATUS(oxv_encoder_new(44100, 2, o, &enc), OXV_STATUS_UNSUPPORTED);
+    oxv_options_free(o);
+    free(out.data);
+}
+
+/* 5.1 VBR: streamed i16 in chunks that split frames, and planar through
+ * the writer. */
+static void test_surround(void) {
+    static int16_t planes_i16[6][SURROUND_FRAMES];
+    oxv_encoder *enc = NULL;
+    oxv_writer *w = NULL;
+    bytes out = {NULL, 0, 0};
+    const uint8_t *p;
+    const int16_t *planes[6];
+    size_t n, i, chunk;
+    unsigned c;
+
+    CHECK_OK(oxv_encoder_new(48000, 6, NULL, &enc));
+    for (i = 0; i < SURROUND_FRAMES * 6; i += chunk) {
+        chunk = SURROUND_FRAMES * 6 - i < 1003 ? SURROUND_FRAMES * 6 - i : 1003;
+        CHECK_OK(oxv_encoder_write_i16(enc, surround + i, chunk, &p, &n));
+        bytes_append(&out, p, n);
+    }
+    CHECK_OK(oxv_encoder_finish(enc, &p, &n));
+    bytes_append(&out, p, n);
+    save("encoder_51", out.data, out.len);
+    oxv_encoder_free(enc);
+    out.len = 0;
+
+    for (i = 0; i < SURROUND_FRAMES; i++) {
+        for (c = 0; c < 6; c++) {
+            planes_i16[c][i] = surround[i * 6 + c];
+        }
+    }
+    CHECK_OK(oxv_writer_new(44100, 6, NULL, append_cb, &out, &w));
+    for (i = 0; i < SURROUND_FRAMES; i += chunk) {
+        chunk = SURROUND_FRAMES - i < 2500 ? SURROUND_FRAMES - i : 2500;
+        for (c = 0; c < 6; c++) {
+            planes[c] = planes_i16[c] + i;
+        }
+        CHECK_OK(oxv_writer_write_planar_i16(w, planes, 6, chunk));
+        CHECK_STATUS(oxv_writer_write_planar_i16(w, planes, 2, chunk),
+                     OXV_STATUS_INVALID_ARGUMENT);
+    }
+    CHECK_OK(oxv_writer_finish(w));
+    save("writer_planar_51", out.data, out.len);
+    oxv_writer_free(w);
+    free(out.data);
 }
 
 /* ---- streaming encoder ---------------------------------------------------- */
@@ -266,7 +458,10 @@ static void test_encoder_new_errors(void) {
     CHECK(enc == NULL);
     CHECK_STATUS(oxv_encoder_new(200001, 2, NULL, &enc), OXV_STATUS_UNSUPPORTED);
     CHECK_STATUS(oxv_encoder_new(44100, 0, NULL, &enc), OXV_STATUS_UNSUPPORTED);
-    CHECK_STATUS(oxv_encoder_new(44100, 256, NULL, &enc), OXV_STATUS_UNSUPPORTED);
+    CHECK_STATUS(oxv_encoder_new(44100, OXV_CHANNELS_MAX + 1, NULL, &enc),
+                 OXV_STATUS_UNSUPPORTED);
+    CHECK_OK(oxv_encoder_new(8000, OXV_CHANNELS_MAX, NULL, &enc));
+    oxv_encoder_free(enc);
     CHECK_STATUS(oxv_encoder_new(44100, 0x10001, NULL, &enc), OXV_STATUS_UNSUPPORTED);
     CHECK_STATUS(oxv_encoder_new(44100, 2, NULL, NULL), OXV_STATUS_INVALID_ARGUMENT);
     CHECK(enc == NULL);
@@ -518,6 +713,8 @@ int main(int argc, char **argv) {
     to_f32(stereo, stereo_f, STEREO_FRAMES * 2);
     gen_i16(mono, MONO_FRAMES, 1, 7);
     to_f32(mono, mono_f, MONO_FRAMES);
+    gen_i16(surround, SURROUND_FRAMES, 6, 11);
+    to_f32(surround, surround_f, SURROUND_FRAMES * 6);
     deinterleave();
 
     test_version();
@@ -534,6 +731,8 @@ int main(int argc, char **argv) {
     test_writer(2);
     test_writer(3);
     test_writer_errors();
+    test_surround();
+    test_bitrate();
 
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);

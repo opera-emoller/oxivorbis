@@ -2,7 +2,8 @@
 //! callers do: compiles `tests/c/test_oxivorbis.c` against
 //! `include/oxivorbis.h` and liboxivorbis (shared, then static), runs it,
 //! and checks every stream it wrote is byte-identical to `oxivorbis::encode`
-//! / `encode_f32` on the same input and options. Also compiles and runs
+//! / `encode_f32` (or `encode_with_bitrate` / `encode_f32_with_bitrate` for
+//! the bitrate modes) on the same input and options. Also compiles and runs
 //! `tests/c/smoke.cpp` with `-Wall -Wextra -Werror -pedantic`.
 //!
 //! Environment:
@@ -21,11 +22,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use vorbis::{Channels, Options, Quality, SampleRate};
+use vorbis::{Bitrate, BitrateMode, BitrateTuning, Channels, Options, Quality, SampleRate};
 
 const STEREO_FRAMES: usize = 44100 + 4321;
 const MONO_FRAMES: usize = 15000;
 const EDGE_FRAMES: usize = 3000;
+const SURROUND_FRAMES: usize = 30000;
 
 /// Mirror of `gen_i16` in test_oxivorbis.c.
 fn gen_i16(frames: usize, channels: usize, seed: u32) -> Vec<i16> {
@@ -70,12 +72,41 @@ fn options_b() -> Options {
         .with_comment("ARTIST", "Ünïcödé")
 }
 
+/// Mirror of `options_c` in test_oxivorbis.c (the bitrate mode is passed
+/// separately).
+fn options_c() -> Options {
+    Options::default()
+        .with_quality(Quality::new(6.0).unwrap())
+        .with_serial(7)
+}
+
 /// Every stream the C test writes, with the bytes Rust produces for it.
 fn expected() -> Vec<(&'static str, Vec<u8>)> {
     let stereo = gen_i16(STEREO_FRAMES, 2, 1);
     let stereo_f = to_f32(&stereo);
     let mono_f = to_f32(&gen_i16(MONO_FRAMES, 1, 7));
     let edge = gen_i16(EDGE_FRAMES, 1, 99);
+    let surround = gen_i16(SURROUND_FRAMES, 6, 11);
+    let surround_f = to_f32(&surround);
+    let c = options_c();
+    let br = |pcm: &[i16], r, ch, b: Bitrate| {
+        vorbis::encode_with_bitrate(pcm, SampleRate::new(r).unwrap(), ch, &c, &b).unwrap()
+    };
+    let br_f = |pcm: &[f32], r, ch, b: Bitrate| {
+        vorbis::encode_f32_with_bitrate(pcm, SampleRate::new(r).unwrap(), ch, &c, &b).unwrap()
+    };
+    let cbr = BitrateMode::Average {
+        kbps: 128,
+        min_kbps: Some(128),
+        max_kbps: Some(128),
+    };
+    let abr_51 = Bitrate::new(BitrateMode::average(384))
+        .with_tuning(BitrateTuning::default().with_reservoir_bias(0.3));
+    let qlimits = BitrateMode::QualityLimits {
+        min_kbps: None,
+        max_kbps: Some(160),
+    };
+    let s51 = Channels::SURROUND_5_1;
     let (s, d, a, b) = (
         Channels::STEREO,
         Options::default(),
@@ -99,6 +130,18 @@ fn expected() -> Vec<(&'static str, Vec<u8>)> {
         ("writer_f32", enc_f(&stereo_f, 44100, s, &b)),
         ("writer_planar_f32", enc_f(&stereo_f, 44100, s, &b)),
         ("writer_planar_i16", enc(&stereo, 44100, s, &b)),
+        ("encoder_51", enc(&surround, 48000, s51, &d)),
+        ("writer_planar_51", enc(&surround, 44100, s51, &d)),
+        ("managed_cbr_encoder", br(&stereo, 44100, s, cbr.into())),
+        (
+            "managed_51_abr_oneshot",
+            br_f(&surround_f, 48000, s51, abr_51),
+        ),
+        (
+            "managed_qlimits_writer",
+            br(&stereo, 44100, s, qlimits.into()),
+        ),
+        ("managed_back_to_vbr", enc(&stereo, 44100, s, &c)),
     ]
 }
 

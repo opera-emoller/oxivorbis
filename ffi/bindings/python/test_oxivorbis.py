@@ -176,6 +176,45 @@ class TestBinding(unittest.TestCase, StreamChecks):
         self.assertEqual(cm.exception.status, oxivorbis.INVALID_STATE)
         enc.close()
 
+    def test_bitrate_modes(self):
+        self.assertEqual(oxivorbis.bitrate_supported_kbps(44100, 2), (45, 500))
+        self.assertEqual(oxivorbis.bitrate_supported_kbps(48000, 6), (84, 1440))
+        self.assertIsNone(oxivorbis.bitrate_supported_kbps(96000, 2))
+        pcm = make_signal(20000, 2)
+        cbr = oxivorbis.Options(serial=3, bitrate=(oxivorbis.BITRATE_AVERAGE, 96, 96, 96))
+        one = oxivorbis.encode_i16(pcm, 44100, 2, cbr)
+        self.assert_valid_stream(one, 20000, serial=3, rate=44100, channels=2)
+        self.assertNotEqual(one, oxivorbis.encode_i16(pcm, 44100, 2, serial=3))
+        with oxivorbis.Encoder(44100, 2, cbr) as enc:
+            out = b"".join(enc.write_i16(pcm[i:i + 777]) for i in range(0, len(pcm), 777))
+            out += enc.finish()
+        self.assertEqual(out, one)
+        # The same options at a rate without bitrate setups: an explained error.
+        self.assertIn("no bitrate setups at 96000 Hz", cbr.check(96000, 2))
+        self.assertIsNone(cbr.check(44100, 2))
+        for make in (lambda: oxivorbis.encode_i16(pcm, 96000, 2, cbr),
+                     lambda: oxivorbis.Encoder(96000, 2, cbr),
+                     lambda: oxivorbis.Writer(io.BytesIO(), 96000, 2, cbr)):
+            with self.assertRaises(oxivorbis.OxivorbisError) as cm:
+                make()
+            self.assertEqual(cm.exception.status, oxivorbis.UNSUPPORTED)
+            self.assertIn("no bitrate setups", cm.exception.detail)
+        with self.assertRaises(oxivorbis.OxivorbisError) as cm:
+            oxivorbis.Options(bitrate=(oxivorbis.BITRATE_NOMINAL, 96, 0, 128))
+        self.assertEqual(cm.exception.status, oxivorbis.INVALID_ARGUMENT)
+        bad_bias = oxivorbis.Options(bitrate=(oxivorbis.BITRATE_AVERAGE, 96),
+                                     bitrate_tuning=(None, 1.5, None))
+        self.assertIn("invalid bitrate request", bad_bias.check(44100, 2))
+
+    def test_surround(self):
+        pcm = make_signal(12000, 6)
+        ogg = oxivorbis.encode_i16(pcm, 48000, 6, quality=3)
+        self.assert_valid_stream(ogg, 12000, rate=48000, channels=6)
+        planes = [list(pcm[c::6]) for c in range(6)]
+        with oxivorbis.Encoder(48000, 6, quality=3) as enc:
+            out = enc.write_planar_i16(planes) + enc.finish()
+        self.assertEqual(out, ogg)
+
     def test_writer_propagates_file_errors(self):
         class Broken:
             def write(self, _):
@@ -209,6 +248,36 @@ class TestAgainstCli(unittest.TestCase, StreamChecks):
                                     comments=[("TITLE", "From Python")])
         self.assertEqual(ours, cli)
         self.assert_valid_stream(ours, 44100, serial=1234, rate=44100, channels=2)
+
+    def test_surround_matches_cli(self):
+        # Raw input is Vorbis channel order for the CLI too (never reordered).
+        pcm = make_signal(30000, 6)
+        cli = self.run_cli(le_bytes(pcm), ["-R", "48000", "-C", "6", "-q", "4", "-s", "51"])
+        ours = oxivorbis.encode_i16(pcm, 48000, 6, quality=4, serial=51)
+        self.assertEqual(ours, cli)
+        self.assert_valid_stream(ours, 30000, serial=51, rate=48000, channels=6)
+
+    def test_managed_matches_cli(self):
+        pcm = make_signal(44100, 2)
+        raw = le_bytes(pcm)
+        cases = [
+            (["--managed", "-b", "128", "-m", "128", "-M", "128"],
+             dict(bitrate=(oxivorbis.BITRATE_AVERAGE, 128, 128, 128))),
+            (["-q", "6", "-M", "160"],
+             dict(quality=6, bitrate=(oxivorbis.BITRATE_QUALITY_LIMITS, 0, 0, 160))),
+            (["--managed", "-b", "112", "--advanced-encode-option", "bit_reservoir_bias=0.4"],
+             dict(bitrate=(oxivorbis.BITRATE_AVERAGE, 112), bitrate_tuning=(None, 0.4, None))),
+        ]
+        for args, kw in cases:
+            cli = self.run_cli(raw, ["-R", "44100", "-C", "2", "-s", "9", *args])
+            ours = oxivorbis.encode_i16(pcm, 44100, 2, oxivorbis.Options(serial=9, **kw))
+            self.assertEqual(ours, cli, args)
+        # 5.1 at an average bitrate.
+        pcm = make_signal(30000, 6)
+        cli = self.run_cli(le_bytes(pcm), ["-R", "48000", "-C", "6", "-s", "9", "--managed",
+                                           "-b", "320"])
+        opts = oxivorbis.Options(serial=9, bitrate=(oxivorbis.BITRATE_AVERAGE, 320))
+        self.assertEqual(oxivorbis.encode_i16(pcm, 48000, 6, opts), cli)
 
     def test_f32le_matches_cli(self):
         pcm = array.array("f", (s / 30000.0 for s in make_signal(16000, 1)))

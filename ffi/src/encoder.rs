@@ -38,13 +38,17 @@ enum State {
 }
 
 /// Create an encoder for `rate` Hz (`OXV_SAMPLE_RATE_MIN` to
-/// `OXV_SAMPLE_RATE_MAX`) and `channels` channels (currently 1 or 2) with
-/// `opts` (NULL = defaults; copied, so it may be freed afterwards). On
-/// success `*out` receives the encoder; free it with `oxv_encoder_free`.
+/// `OXV_SAMPLE_RATE_MAX`) and `channels` channels (1 to
+/// `OXV_CHANNELS_MAX`, interleaved in Vorbis channel order; see
+/// ffi/README.md) with `opts` (NULL = defaults; copied, so it may be freed
+/// afterwards). On success `*out` receives the encoder; free it with
+/// `oxv_encoder_free`.
 ///
 /// Returns `OXV_STATUS_UNSUPPORTED` for an unsupported rate or channel
-/// count and `OXV_STATUS_INVALID_ARGUMENT` if `out` is NULL. On failure
-/// `*out` is set to NULL.
+/// count, or a bitrate mode (`oxv_options_set_bitrate`) libvorbis can't
+/// encode at this rate and channel count (`oxv_options_check` says why),
+/// and `OXV_STATUS_INVALID_ARGUMENT` if `out` is NULL. On failure `*out`
+/// is set to NULL.
 ///
 /// # Safety
 ///
@@ -62,11 +66,11 @@ pub unsafe extern "C" fn oxv_encoder_new(
     guard(|| {
         non_null(out)?;
         let (rate, ch) = rate_channels(rate, channels)?;
-        let default = vorbis::Options::default();
+        let default = oxv_options::default();
         // SAFETY: forwarded from this function's contract.
         let opts = unsafe { options_or_default(opts, &default) };
         let enc = Box::new(oxv_encoder {
-            state: State::Active(Encoder::new(rate, ch, opts)),
+            state: State::Active(opts.encoder(rate, ch)?),
             channels: usize::from(ch.count()),
         });
         // SAFETY: non-NULL (checked) and writable per the contract.
@@ -226,7 +230,8 @@ pub(crate) unsafe fn planar_arg<'a, T>(
 
 /// Encode planar `float` audio: `channels` points to `channel_count`
 /// pointers (one per channel, in Vorbis channel order: left, right for
-/// stereo), each to `frames` samples. Gives exactly the bytes of
+/// stereo; left, center, right, rear left, rear right, LFE for 5.1), each
+/// to `frames` samples. Gives exactly the bytes of
 /// interleaving the channels and calling `oxv_encoder_write_f32`; output
 /// as there.
 ///

@@ -66,6 +66,7 @@ target_link_libraries(app PRIVATE oxivorbis::oxivorbis)        # or oxivorbis::o
 | Versioning | `OXV_ABI_VERSION` (header), `oxv_abi_version()`, `oxv_version()` (`"0.1.0"`) |
 | Errors | `oxv_status`: `OXV_STATUS_OK` (0), `_INVALID_ARGUMENT`, `_UNSUPPORTED`, `_IO`, `_INVALID_STATE`, `_PANIC`; `oxv_status_message(status)` |
 | Options | `oxv_options_new`, `_set_quality(float)`, `_set_serial(uint32_t)`, `_set_vendor(utf8)`, `_add_comment(key, value)`, `_free` |
+| Bitrate modes | `oxv_options_set_bitrate(opts, mode, kbps, min_kbps, max_kbps)`, `oxv_options_set_bitrate_tuning(opts, reservoir_bits, bias, damping)`, `oxv_bitrate_supported_kbps(rate, channels, &min, &max)`, `oxv_options_check(opts, rate, channels, msg, size)` |
 | Streaming | `oxv_encoder_new(rate, channels, opts, &enc)`, `oxv_encoder_write_{i16,f32}`, `oxv_encoder_write_planar_{f32,i16}`, `oxv_encoder_finish`, `oxv_encoder_free` |
 | One-shot | `oxv_encode_{i16,f32}(pcm, samples, rate, channels, opts, &buf)`, `oxv_buffer_free` |
 | Callback sink | `oxv_writer_new(rate, channels, opts, write_fn, user_data, &w)`, `oxv_writer_write_{i16,f32}`, `oxv_writer_write_planar_{f32,i16}`, `oxv_writer_finish`, `oxv_writer_free` |
@@ -73,8 +74,12 @@ target_link_libraries(app PRIVATE oxivorbis::oxivorbis)        # or oxivorbis::o
 The header documents each function. A few rules apply throughout:
 
 - Sample rate is a plain `uint32_t` from `OXV_SAMPLE_RATE_MIN` (1) to
-  `OXV_SAMPLE_RATE_MAX` (200000). The channel count is a plain `uint32_t`,
-  currently 1 or 2. Anything else returns `OXV_STATUS_UNSUPPORTED`.
+  `OXV_SAMPLE_RATE_MAX` (200000). The channel count is a plain `uint32_t`
+  from 1 to `OXV_CHANNELS_MAX` (255), in **Vorbis channel order** (5.1:
+  front left, center, front right, rear left, rear right, LFE; see the
+  [main README](../README.md#multichannel-and-51)). The library never
+  reorders channels; WAV/SMPTE-ordered input needs reordering first.
+  Anything else returns `OXV_STATUS_UNSUPPORTED`.
 - Interleaved functions count **samples** (frames × channels). A partial
   trailing frame carries over to the next write, as in the Rust API.
   Planar functions take `const T *const *channels`, `channel_count` (which
@@ -170,6 +175,34 @@ oxv_writer_finish(w);   /* OXV_STATUS_IO if to_file failed */
 oxv_writer_free(w);
 ```
 
+### Bitrate modes
+
+VBR at the quality is the default. `oxv_options_set_bitrate` selects one
+of libvorbis's bitrate-driven setups instead, each as oggenc sets it up
+(`OXV_BITRATE_MODE_NOMINAL` = `-b K`, `_AVERAGE` = `--managed -b K [-m]
+[-M]`, `_LIMITS` = `--managed -m/-M`, `_QUALITY_LIMITS` = `-q Q -m/-M`;
+0 for an unset limit). libvorbis has bitrate setups only for 8 to 50 kHz
+(for 6 channels, up to 70 kHz), each for a range of bitrates, so the
+request is checked when the encoder, writer or one-shot encode is
+created: those return `OXV_STATUS_UNSUPPORTED`, and `oxv_options_check`
+explains why. The same options can be used at any rate and channel
+count; each is checked for its own.
+
+```c
+oxv_options *opts = oxv_options_new();
+/* oggenc --managed -b 384: 5.1 at an average 384 kb/s */
+oxv_options_set_bitrate(opts, OXV_BITRATE_MODE_AVERAGE, 384, 0, 0);
+char why[256];
+if (oxv_options_check(opts, 48000, 6, why, sizeof why) != OXV_STATUS_OK) {
+    fprintf(stderr, "oxivorbis: %s\n", why);   /* e.g. "no libvorbis setup for ..." */
+} else {
+    oxv_encoder *enc;
+    oxv_encoder_new(48000, 6, opts, &enc);     /* interleaved L C R RL RR LFE */
+    /* ... oxv_encoder_write_i16 / finish / free as above ... */
+}
+oxv_options_free(opts);
+```
+
 ### Python (ctypes, no dependencies)
 
 [`bindings/python/oxivorbis.py`](bindings/python/oxivorbis.py) is a small
@@ -186,6 +219,10 @@ with oxivorbis.Encoder(48000, 1, quality=3) as enc, open("out.ogg", "wb") as f:
     for chunk in chunks:                 # lists, array('f'), numpy float32, ...
         f.write(enc.write_f32(chunk))
     f.write(enc.finish())
+
+# oggenc --managed -b 128 -m 128 -M 128 ("CBR"); errors carry the reason
+cbr = oxivorbis.Options(bitrate=(oxivorbis.BITRATE_AVERAGE, 128, 128, 128))
+ogg = oxivorbis.encode_i16(samples, rate=44100, channels=2, options=cbr)
 ```
 
 ### C# (P/Invoke)
@@ -234,7 +271,10 @@ just ffi-header      # regenerate include/oxivorbis.h after changing ffi/src (cb
 `-std=c99 -Wall -Wextra -Werror -pedantic`. The C test encodes one input
 through every encoding function and writes each stream out, and the Rust
 side checks each one byte-for-byte against `oxivorbis::encode` /
-`encode_f32`. The C test also walks the error paths. CI runs all of it on
+`encode_f32` (`encode_with_bitrate` for the bitrate modes), including 5.1
+streams and managed stereo and 5.1. The C test also walks the error
+paths, including one set of bitrate options used at a rate where it is
+valid and one where it isn't. CI runs all of it on
 Linux and macOS, checks the committed header is fresh, and runs the
 Python test.
 
@@ -243,5 +283,5 @@ Python test.
 `OXV_ABI_VERSION` is bumped on any incompatible change. Adding functions,
 options setters or `oxv_status` values is compatible, so treat unknown
 non-zero statuses as errors. Every struct except `oxv_buffer` is opaque,
-so new settings arrive as new `oxv_options_set_*` functions, and channel
-layouts beyond stereo need no new types.
+so new settings arrive as new `oxv_options_set_*` functions (as the
+bitrate modes did), and channel layouts need no new types.

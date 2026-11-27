@@ -44,6 +44,10 @@ pub const OXV_SAMPLE_RATE_MIN: u32 = 1;
 /// Highest supported sample rate in Hz (libvorbis has no template above).
 pub const OXV_SAMPLE_RATE_MAX: u32 = 200_000;
 
+/// Most channels a stream can have (the Vorbis ID header stores the count
+/// in 8 bits). Every count from 1 up is supported, in Vorbis channel order.
+pub const OXV_CHANNELS_MAX: u32 = 255;
+
 /// Result of every fallible call. `OXV_STATUS_OK` (0) is success; any other
 /// value is an error, described by `oxv_status_message`. New values may be
 /// added in later versions, so treat unknown non-zero values as errors.
@@ -56,7 +60,9 @@ pub enum oxv_status {
     /// buffer, a NaN or out-of-range quality, a string that is not UTF-8,
     /// or a planar channel count that does not match the encoder.
     InvalidArgument = 1,
-    /// A sample rate or channel count oxivorbis does not encode.
+    /// A sample rate or channel count oxivorbis does not encode, or a
+    /// bitrate mode libvorbis has no setup for at the rate and channel
+    /// count (`oxv_options_check` describes it).
     Unsupported = 2,
     /// The write callback of an `oxv_writer` reported an error.
     Io = 3,
@@ -89,7 +95,7 @@ pub extern "C" fn oxv_status_message(status: i32) -> *const c_char {
     let msg: &'static std::ffi::CStr = match status {
         0 => c"ok",
         1 => c"invalid argument",
-        2 => c"unsupported sample rate or channel count",
+        2 => c"unsupported sample rate, channel count or bitrate",
         3 => c"write callback failed",
         4 => c"invalid state: already finished or failed",
         5 => c"internal error (panic) in oxivorbis",
@@ -260,5 +266,6 @@ mod tests {
     fn rate_limits_match_library() {
         assert_eq!(OXV_SAMPLE_RATE_MIN, vorbis::SampleRate::MIN.hz());
         assert_eq!(OXV_SAMPLE_RATE_MAX, vorbis::SampleRate::MAX.hz());
+        assert_eq!(OXV_CHANNELS_MAX, u32::from(vorbis::Channels::MAX.count()));
     }
 }

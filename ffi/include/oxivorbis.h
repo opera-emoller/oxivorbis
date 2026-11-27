@@ -37,6 +37,12 @@
 #define OXV_SAMPLE_RATE_MAX 200000
 
 /**
+ * Most channels a stream can have (the Vorbis ID header stores the count
+ * in 8 bits). Every count from 1 up is supported, in Vorbis channel order.
+ */
+#define OXV_CHANNELS_MAX 255
+
+/**
  * Result of every fallible call. `OXV_STATUS_OK` (0) is success; any other
  * value is an error, described by `oxv_status_message`. New values may be
  * added in later versions, so treat unknown non-zero values as errors.
@@ -57,7 +63,9 @@ enum oxv_status
      */
     OXV_STATUS_INVALID_ARGUMENT = 1,
     /**
-     * A sample rate or channel count oxivorbis does not encode.
+     * A sample rate or channel count oxivorbis does not encode, or a
+     * bitrate mode libvorbis has no setup for at the rate and channel
+     * count (`oxv_options_check` describes it).
      */
     OXV_STATUS_UNSUPPORTED = 2,
     /**
@@ -80,6 +88,52 @@ enum oxv_status
 typedef enum oxv_status oxv_status;
 #else
 typedef int32_t oxv_status;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+/**
+ * Rate control for `oxv_options_set_bitrate`: VBR at a quality (the
+ * default) or one of libvorbis's bitrate-driven setups, each as oggenc
+ * 1.4.3 sets it up (the output is byte-identical to libvorbis configured
+ * by those oggenc flags). Bitrates are in kb/s (1000 bits) for the whole
+ * stream.
+ */
+enum oxv_bitrate_mode
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : int32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    /**
+     * VBR at the quality (`oggenc -q`); the default. No bitrates.
+     */
+    OXV_BITRATE_MODE_VBR = 0,
+    /**
+     * `oggenc -b KBPS`: unmanaged VBR with the setup for about `kbps`
+     * (no reservoir). No limits.
+     */
+    OXV_BITRATE_MODE_NOMINAL = 1,
+    /**
+     * `oggenc --managed -b KBPS [-m MIN] [-M MAX]`: average bitrate
+     * through libvorbis's bit reservoir, optionally with hard limits
+     * (`min = kbps = max` is libvorbis's "CBR").
+     */
+    OXV_BITRATE_MODE_AVERAGE = 2,
+    /**
+     * `oggenc --managed -m MIN -M MAX`: hard limits only (at least one),
+     * with the setup for their midpoint. `kbps` must be 0.
+     */
+    OXV_BITRATE_MODE_LIMITS = 3,
+    /**
+     * `oggenc -q Q -m MIN -M MAX`: VBR at the quality with hard limits
+     * (at least one). `kbps` must be 0.
+     */
+    OXV_BITRATE_MODE_QUALITY_LIMITS = 4,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum oxv_bitrate_mode oxv_bitrate_mode;
+#else
+typedef int32_t oxv_bitrate_mode;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -112,11 +166,11 @@ typedef struct oxv_encoder oxv_encoder;
  * `oxv_encoder_new`, `oxv_writer_new` or `oxv_encode_*`, and free with
  * `oxv_options_free`.
  *
- * Fresh options are oxivorbis's defaults: quality 5, the fixed default
- * serial (so output is deterministic), vendor `"oxivorbis <version>"` and
- * no comments. Every function that takes options copies what it needs, so
- * the options may be changed or freed right after the call. Passing NULL
- * options means the defaults.
+ * Fresh options are oxivorbis's defaults: quality 5 VBR, the fixed
+ * default serial (so output is deterministic), vendor
+ * `"oxivorbis <version>"` and no comments. Every function that takes
+ * options copies what it needs, so the options may be changed or freed
+ * right after the call. Passing NULL options means the defaults.
  *
  * Options are plain data: they may be used from any thread, but not
  * changed on one thread while another uses them.
@@ -199,13 +253,17 @@ const char *oxv_status_message(int32_t status);
 
 /**
  * Create an encoder for `rate` Hz (`OXV_SAMPLE_RATE_MIN` to
- * `OXV_SAMPLE_RATE_MAX`) and `channels` channels (currently 1 or 2) with
- * `opts` (NULL = defaults; copied, so it may be freed afterwards). On
- * success `*out` receives the encoder; free it with `oxv_encoder_free`.
+ * `OXV_SAMPLE_RATE_MAX`) and `channels` channels (1 to
+ * `OXV_CHANNELS_MAX`, interleaved in Vorbis channel order; see
+ * ffi/README.md) with `opts` (NULL = defaults; copied, so it may be freed
+ * afterwards). On success `*out` receives the encoder; free it with
+ * `oxv_encoder_free`.
  *
  * Returns `OXV_STATUS_UNSUPPORTED` for an unsupported rate or channel
- * count and `OXV_STATUS_INVALID_ARGUMENT` if `out` is NULL. On failure
- * `*out` is set to NULL.
+ * count, or a bitrate mode (`oxv_options_set_bitrate`) libvorbis can't
+ * encode at this rate and channel count (`oxv_options_check` says why),
+ * and `OXV_STATUS_INVALID_ARGUMENT` if `out` is NULL. On failure `*out`
+ * is set to NULL.
  *
  * # Safety
  *
@@ -276,7 +334,8 @@ oxv_status oxv_encoder_write_f32(struct oxv_encoder *enc,
 /**
  * Encode planar `float` audio: `channels` points to `channel_count`
  * pointers (one per channel, in Vorbis channel order: left, right for
- * stereo), each to `frames` samples. Gives exactly the bytes of
+ * stereo; left, center, right, rear left, rear right, LFE for 5.1), each
+ * to `frames` samples. Gives exactly the bytes of
  * interleaving the channels and calling `oxv_encoder_write_f32`; output
  * as there.
  *
@@ -346,7 +405,8 @@ void oxv_buffer_free(struct oxv_buffer *buf);
  * ignored. `pcm` may be NULL when `samples` is 0. `opts` NULL means the
  * defaults.
  *
- * Errors: `OXV_STATUS_UNSUPPORTED` for the rate or channel count,
+ * Errors: `OXV_STATUS_UNSUPPORTED` for the rate or channel count, or a
+ * bitrate mode libvorbis can't encode there (see `oxv_encoder_new`),
  * `OXV_STATUS_INVALID_ARGUMENT` for NULL / misaligned pointers. On failure
  * `*out` is set to `{NULL, 0}`.
  *
@@ -396,7 +456,7 @@ void oxv_options_free(struct oxv_options *opts);
  * Set the quality on oggenc's `-q` scale: -1.0 to 10.0, fractional values
  * allowed (default 5). It is converted to libvorbis's `base_quality`
  * exactly as oggenc does, so `-q 7.5` here and in oggenc pick the same
- * setup.
+ * setup. `OXV_BITRATE_MODE_QUALITY_LIMITS` uses it too.
  *
  * Returns `OXV_STATUS_INVALID_ARGUMENT` (and leaves the options unchanged)
  * for NULL `opts`, NaN, or a value outside -1.0..=10.0.
@@ -449,6 +509,105 @@ oxv_status oxv_options_set_vendor(struct oxv_options *opts, const char *vendor);
  * NULL or NUL-terminated strings.
  */
 oxv_status oxv_options_add_comment(struct oxv_options *opts, const char *key, const char *value);
+
+/**
+ * Choose the rate control (an `oxv_bitrate_mode` value). `kbps` is the
+ * (average) bitrate of `OXV_BITRATE_MODE_NOMINAL` and
+ * `OXV_BITRATE_MODE_AVERAGE`; `min_kbps` / `max_kbps` are the hard limits
+ * of the managed modes, 0 for none. Arguments a mode doesn't take must be
+ * 0. `OXV_BITRATE_MODE_VBR` (with all zeros) goes back to VBR.
+ *
+ * Whether libvorbis can encode the request depends on the sample rate and
+ * channel count, so it is checked when an encoder, writer or one-shot
+ * encode is created with these options: those then return
+ * `OXV_STATUS_UNSUPPORTED`. libvorbis has bitrate setups from 8 to 50 kHz
+ * (for 6 channels, up to 70 kHz), each for a range of bitrates
+ * (`oxv_bitrate_supported_kbps`); the request must also be consistent
+ * (minimum at most the average and the maximum, average at most the
+ * maximum, bitrates at most 2147483 kb/s). `oxv_options_check` tells
+ * whether options can be used at a rate and channel count, and why not.
+ *
+ * Returns `OXV_STATUS_INVALID_ARGUMENT` (and leaves the options unchanged)
+ * for NULL `opts`, an unknown mode, or a non-zero argument the mode
+ * doesn't take.
+ *
+ * # Safety
+ *
+ * `opts` must be NULL or a live `oxv_options`.
+ */
+oxv_status oxv_options_set_bitrate(struct oxv_options *opts,
+                                   int32_t mode,
+                                   uint32_t kbps,
+                                   uint32_t min_kbps,
+                                   uint32_t max_kbps);
+
+/**
+ * Tune libvorbis's bit reservoir for the managed bitrate modes, as
+ * oggenc's `--advanced-encode-option`s `bit_reservoir_bits`,
+ * `bit_reservoir_bias` and `bitrate_average_damping` do. A negative
+ * `reservoir_bits` or a NaN `reservoir_bias` / `average_damping` keeps
+ * libvorbis's default (two seconds of the nominal bitrate, 0.1 and 1.5 s);
+ * `(-1, NAN, NAN)` resets all three. `reservoir_bits` 0 turns management
+ * off while keeping the managed setup. Has no effect in VBR.
+ *
+ * The bias must be within 0.0..=1.0 and the damping positive; like the
+ * bitrates, that is checked when an encoder is created
+ * (`OXV_STATUS_UNSUPPORTED`).
+ *
+ * Returns `OXV_STATUS_INVALID_ARGUMENT` for NULL `opts` or
+ * `reservoir_bits` above `UINT32_MAX`.
+ *
+ * # Safety
+ *
+ * `opts` must be NULL or a live `oxv_options`.
+ */
+oxv_status oxv_options_set_bitrate_tuning(struct oxv_options *opts,
+                                          int64_t reservoir_bits,
+                                          double reservoir_bias,
+                                          double average_damping);
+
+/**
+ * The average bitrates, in kb/s, that libvorbis 1.3.7 has an encoder setup
+ * for at `rate` Hz and `channels` channels: `*min_kbps..=*max_kbps` (e.g.
+ * 45..=500 for 44.1 kHz stereo, 84..=1440 for 5.1 at 48 kHz). They bound
+ * the `kbps` of `OXV_BITRATE_MODE_NOMINAL` / `_AVERAGE` and the midpoint
+ * of `_LIMITS`.
+ *
+ * Returns `OXV_STATUS_UNSUPPORTED` (with both outputs 0) if the rate or
+ * channel count is unsupported or libvorbis has no bitrate setups there,
+ * `OXV_STATUS_INVALID_ARGUMENT` if an output pointer is NULL.
+ *
+ * # Safety
+ *
+ * `min_kbps` / `max_kbps` must be NULL or writable.
+ */
+oxv_status oxv_bitrate_supported_kbps(uint32_t rate,
+                                      uint32_t channels,
+                                      uint32_t *min_kbps,
+                                      uint32_t *max_kbps);
+
+/**
+ * Check that `opts` (NULL = defaults) can encode `rate` Hz with
+ * `channels` channels, i.e. that `oxv_encoder_new` and the other
+ * constructors would succeed. Returns `OXV_STATUS_OK`, or
+ * `OXV_STATUS_UNSUPPORTED` for an unsupported rate or channel count or a
+ * bitrate mode libvorbis can't encode there.
+ *
+ * If `message` is non-NULL and `message_size` > 0, an English description
+ * of the problem (empty on success) is written there, NUL-terminated and
+ * truncated to `message_size - 1` bytes, e.g. "no libvorbis setup for
+ * 600000 b/s at 44100 Hz stereo (supported: 45..=500 kb/s)".
+ *
+ * # Safety
+ *
+ * `opts` must be NULL or a live `oxv_options`; `message` must be NULL or
+ * point to `message_size` writable bytes.
+ */
+oxv_status oxv_options_check(const struct oxv_options *opts,
+                             uint32_t rate,
+                             uint32_t channels,
+                             char *message,
+                             size_t message_size);
 
 /**
  * Create a writer for `rate` Hz and `channels` channels with `opts` (NULL

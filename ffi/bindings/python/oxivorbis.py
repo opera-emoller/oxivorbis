@@ -13,6 +13,11 @@ array), which is then passed without copying.
             f.write(enc.write_f32(chunk))
         f.write(enc.finish())
 
+    # 5.1 (Vorbis channel order: L, C, R, rear L, rear R, LFE) at an
+    # average 384 kb/s, as oggenc --managed -b 384
+    opts = oxivorbis.Options(bitrate=(oxivorbis.BITRATE_AVERAGE, 384))
+    ogg = oxivorbis.encode_i16(samples_51, rate=48000, channels=6, options=opts)
+
 The library is found via ``$OXIVORBIS_LIB`` (a path to the shared library),
 then next to this file, then in the repository's target/{release,debug}, then
 on the system library path.
@@ -31,14 +36,27 @@ __all__ = [
     "Writer",
     "encode_i16",
     "encode_f32",
+    "bitrate_supported_kbps",
     "version",
     "ABI_VERSION",
+    "CHANNELS_MAX",
+    "BITRATE_VBR",
+    "BITRATE_NOMINAL",
+    "BITRATE_AVERAGE",
+    "BITRATE_LIMITS",
+    "BITRATE_QUALITY_LIMITS",
 ]
 
 # Must match OXV_ABI_VERSION in include/oxivorbis.h.
 ABI_VERSION = 1
 
 OK, INVALID_ARGUMENT, UNSUPPORTED, IO, INVALID_STATE, PANIC = range(6)
+
+# oxv_bitrate_mode
+BITRATE_VBR, BITRATE_NOMINAL, BITRATE_AVERAGE, BITRATE_LIMITS, BITRATE_QUALITY_LIMITS = range(5)
+
+# OXV_CHANNELS_MAX
+CHANNELS_MAX = 255
 
 
 def _lib_names():
@@ -103,6 +121,12 @@ _options_set_quality = _sig("oxv_options_set_quality", _status, _vp, ctypes.c_fl
 _options_set_serial = _sig("oxv_options_set_serial", _status, _vp, _u32)
 _options_set_vendor = _sig("oxv_options_set_vendor", _status, _vp, ctypes.c_char_p)
 _options_add_comment = _sig("oxv_options_add_comment", _status, _vp, ctypes.c_char_p, ctypes.c_char_p)
+_options_set_bitrate = _sig("oxv_options_set_bitrate", _status, _vp, ctypes.c_int32, _u32, _u32, _u32)
+_options_set_bitrate_tuning = _sig("oxv_options_set_bitrate_tuning", _status, _vp, ctypes.c_int64,
+                                   ctypes.c_double, ctypes.c_double)
+_options_check = _sig("oxv_options_check", _status, _vp, _u32, _u32, ctypes.c_char_p, _sz)
+_bitrate_supported_kbps = _sig("oxv_bitrate_supported_kbps", _status, _u32, _u32,
+                               ctypes.POINTER(_u32), ctypes.POINTER(_u32))
 _oneshot = {
     "h": _sig("oxv_encode_i16", _status, _i16p, _sz, _u32, _u32, _vp, ctypes.POINTER(_Buffer)),
     "f": _sig("oxv_encode_f32", _status, _f32p, _sz, _u32, _u32, _vp, ctypes.POINTER(_Buffer)),
@@ -132,16 +156,39 @@ if _abi_version() != ABI_VERSION:
 
 
 class OxivorbisError(Exception):
-    """A non-OK oxv_status; ``.status`` holds the code."""
+    """A non-OK oxv_status; ``.status`` holds the code, ``.detail`` the
+    library's explanation where it has one (e.g. a bitrate out of range)."""
 
-    def __init__(self, status):
+    def __init__(self, status, detail=None):
         self.status = status
-        super().__init__("%s (oxv_status %d)" % (_status_message(status).decode(), status))
+        self.detail = detail
+        msg = "%s (oxv_status %d)" % (_status_message(status).decode(), status)
+        super().__init__("%s: %s" % (msg, detail) if detail else msg)
 
 
 def _check(status):
     if status != OK:
         raise OxivorbisError(status)
+
+
+def _check_new(status, handle, rate, channels):
+    """_check for the constructors: explain UNSUPPORTED via oxv_options_check."""
+    if status == UNSUPPORTED:
+        msg = ctypes.create_string_buffer(512)
+        _options_check(handle, rate, channels, msg, len(msg))
+        raise OxivorbisError(status, msg.value.decode() or None)
+    _check(status)
+
+
+def bitrate_supported_kbps(rate, channels):
+    """(min, max) average kb/s libvorbis has bitrate setups for at this rate
+    and channel count, or None if it has none there."""
+    lo, hi = _u32(), _u32()
+    st = _bitrate_supported_kbps(rate, channels, ctypes.byref(lo), ctypes.byref(hi))
+    if st == UNSUPPORTED:
+        return None
+    _check(st)
+    return lo.value, hi.value
 
 
 def version():
@@ -173,10 +220,21 @@ def _samples(samples, code):
 
 
 class Options:
-    """Encoder settings. Fresh options are the library defaults (quality 5,
-    fixed serial, vendor "oxivorbis <version>", no comments)."""
+    """Encoder settings. Fresh options are the library defaults (quality 5
+    VBR, fixed serial, vendor "oxivorbis <version>", no comments).
 
-    def __init__(self, quality=None, serial=None, vendor=None, comments=()):
+    ``bitrate`` selects a bitrate mode as ``(mode, kbps, min_kbps, max_kbps)``
+    with trailing values optional and 0 meaning none, e.g.
+    ``(BITRATE_AVERAGE, 128, 128, 128)`` for oggenc ``--managed -b 128 -m 128
+    -M 128`` or ``(BITRATE_QUALITY_LIMITS, 0, 0, 160)`` for ``-q Q -M 160``.
+    ``bitrate_tuning`` is ``(reservoir_bits, reservoir_bias, average_damping)``
+    with None for libvorbis's default. Whether libvorbis can encode the mode
+    at a rate and channel count is checked when an encoder is created
+    (``OxivorbisError`` with status UNSUPPORTED), or up front with
+    :meth:`check`."""
+
+    def __init__(self, quality=None, serial=None, vendor=None, comments=(), bitrate=None,
+                 bitrate_tuning=None):
         self._h = _options_new()
         if not self._h:
             raise MemoryError("oxv_options_new failed")
@@ -188,6 +246,24 @@ class Options:
             _check(_options_set_vendor(self._h, vendor.encode()))
         for key, value in comments:
             _check(_options_add_comment(self._h, key.encode(), value.encode()))
+        if bitrate is not None:
+            mode, *kbps = bitrate
+            kbps = list(kbps) + [0] * (3 - len(kbps))
+            _check(_options_set_bitrate(self._h, mode, *kbps))
+        if bitrate_tuning is not None:
+            bits, bias, damping = bitrate_tuning
+            nan = float("nan")
+            _check(_options_set_bitrate_tuning(self._h, -1 if bits is None else bits,
+                                               nan if bias is None else bias,
+                                               nan if damping is None else damping))
+
+    def check(self, rate, channels):
+        """None if these options can encode `rate` Hz with `channels`
+        channels, else the library's explanation."""
+        msg = ctypes.create_string_buffer(512)
+        if _options_check(self._h, rate, channels, msg, len(msg)) == OK:
+            return None
+        return msg.value.decode()
 
     def __del__(self):
         if getattr(self, "_h", None):
@@ -205,7 +281,7 @@ def _encode(code, samples, rate, channels, options, quality, serial, vendor, com
     opts, h = Options._handle(options, quality, serial, vendor, comments)
     ptr, n, keep = _samples(samples, code)
     buf = _Buffer()
-    _check(_oneshot[code](ptr, n, rate, channels, h, ctypes.byref(buf)))
+    _check_new(_oneshot[code](ptr, n, rate, channels, h, ctypes.byref(buf)), h, rate, channels)
     try:
         return ctypes.string_at(buf.data, buf.len)
     finally:
@@ -234,7 +310,7 @@ class Encoder:
         _, h = Options._handle(options, quality, serial, vendor, comments)
         self.channels = channels
         enc = _vp()
-        _check(_encoder_new(rate, channels, h, ctypes.byref(enc)))
+        _check_new(_encoder_new(rate, channels, h, ctypes.byref(enc)), h, rate, channels)
         self._h = enc
 
     def _out(self, call, *args):
@@ -302,7 +378,8 @@ class Writer:
 
         self._cb = WRITE_FN(write)  # keep the trampoline alive
         w = _vp()
-        _check(_writer_new(rate, channels, h, self._cb, None, ctypes.byref(w)))
+        _check_new(_writer_new(rate, channels, h, self._cb, None, ctypes.byref(w)), h, rate,
+                   channels)
         self._h = w
 
     def _call(self, status):

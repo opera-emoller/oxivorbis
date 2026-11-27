@@ -69,18 +69,14 @@ unsafe fn encode_with(
     channels: u32,
     opts: *const oxv_options,
     out: *mut oxv_buffer,
-    f: impl FnOnce(
-        vorbis::SampleRate,
-        vorbis::Channels,
-        &vorbis::Options,
-    ) -> Result<Vec<u8>, oxv_status>,
+    f: impl FnOnce(vorbis::SampleRate, vorbis::Channels, &oxv_options) -> Result<Vec<u8>, oxv_status>,
 ) -> oxv_status {
     // SAFETY: NULL or writable per the contract.
     unsafe { store(out, oxv_buffer::empty()) };
     guard(|| {
         non_null(out)?;
         let (rate, ch) = rate_channels(rate, channels)?;
-        let default = vorbis::Options::default();
+        let default = oxv_options::default();
         // SAFETY: forwarded from this function's contract.
         let opts = unsafe { options_or_default(opts, &default) };
         let bytes = f(rate, ch, opts)?;
@@ -96,7 +92,8 @@ unsafe fn encode_with(
 /// ignored. `pcm` may be NULL when `samples` is 0. `opts` NULL means the
 /// defaults.
 ///
-/// Errors: `OXV_STATUS_UNSUPPORTED` for the rate or channel count,
+/// Errors: `OXV_STATUS_UNSUPPORTED` for the rate or channel count, or a
+/// bitrate mode libvorbis can't encode there (see `oxv_encoder_new`),
 /// `OXV_STATUS_INVALID_ARGUMENT` for NULL / misaligned pointers. On failure
 /// `*out` is set to `{NULL, 0}`.
 ///
@@ -113,10 +110,16 @@ pub unsafe extern "C" fn oxv_encode_i16(
     opts: *const oxv_options,
     out: *mut oxv_buffer,
 ) -> oxv_status {
-    let f = |r: vorbis::SampleRate, c: vorbis::Channels, o: &vorbis::Options| {
+    let f = |r: vorbis::SampleRate, c: vorbis::Channels, o: &oxv_options| {
         // SAFETY: `samples` readable values per the contract.
         let pcm = unsafe { slice_arg(pcm, samples) }?;
-        Ok(vorbis::encode(pcm, r, c, o))
+        o.encode(
+            r,
+            c,
+            vorbis::encode,
+            |b| vorbis::encode_with_bitrate(pcm, r, c, &o.inner, b),
+            pcm,
+        )
     };
     // SAFETY: forwarded from this function's contract.
     unsafe { encode_with(rate, channels, opts, out, f) }
@@ -137,10 +140,16 @@ pub unsafe extern "C" fn oxv_encode_f32(
     opts: *const oxv_options,
     out: *mut oxv_buffer,
 ) -> oxv_status {
-    let f = |r: vorbis::SampleRate, c: vorbis::Channels, o: &vorbis::Options| {
+    let f = |r: vorbis::SampleRate, c: vorbis::Channels, o: &oxv_options| {
         // SAFETY: `samples` readable values per the contract.
         let pcm = unsafe { slice_arg(pcm, samples) }?;
-        Ok(vorbis::encode_f32(pcm, r, c, o))
+        o.encode(
+            r,
+            c,
+            vorbis::encode_f32,
+            |b| vorbis::encode_f32_with_bitrate(pcm, r, c, &o.inner, b),
+            pcm,
+        )
     };
     // SAFETY: forwarded from this function's contract.
     unsafe { encode_with(rate, channels, opts, out, f) }

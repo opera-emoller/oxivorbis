@@ -105,11 +105,11 @@ pub unsafe extern "C" fn oxv_writer_new(
         non_null(out)?;
         let write = write_fn.ok_or(oxv_status::InvalidArgument)?;
         let (rate, ch) = rate_channels(rate, channels)?;
-        let default = vorbis::Options::default();
+        let default = oxv_options::default();
         // SAFETY: forwarded from this function's contract.
         let opts = unsafe { options_or_default(opts, &default) };
         let sink = CallbackSink { write, user_data };
-        let w = OggWriter::new(sink, rate, ch, opts).map_err(|_| oxv_status::Unsupported)?;
+        let w = OggWriter::from_encoder(opts.encoder(rate, ch)?, sink);
         let w = Box::new(oxv_writer {
             state: State::Active(w),
             channels: usize::from(ch.count()),

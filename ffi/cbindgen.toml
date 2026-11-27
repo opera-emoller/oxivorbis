@@ -30,6 +30,9 @@ tab_width = 4
 [export]
 # Only the C API; nothing else is exported from the crate anyway.
 prefix = ""
+# Not in any signature (oxv_options_set_bitrate takes an int32_t, so an
+# out-of-range value from C is an error, not undefined behaviour).
+include = ["oxv_bitrate_mode"]
 
 [enum]
 # oxv_status::InvalidArgument -> OXV_STATUS_INVALID_ARGUMENT
