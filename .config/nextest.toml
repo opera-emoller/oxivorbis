@@ -34,3 +34,14 @@ slow-timeout = { period = "60s", terminate-after = 20 }
 [[profile.default.overrides]]
 filter = 'test(bitrate_long::) | test(bitrates_hit_their_targets)'
 slow-timeout = { period = "60s", terminate-after = 8 }
+
+# The C API tests each run `cargo build -p oxivorbis-ffi` and then execute C
+# programs linked against target/<profile>/liboxivorbis.*. nextest runs every
+# test in its own process, so when the library is stale one test could
+# relink it while another is running against it. Run them one at a time.
+[test-groups]
+ffi-c = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(oxivorbis-ffi) & binary(c_api)'
+test-group = 'ffi-c'
