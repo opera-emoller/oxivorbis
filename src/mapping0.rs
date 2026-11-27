@@ -725,9 +725,9 @@ fn encode_blob(
     }
 }
 
-/// Most channels one residue submap can bundle (oxivorbis encodes mono or
-/// stereo).
-const MAX_BUNDLE: usize = 2;
+/// Most channels one residue submap can bundle (libvorbis encodes at most
+/// 255 channels).
+const MAX_BUNDLE: usize = crate::quality::MAX_CHANNELS;
 
 #[cfg(test)]
 mod tests {

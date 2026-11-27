@@ -14,7 +14,7 @@ fn make_writer() -> BitWriter {
 #[test]
 fn id_header_mono_44100_matches_oracle() {
     let mut w = make_writer();
-    write_id_header(SampleRate::HZ_44100, Channels::Mono, &mut w);
+    write_id_header(SampleRate::HZ_44100, Channels::MONO, &mut w);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/id_mono44.bin");
     assert_eq!(
@@ -27,7 +27,7 @@ fn id_header_mono_44100_matches_oracle() {
 #[test]
 fn id_header_mono_48000_matches_oracle() {
     let mut w = make_writer();
-    write_id_header(SampleRate::HZ_48000, Channels::Mono, &mut w);
+    write_id_header(SampleRate::HZ_48000, Channels::MONO, &mut w);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/id_mono48.bin");
     assert_eq!(
@@ -40,7 +40,7 @@ fn id_header_mono_48000_matches_oracle() {
 #[test]
 fn id_header_stereo_44100_matches_oracle() {
     let mut w = make_writer();
-    write_id_header(SampleRate::HZ_44100, Channels::Stereo, &mut w);
+    write_id_header(SampleRate::HZ_44100, Channels::STEREO, &mut w);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/id_stereo44.bin");
     assert_eq!(
@@ -53,7 +53,7 @@ fn id_header_stereo_44100_matches_oracle() {
 #[test]
 fn id_header_stereo_48000_matches_oracle() {
     let mut w = make_writer();
-    write_id_header(SampleRate::HZ_48000, Channels::Stereo, &mut w);
+    write_id_header(SampleRate::HZ_48000, Channels::STEREO, &mut w);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/id_stereo48.bin");
     assert_eq!(
@@ -118,7 +118,7 @@ fn comment_header_stereo_48000_matches_oracle() {
 #[test]
 fn setup_header_matches_oracle() {
     let mut w = make_writer();
-    write_setup_header(SampleRate::HZ_44100, Channels::Mono, &mut w);
+    write_setup_header(SampleRate::HZ_44100, Channels::MONO, &mut w);
     let actual = w.into_bytes();
     let expected = include_bytes!("vectors/headers/setup.bin");
     assert_eq!(

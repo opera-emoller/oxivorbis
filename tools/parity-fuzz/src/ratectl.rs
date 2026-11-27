@@ -20,9 +20,9 @@ pub struct RateCtl {
 pub fn pick(seed: u64, rate: u32, ch: u16) -> RateCtl {
     let mut r = Rng::new(seed ^ 0xB17_7A7E);
     let channels = if ch == 1 {
-        Channels::Mono
+        Channels::MONO
     } else {
-        Channels::Stereo
+        Channels::STEREO
     };
     let range = SampleRate::new(rate)
         .and_then(|sr| BitrateMode::supported_kbps(sr, channels))

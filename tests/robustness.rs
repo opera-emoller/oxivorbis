@@ -65,7 +65,7 @@ fn encode_music(pcm: &[i16]) -> Vec<u8> {
     oxivorbis::encode(
         pcm,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     )
 }
@@ -73,7 +73,7 @@ fn encode_music(pcm: &[i16]) -> Vec<u8> {
 /// Streaming encode with a small parallel batch so a short input spans
 /// many batches.
 fn stream_music(pcm: &[i16], chunk: usize) -> Vec<u8> {
-    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
     #[cfg(feature = "parallel")]
     enc.set_parallel_batch(3);
     let mut out = Vec::new();
@@ -172,7 +172,7 @@ fn encoder_moves_into_pool() {
     let pcm = music(3 * 44_100, 4);
     let want = encode_music(&pcm);
     let got = watchdog(WATCHDOG_SECS, move || {
-        let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+        let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
         #[cfg(feature = "parallel")]
         enc.set_parallel_batch(3);
         let (a, b) = pcm.split_at(pcm.len() / 2);
@@ -202,7 +202,7 @@ fn encoder_is_send_sync() {
     send_sync::<Encoder>();
     send_sync::<Options>();
     // And shareable by reference across threads.
-    let enc = Encoder::new(SampleRate::HZ_44100, Channels::Mono, &Options::default());
+    let enc = Encoder::new(SampleRate::HZ_44100, Channels::MONO, &Options::default());
     std::thread::scope(|s| {
         s.spawn(|| {
             let _: &Encoder = &enc;
@@ -248,7 +248,7 @@ fn setup_cache_is_thread_safe() {
     let pcm = music(11_025, 6); // 0.25 s stereo; mono uses its first half
     let enc = |&(rate, channels, q): &(SampleRate, Channels, f32)| {
         let frames = pcm.len() / 2;
-        let input = if channels == Channels::Mono {
+        let input = if channels == Channels::MONO {
             &pcm[..frames]
         } else {
             &pcm[..]
@@ -293,7 +293,7 @@ fn streaming_lag_is_bounded() {
     for q in [5.0f32, -1.0] {
         let opts = Options::default().with_quality(Quality::new(q).unwrap());
         // Sized inside the pool (64 threads), driven from this thread.
-        let mut enc = pool.install(|| Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &opts));
+        let mut enc = pool.install(|| Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &opts));
         let mut fed = 0usize;
         let mut emitted = 0u64;
         let mut max_lag = 0usize;
@@ -323,10 +323,10 @@ fn streaming_lag_is_bounded() {
 // ---------------------------------------------------------------------------
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::HZ_44100, Channels::Stereo),
-    (SampleRate::HZ_44100, Channels::Mono),
-    (SampleRate::HZ_48000, Channels::Stereo),
-    (SampleRate::HZ_48000, Channels::Mono),
+    (SampleRate::HZ_44100, Channels::STEREO),
+    (SampleRate::HZ_44100, Channels::MONO),
+    (SampleRate::HZ_48000, Channels::STEREO),
+    (SampleRate::HZ_48000, Channels::MONO),
 ];
 
 /// Decode `ogg` with lewton; panics if it isn't a valid stream. Returns
@@ -479,10 +479,10 @@ macro_rules! adversarial_tests {
     };
 }
 adversarial_tests! {
-    hz44100_stereo: HZ_44100, Stereo;
-    hz44100_mono: HZ_44100, Mono;
-    hz48000_stereo: HZ_48000, Stereo;
-    hz48000_mono: HZ_48000, Mono;
+    hz44100_stereo: HZ_44100, STEREO;
+    hz44100_mono: HZ_44100, MONO;
+    hz48000_stereo: HZ_48000, STEREO;
+    hz48000_mono: HZ_48000, MONO;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +492,7 @@ adversarial_tests! {
 /// Encode a short clip with `opts` and return lewton's view of the
 /// comment header: (vendor, [(key, value)]).
 fn decoded_comments(opts: &Options) -> (String, Vec<(String, String)>) {
-    let ogg = oxivorbis::encode(&[0i16; 4410], SampleRate::HZ_44100, Channels::Mono, opts);
+    let ogg = oxivorbis::encode(&[0i16; 4410], SampleRate::HZ_44100, Channels::MONO, opts);
     let rdr = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(&ogg))
         .expect("lewton rejects the headers");
     (rdr.comment_hdr.vendor, rdr.comment_hdr.comment_list)

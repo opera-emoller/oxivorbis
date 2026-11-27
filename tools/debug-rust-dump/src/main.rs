@@ -29,7 +29,7 @@ fn main() {
     oxivorbis::encode_with_serial(
         &samples,
         oxivorbis::SampleRate::HZ_44100,
-        oxivorbis::Channels::Mono,
+        oxivorbis::Channels::MONO,
         0,
     );
 

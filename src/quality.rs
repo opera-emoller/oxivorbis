@@ -1,7 +1,9 @@
 //! Quality-dependent encoder parameters, derived bit-exactly the way
-//! libvorbis 1.3.7 `vorbis_encode_init_vbr()` derives them from the mono
-//! and stereo mode templates (`ve_setup_{44,32,22,16,11,8,X,XX}_{stereo,
-//! uncoupled}`; the tables are generated into `tables/quality.rs`).
+//! libvorbis 1.3.7 `vorbis_encode_init_vbr()` derives them from its mode
+//! templates (`ve_setup_{44,32,22,16,11,8,X,XX}_{stereo,uncoupled}` and
+//! `ve_setup_44_51`; the tables are generated into `tables/quality.rs`).
+//! The stereo templates serve exactly 2 channels, `ve_setup_44_51`
+//! exactly 6 at 40..=70 kHz, and the uncoupled ones any channel count.
 //!
 //! Entry point: [`quality_config`]`(base_quality, rate, channels)`.
 //!
@@ -51,11 +53,16 @@ use crate::tables::quality::{self as t, QualityTemplate};
 /// its quality mapping there and ends it at 1.0, see the tests).
 pub(crate) const MIN_BASE_QUALITY: f32 = -0.1;
 
-/// Lowest and highest sample rate any 1-2 channel template accepts
+/// Lowest and highest sample rate any template accepts
 /// (`ve_setup_XX_*` starts at 0, but `vorbis_encode_setup_vbr` rejects
 /// `rate <= 0`; `ve_setup_X_*` ends at 200 kHz).
 pub(crate) const MIN_RATE: u32 = 1;
 pub(crate) const MAX_RATE: u32 = 200_000;
+
+/// Most channels libvorbis encodes (`vorbis_encode_setup_init` rejects
+/// more than 255 with `OV_EINVAL`; the Vorbis ID header stores the count
+/// in 8 bits).
+pub(crate) const MAX_CHANNELS: usize = 255;
 
 /// Everything quality-dependent that the encoder needs outside the setup
 /// header itself. See the module docs for field provenance.
@@ -239,7 +246,7 @@ fn get_setup_template_by(req: f64, rate: u32, ch: i64, q_or_bitrate: bool) -> Op
 
 /// Derive all quality-dependent parameters for `base_quality` (libvorbis
 /// scale: -0.1 = q-1 .. 1.0 = q10; fractional allowed), `rate` in
-/// `MIN_RATE..=MAX_RATE` Hz and 1 or 2 channels.
+/// `MIN_RATE..=MAX_RATE` Hz and `1..=MAX_CHANNELS` channels.
 ///
 /// Panics outside that domain (where libvorbis' `vorbis_encode_init_vbr`
 /// would fail).
@@ -286,7 +293,7 @@ pub(crate) fn setting_config(
     hl: &HighLevel,
 ) -> QualityConfig {
     assert!(
-        channels == 1 || channels == 2,
+        (1..=MAX_CHANNELS).contains(&channels),
         "quality_config: {channels} channels unsupported"
     );
     let tpl = t::SETUP_LIST[template];

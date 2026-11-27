@@ -77,7 +77,7 @@ fn expected() -> Vec<(&'static str, Vec<u8>)> {
     let mono_f = to_f32(&gen_i16(MONO_FRAMES, 1, 7));
     let edge = gen_i16(EDGE_FRAMES, 1, 99);
     let (s, d, a, b) = (
-        Channels::Stereo,
+        Channels::STEREO,
         Options::default(),
         options_a(),
         options_b(),
@@ -87,9 +87,9 @@ fn expected() -> Vec<(&'static str, Vec<u8>)> {
     let enc_f = |pcm: &[f32], r, c, o: &Options| vorbis::encode_f32(pcm, hz(r), c, o);
     vec![
         ("oneshot_i16", enc(&stereo, 44100, s, &d)),
-        ("oneshot_f32", enc_f(&mono_f, 22050, Channels::Mono, &a)),
-        ("rate_min", enc(&edge, 1, Channels::Mono, &d)),
-        ("rate_max", enc(&edge, 200_000, Channels::Mono, &d)),
+        ("oneshot_f32", enc_f(&mono_f, 22050, Channels::MONO, &a)),
+        ("rate_min", enc(&edge, 1, Channels::MONO, &d)),
+        ("rate_max", enc(&edge, 200_000, Channels::MONO, &d)),
         ("empty", enc(&[], 48000, s, &d)),
         ("encoder_i16", enc(&stereo, 44100, s, &b)),
         ("encoder_f32", enc_f(&stereo_f, 44100, s, &d)),

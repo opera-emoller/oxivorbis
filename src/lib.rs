@@ -4,7 +4,9 @@
 //! with limits; see [`BitrateMode`]).
 //!
 //! Input is interleaved `i16` or `f32` PCM at any rate from 1 Hz to
-//! 200 kHz, mono or stereo. Encode a whole buffer at once with [`encode`] / [`encode_f32`],
+//! 200 kHz, with 1 to 255 channels in Vorbis channel order (see
+//! [`Channels`]; 5.1 is coupled the way libvorbis does it). Encode a whole
+//! buffer at once with [`encode`] / [`encode_f32`],
 //! or stream it through an [`Encoder`] in chunks of any size; both give the
 //! same bytes.
 //!
@@ -17,7 +19,7 @@
 //! let opts = Options::default()
 //!     .with_quality(Quality::new(6.5).unwrap())
 //!     .with_comment("TITLE", "Silence");
-//! let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
+//! let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &opts);
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
@@ -26,7 +28,7 @@
 //! ```
 //! use oxivorbis::{Channels, Encoder, Options, SampleRate};
 //!
-//! let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Mono, &Options::default());
+//! let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::MONO, &Options::default());
 //! let mut ogg = Vec::new();
 //! for _ in 0..10 {
 //!     let chunk: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
@@ -48,9 +50,9 @@
 //!
 //! // oggenc --managed -b 96 (average bitrate)
 //! let opts = Options::default()
-//!     .with_bitrate(SampleRate::HZ_48000, Channels::Stereo, BitrateMode::average(96))
+//!     .with_bitrate(SampleRate::HZ_48000, Channels::STEREO, BitrateMode::average(96))
 //!     .expect("96 kb/s is in libvorbis's range for 48 kHz stereo");
-//! let ogg = oxivorbis::encode(&vec![0i16; 48_000 * 2], SampleRate::HZ_48000, Channels::Stereo, &opts);
+//! let ogg = oxivorbis::encode(&vec![0i16; 48_000 * 2], SampleRate::HZ_48000, Channels::STEREO, &opts);
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
@@ -66,7 +68,7 @@
 //! use oxivorbis::{Channels, OggWriter, Options, SampleRate};
 //!
 //! let (left, right) = (vec![0.0f32; 48_000], vec![0.0f32; 48_000]);
-//! let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Stereo, &Options::default())?;
+//! let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::STEREO, &Options::default())?;
 //! w.write_planar_f32(&[&left, &right])?;
 //! let ogg: Vec<u8> = w.finish()?; // or a File, socket, ...
 //! assert_eq!(&ogg[..4], b"OggS");
@@ -169,7 +171,7 @@ use std::fmt;
 /// Input sample rate: any rate from 1 Hz to 200 kHz.
 ///
 /// libvorbis 1.3.7 has an encoder template for every rate in
-/// `1..=200_000` Hz, mono and stereo, at every quality from -1 to 10, so
+/// `1..=200_000` Hz, for every channel count, at every quality from -1 to 10, so
 /// every [`SampleRate`] encodes with every [`Quality`] and [`Channels`].
 /// The rate selects the libvorbis template (`modes/setup_*.h`) exactly as
 /// libvorbis does, and with it the block sizes:
@@ -281,39 +283,182 @@ impl From<SampleRate> for u32 {
     }
 }
 
-/// Channel layout of the interleaved input.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Channels {
-    /// One channel.
-    Mono,
-    /// Two channels, interleaved left, right.
-    Stereo,
-}
+/// Number of interleaved input channels: any count from 1 to 255.
+///
+/// libvorbis 1.3.7 encodes every channel count in `1..=255` at every
+/// [`SampleRate`] and [`Quality`], so every `Channels` value encodes. The
+/// count selects the libvorbis mode template together with the rate:
+///
+/// | Channels | Rate (Hz)       | libvorbis template                         |
+/// |----------|-----------------|--------------------------------------------|
+/// | 2        | any             | the rate's `*_stereo` template (coupled)   |
+/// | 6        | 40000 – 70000   | `44_51`: 5.1 surround, coupled, LFE coded separately |
+/// | 6        | any other rate  | the rate's `*_uncoupled` template          |
+/// | 1, 3–5, 7–255 | any        | the rate's `*_uncoupled` template          |
+///
+/// Uncoupled channels are encoded independently, each with its own floor
+/// and residue (the residue books are shared). More than 255 channels
+/// fails in libvorbis (`OV_EINVAL`; the Vorbis ID header stores the count
+/// in 8 bits) and is rejected here.
+///
+/// # Channel order
+///
+/// Input is interleaved in **Vorbis channel order** (Vorbis I
+/// specification, section 4.3.9) and is encoded in the order given;
+/// oxivorbis does no reordering. For 1–8 channels the order is:
+///
+/// | Channels | Order |
+/// |----------|-------|
+/// | 1 | mono |
+/// | 2 | left, right |
+/// | 3 | left, center, right |
+/// | 4 | front left, front right, rear left, rear right |
+/// | 5 | front left, center, front right, rear left, rear right |
+/// | 6 | front left, center, front right, rear left, rear right, LFE |
+/// | 7 | front left, center, front right, side left, side right, rear center, LFE |
+/// | 8 | front left, center, front right, side left, side right, rear left, rear right, LFE |
+///
+/// The order of 9 or more channels is application defined. WAV files and
+/// most decoders use the WAV/SMPTE order instead (5.1: L, R, C, LFE, BL,
+/// BR); [`Channels::wav_to_vorbis`] gives the permutation and
+/// [`reorder_wav_to_vorbis`] applies it.
+///
+/// ```
+/// use oxivorbis::Channels;
+///
+/// assert_eq!(Channels::STEREO.count(), 2);
+/// assert_eq!(Channels::new(6), Some(Channels::SURROUND_5_1));
+/// assert!(Channels::new(255).is_some());
+/// assert!(Channels::new(0).is_none());
+/// assert!(Channels::new(256).is_none());
+/// assert!(Channels::try_from(300u16).is_err());
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Channels(u8);
 
 impl Channels {
+    /// One channel.
+    pub const MONO: Channels = Channels(1);
+    /// Two channels: left, right (coupled).
+    pub const STEREO: Channels = Channels(2);
+    /// Six channels, 5.1 surround: front left, center, front right, rear
+    /// left, rear right, LFE (Vorbis order). Coupled with libvorbis's 5.1
+    /// template at 40–70 kHz, uncoupled at other rates.
+    pub const SURROUND_5_1: Channels = Channels(6);
+    /// The most channels libvorbis encodes, 255.
+    pub const MAX: Channels = Channels(u8::MAX);
+
+    /// `n` channels if `n` is in `1..=255`, else `None`.
+    pub const fn new(n: u16) -> Option<Channels> {
+        if n >= 1 && n <= u8::MAX as u16 {
+            Some(Channels(n as u8))
+        } else {
+            None
+        }
+    }
+
     /// Number of channels.
     pub const fn count(self) -> u16 {
-        match self {
-            Channels::Mono => 1,
-            Channels::Stereo => 2,
+        self.0 as u16
+    }
+
+    /// For each Vorbis-order output channel, the index of the same speaker
+    /// in WAV/SMPTE order (`WAVE_FORMAT_EXTENSIBLE`'s default channel
+    /// masks, which most decoders also use), for 1 to 8 channels; `None`
+    /// for more, where neither order is defined. The same table as
+    /// oggenc's WAV reader:
+    ///
+    /// | Channels | WAV order | Map |
+    /// |---|---|---|
+    /// | 3 | L R C | `[0, 2, 1]` |
+    /// | 4 | FL FR BL BR | identity |
+    /// | 5 | FL FR C BL BR | `[0, 2, 1, 3, 4]` |
+    /// | 6 | FL FR C LFE BL BR | `[0, 2, 1, 4, 5, 3]` |
+    /// | 7 | FL FR C LFE BC SL SR | `[0, 2, 1, 5, 6, 4, 3]` |
+    /// | 8 | FL FR C LFE BL BR SL SR | `[0, 2, 1, 6, 7, 4, 5, 3]` |
+    ///
+    /// ```
+    /// use oxivorbis::Channels;
+    ///
+    /// // WAV 5.1 is L R C LFE BL BR; Vorbis 5.1 is L C R BL BR LFE.
+    /// assert_eq!(Channels::SURROUND_5_1.wav_to_vorbis(), Some(&[0, 2, 1, 4, 5, 3][..]));
+    /// assert_eq!(Channels::STEREO.wav_to_vorbis(), Some(&[0, 1][..]));
+    /// assert_eq!(Channels::new(9).unwrap().wav_to_vorbis(), None);
+    /// ```
+    pub const fn wav_to_vorbis(self) -> Option<&'static [usize]> {
+        match self.0 {
+            1 => Some(&[0]),
+            2 => Some(&[0, 1]),
+            3 => Some(&[0, 2, 1]),
+            4 => Some(&[0, 1, 2, 3]),
+            5 => Some(&[0, 2, 1, 3, 4]),
+            6 => Some(&[0, 2, 1, 4, 5, 3]),
+            7 => Some(&[0, 2, 1, 5, 6, 4, 3]),
+            8 => Some(&[0, 2, 1, 6, 7, 4, 5, 3]),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Channels {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            1 => f.write_str("1 channel"),
+            n => write!(f, "{n} channels"),
         }
     }
 }
 
 impl TryFrom<u16> for Channels {
     type Error = Unsupported;
-    /// `1` or `2`.
+    /// Any count in `1..=255` (see [`Channels::new`]).
     fn try_from(n: u16) -> Result<Self, Unsupported> {
-        match n {
-            1 => Ok(Channels::Mono),
-            2 => Ok(Channels::Stereo),
-            _ => Err(Unsupported {
-                what: "channel count",
-                value: n as u32,
-            }),
+        Channels::new(n).ok_or(Unsupported {
+            what: "channel count",
+            value: n as u32,
+        })
+    }
+}
+
+impl From<Channels> for u16 {
+    fn from(channels: Channels) -> u16 {
+        channels.count()
+    }
+}
+
+/// Reorder interleaved frames in place from WAV/SMPTE channel order to
+/// Vorbis order (see [`Channels::wav_to_vorbis`]), for input from a WAV
+/// file or a decoder that uses WAV order. Returns `false`, leaving the
+/// samples untouched, for more than 8 channels, where there is no
+/// standard mapping. A trailing partial frame is left as is.
+///
+/// Optional: oxivorbis encodes channels in the order given and never
+/// reorders on its own.
+///
+/// ```
+/// use oxivorbis::{Channels, reorder_wav_to_vorbis};
+///
+/// // One 5.1 frame in WAV order: L R C LFE BL BR.
+/// let mut frame = ["L", "R", "C", "LFE", "BL", "BR"];
+/// assert!(reorder_wav_to_vorbis(&mut frame, Channels::SURROUND_5_1));
+/// assert_eq!(frame, ["L", "C", "R", "BL", "BR", "LFE"]);
+/// ```
+pub fn reorder_wav_to_vorbis<T: Copy>(interleaved: &mut [T], channels: Channels) -> bool {
+    let Some(map) = channels.wav_to_vorbis() else {
+        return false;
+    };
+    if map.iter().enumerate().all(|(i, &m)| i == m) {
+        return true;
+    }
+    let ch = map.len();
+    for frame in interleaved.chunks_exact_mut(ch) {
+        let mut tmp = [frame[0]; 8];
+        tmp[..ch].copy_from_slice(frame);
+        for (o, &m) in frame.iter_mut().zip(map) {
+            *o = tmp[m];
         }
     }
+    true
 }
 
 /// Encoding quality on oggenc's `-q` scale: -1.0 ..= 10.0, fractional
@@ -499,14 +644,14 @@ impl Options {
     /// use oxivorbis::{BitrateError, BitrateMode, Channels, Options, SampleRate};
     ///
     /// let opts = Options::default()
-    ///     .with_bitrate(SampleRate::HZ_44100, Channels::Stereo, BitrateMode::average(160))?;
+    ///     .with_bitrate(SampleRate::HZ_44100, Channels::STEREO, BitrateMode::average(160))?;
     /// let pcm = vec![0i16; 44_100 * 2];
-    /// let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
+    /// let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &opts);
     /// assert_eq!(&ogg[..4], b"OggS");
     ///
     /// // 8 kb/s is below libvorbis's range for 44.1 kHz stereo.
     /// let low = Options::default()
-    ///     .with_bitrate(SampleRate::HZ_44100, Channels::Stereo, BitrateMode::average(8));
+    ///     .with_bitrate(SampleRate::HZ_44100, Channels::STEREO, BitrateMode::average(8));
     /// assert!(matches!(low, Err(BitrateError::OutOfRange { .. })));
     /// # Ok::<(), BitrateError>(())
     /// ```
@@ -528,7 +673,7 @@ impl Options {
     /// // oggenc --managed -b 96 --advanced-encode-option bit_reservoir_bias=0.5
     /// let tuning = BitrateTuning::default().with_reservoir_bias(0.5);
     /// let opts = Options::default()
-    ///     .with_bitrate_tuning(SampleRate::HZ_22050, Channels::Mono, BitrateMode::average(48), tuning)
+    ///     .with_bitrate_tuning(SampleRate::HZ_22050, Channels::MONO, BitrateMode::average(48), tuning)
     ///     .unwrap();
     /// # let _ = opts;
     /// ```
@@ -661,20 +806,20 @@ fn comment_bytes(key: &str, value: &str) -> Option<Vec<u8>> {
 /// input length.
 ///
 /// The output does not depend on how the input is split across `write`
-/// calls: any chunking, including chunks that split a stereo frame, gives
+/// calls: any chunking, including chunks that split a frame, gives
 /// the same bytes as the one-shot [`encode`] / [`encode_f32`].
 ///
 /// ```
 /// use oxivorbis::{Channels, Encoder, Options, SampleRate};
 ///
-/// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+/// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
 /// let mut ogg = Vec::new();
 /// for chunk in vec![0i16; 44100 * 2].chunks(4097) {
 ///     ogg.extend_from_slice(enc.write(chunk));
 /// }
 /// ogg.extend_from_slice(&enc.finish());
 /// let pcm = vec![0i16; 44100 * 2];
-/// let one_shot = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+/// let one_shot = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &Options::default());
 /// assert_eq!(ogg, one_shot);
 /// ```
 pub struct Encoder {
@@ -711,8 +856,8 @@ impl Encoder {
     /// valid until the next call.
     ///
     /// Samples are scaled by `1/32768`, as libvorbis-based tools do. The
-    /// slice need not hold whole frames: a trailing unpaired stereo sample
-    /// is carried over and paired with the first sample of the next call.
+    /// slice need not hold whole frames: the samples of a trailing partial
+    /// frame are carried over and completed by the next call.
     pub fn write(&mut self, interleaved: &[i16]) -> &[u8] {
         self.core.begin_write();
         self.core.feed(interleaved, encode::i16_to_f32);
@@ -721,7 +866,7 @@ impl Encoder {
 
     /// Encode interleaved `f32` samples, nominally in `-1.0..=1.0`. Returns
     /// the Ogg bytes completed by this call, like [`write`](Self::write),
-    /// and carries a trailing unpaired stereo sample over the same way.
+    /// and carries a trailing partial frame over the same way.
     ///
     /// Samples reach the encoder unscaled, exactly as if written to
     /// libvorbis's `vorbis_analysis_buffer`, and the output matches
@@ -740,8 +885,8 @@ impl Encoder {
     }
 
     /// Flush the remaining input, end the stream, and return the Ogg bytes
-    /// not yet returned by `write`. A stereo sample still waiting for its
-    /// pair is dropped.
+    /// not yet returned by `write`. A partial frame still waiting for the
+    /// rest of its samples is dropped.
     pub fn finish(self) -> Vec<u8> {
         self.core.finish()
     }
@@ -767,8 +912,8 @@ impl Encoder {
 /// Encode interleaved `i16` PCM into a complete Ogg Vorbis stream.
 ///
 /// Same bytes as streaming the input through an [`Encoder`]. Samples are
-/// scaled by `1/32768`. In stereo input with an odd number of samples the
-/// last, unpaired sample is ignored.
+/// scaled by `1/32768`. If the sample count is not a multiple of the
+/// channel count, the trailing partial frame is ignored.
 pub fn encode(pcm: &[i16], rate: SampleRate, channels: Channels, options: &Options) -> Vec<u8> {
     let mut core = options.core(rate, channels);
     core.feed(pcm, encode::i16_to_f32);
@@ -777,8 +922,8 @@ pub fn encode(pcm: &[i16], rate: SampleRate, channels: Channels, options: &Optio
 
 /// Encode interleaved `f32` PCM (nominally `-1.0..=1.0`) into a complete
 /// Ogg Vorbis stream. See [`Encoder::write_f32`] for how samples are
-/// interpreted; in stereo input with an odd number of samples the last,
-/// unpaired sample is ignored.
+/// interpreted; if the sample count is not a multiple of the channel
+/// count, the trailing partial frame is ignored.
 pub fn encode_f32(pcm: &[f32], rate: SampleRate, channels: Channels, options: &Options) -> Vec<u8> {
     let mut core = options.core(rate, channels);
     core.feed(pcm, encode::f32_sample);

@@ -163,6 +163,13 @@ pub(crate) fn unpack_setup(
         setup.maxerr = p.maxerr;
         setup.twofitweight = p.twofitweight;
         setup.twofitatten = p.twofitatten;
+        // libvorbis's in-memory right edge, which the bitstream rounds up
+        // to a power of two (see FloorEncodeParams::postlist1).
+        debug_assert_eq!(
+            setup.postlist[1],
+            1 << crate::bitpack::ov_ilog((p.postlist1 - 1) as u32)
+        );
+        setup.postlist[1] = p.postlist1;
         if crate::debug_flag!("LW_DEBUG_SETUP") {
             eprintln!(
                 "  floor: postlist[1]={} partitions={}",

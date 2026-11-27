@@ -225,7 +225,7 @@ fn parity_oggenc_quality_conversion() {
         let got = oxivorbis::encode_with_base_quality_and_meta(
             &samples,
             SampleRate::HZ_44100,
-            Channels::Stereo,
+            Channels::STEREO,
             oxivorbis::oggenc_base_quality(qf),
             serial,
             Some(&vendor),
@@ -256,50 +256,50 @@ fn make_sine_mono(rate: u32, freq: f32, duration_secs: f32) -> Vec<i16> {
 
 #[test]
 fn parity_silence_mono44() {
-    assert_parity(&vec![0i16; 44100], SampleRate::HZ_44100, Channels::Mono);
+    assert_parity(&vec![0i16; 44100], SampleRate::HZ_44100, Channels::MONO);
 }
 
 #[test]
 fn parity_silence_stereo44() {
     let stereo: Vec<i16> = vec![0i16; 44100 * 2];
-    assert_parity(&stereo, SampleRate::HZ_44100, Channels::Stereo);
+    assert_parity(&stereo, SampleRate::HZ_44100, Channels::STEREO);
 }
 
 #[test]
 fn parity_silence_mono48() {
-    assert_parity(&vec![0i16; 48000], SampleRate::HZ_48000, Channels::Mono);
+    assert_parity(&vec![0i16; 48000], SampleRate::HZ_48000, Channels::MONO);
 }
 
 #[test]
 fn parity_silence_stereo48() {
     let stereo: Vec<i16> = vec![0i16; 48000 * 2];
-    assert_parity(&stereo, SampleRate::HZ_48000, Channels::Stereo);
+    assert_parity(&stereo, SampleRate::HZ_48000, Channels::STEREO);
 }
 
 #[test]
 #[ignore = "brew oggenc's libvorbis has FP optimization (FMA) that diverges from the in-tree -O0 oracle on tone-rich input. Use oracle_parity_sine_440_mono44 instead."]
 fn parity_sine_440_mono44() {
     let samples = make_sine_mono(44100, 440.0, 1.0);
-    assert_parity(&samples, SampleRate::HZ_44100, Channels::Mono);
+    assert_parity(&samples, SampleRate::HZ_44100, Channels::MONO);
 }
 
 // --- Oracle-based parity (own libvorbis build, deterministic flags) ---
 
 #[test]
 fn oracle_parity_silence_mono44() {
-    assert_parity_oracle(&vec![0i16; 44100], SampleRate::HZ_44100, Channels::Mono);
+    assert_parity_oracle(&vec![0i16; 44100], SampleRate::HZ_44100, Channels::MONO);
 }
 
 #[test]
 fn oracle_parity_silence_stereo44() {
     let stereo: Vec<i16> = vec![0i16; 44100 * 2];
-    assert_parity_oracle(&stereo, SampleRate::HZ_44100, Channels::Stereo);
+    assert_parity_oracle(&stereo, SampleRate::HZ_44100, Channels::STEREO);
 }
 
 #[test]
 fn oracle_parity_sine_440_mono44() {
     let samples = make_sine_mono(44100, 440.0, 1.0);
-    assert_parity_oracle(&samples, SampleRate::HZ_44100, Channels::Mono);
+    assert_parity_oracle(&samples, SampleRate::HZ_44100, Channels::MONO);
 }
 
 #[test]
@@ -309,7 +309,7 @@ fn parity_ramp_stereo44() {
     let samples: Vec<i16> = (0..n * 2)
         .map(|i| ((i % 65536) as i32 - 32768) as i16)
         .collect();
-    assert_parity(&samples, SampleRate::HZ_44100, Channels::Stereo);
+    assert_parity(&samples, SampleRate::HZ_44100, Channels::STEREO);
 }
 
 #[test]
@@ -318,7 +318,7 @@ fn oracle_parity_ramp_stereo44() {
     let samples: Vec<i16> = (0..n * 2)
         .map(|i| ((i % 65536) as i32 - 32768) as i16)
         .collect();
-    assert_parity_oracle(&samples, SampleRate::HZ_44100, Channels::Stereo);
+    assert_parity_oracle(&samples, SampleRate::HZ_44100, Channels::STEREO);
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn parity_dump_ramp_files() {
     let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         &samples,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         serial,
         Some(&vendor),
         Some(&encoder_tag),
@@ -355,7 +355,7 @@ fn parity_dump_files() {
     let oracle_bytes = oggenc_encode_q5(&samples, 44100, 1);
     let serial = extract_serial(&oracle_bytes);
     let oxivorbis_bytes =
-        oxivorbis::encode_with_serial(&samples, SampleRate::HZ_44100, Channels::Mono, serial);
+        oxivorbis::encode_with_serial(&samples, SampleRate::HZ_44100, Channels::MONO, serial);
     std::fs::write("/tmp/oggenc_parity.ogg", &oracle_bytes).unwrap();
     std::fs::write("/tmp/lw_parity.ogg", &oxivorbis_bytes).unwrap();
     eprintln!(
@@ -375,7 +375,7 @@ fn parity_dump_sine_files() {
     let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         &samples,
         SampleRate::HZ_44100,
-        Channels::Mono,
+        Channels::MONO,
         serial,
         Some(&vendor),
         Some(&encoder_tag),
@@ -469,7 +469,8 @@ impl XorShift32 {
 enum Signal {
     /// 1 s digital silence.
     Silence,
-    /// 1 s sine (440 Hz left/mono, 660 Hz right).
+    /// 1 s sine (440 Hz left/mono, 660 Hz right; with more channels each
+    /// further channel has its own frequency, the 6th (5.1 LFE) 55 Hz).
     Sine440,
     /// 1 s full-scale sawtooth ramp over interleaved samples.
     Ramp,
@@ -478,6 +479,9 @@ enum Signal {
     /// ~10 s quiet tone bed with sharp decaying noise bursts, so the
     /// envelope detector picks short blocks / impulse handling.
     Transients,
+    /// 2 s with content in the last channel only (the 5.1 LFE): a 45 Hz
+    /// tone with a little noise; every other channel is digital silence.
+    LastOnly,
 }
 
 impl Signal {
@@ -493,7 +497,15 @@ impl Signal {
                 .flat_map(|i| {
                     let t = i as f32 / sr;
                     (0..ch).map(move |c| {
-                        let f = if c == 0 { 440.0 } else { 660.0 };
+                        let f = match c {
+                            0 => 440.0,
+                            1 => 660.0,
+                            2 => 550.0,
+                            3 => 770.0,
+                            4 => 880.0,
+                            5 => 55.0,
+                            _ => 110.0 * c as f32,
+                        };
                         (f32::sin(tau * f * t) * 16384.0) as i16
                     })
                 })
@@ -548,6 +560,16 @@ impl Signal {
                 }
                 out
             }
+            Signal::LastOnly => {
+                let mut rng = XorShift32(0x0051_0051);
+                let mut out = vec![0i16; frames(2.0) * ch];
+                for (i, frame) in out.chunks_exact_mut(ch).enumerate() {
+                    let t = i as f32 / sr;
+                    frame[ch - 1] =
+                        clip(f32::sin(tau * 45.0 * t) * 12000.0 + rng.next_f32() * 300.0);
+                }
+                out
+            }
         }
     }
 }
@@ -579,10 +601,10 @@ mod oracle_parity_q {
         ($name:ident, $q:expr $(, #[$m:meta])*) => {
             mod $name {
                 use super::*;
-                mod mono44 { use super::*; signal_tests!($q, SampleRate::HZ_44100, Channels::Mono; $(#[$m])*); }
-                mod stereo44 { use super::*; signal_tests!($q, SampleRate::HZ_44100, Channels::Stereo; $(#[$m])*); }
-                mod mono48 { use super::*; signal_tests!($q, SampleRate::HZ_48000, Channels::Mono; $(#[$m])*); }
-                mod stereo48 { use super::*; signal_tests!($q, SampleRate::HZ_48000, Channels::Stereo; $(#[$m])*); }
+                mod mono44 { use super::*; signal_tests!($q, SampleRate::HZ_44100, Channels::MONO; $(#[$m])*); }
+                mod stereo44 { use super::*; signal_tests!($q, SampleRate::HZ_44100, Channels::STEREO; $(#[$m])*); }
+                mod mono48 { use super::*; signal_tests!($q, SampleRate::HZ_48000, Channels::MONO; $(#[$m])*); }
+                mod stereo48 { use super::*; signal_tests!($q, SampleRate::HZ_48000, Channels::STEREO; $(#[$m])*); }
             }
         };
     }
@@ -663,13 +685,13 @@ mod oracle_parity_rate {
                 use super::*;
                 mod mono {
                     use super::*;
-                    qualities!($hz, Channels::Mono;
+                    qualities!($hz, Channels::MONO;
                         q_m010 = -0.1, q_m005 = -0.05, q_000 = 0.0, q_005 = 0.05, q_025 = 0.25,
                         q_050 = 0.5, q_075 = 0.75, q_100 = 1.0);
                 }
                 mod stereo {
                     use super::*;
-                    qualities!($hz, Channels::Stereo;
+                    qualities!($hz, Channels::STEREO;
                         q_m010 = -0.1, q_m005 = -0.05, q_000 = 0.0, q_005 = 0.05, q_025 = 0.25,
                         q_050 = 0.5, q_075 = 0.75, q_100 = 1.0);
                 }
@@ -684,11 +706,11 @@ mod oracle_parity_rate {
                 use super::*;
                 mod mono {
                     use super::*;
-                    qualities!($hz, Channels::Mono; q_m010 = -0.1, q_050 = 0.5, q_100 = 1.0);
+                    qualities!($hz, Channels::MONO; q_m010 = -0.1, q_050 = 0.5, q_100 = 1.0);
                 }
                 mod stereo {
                     use super::*;
-                    qualities!($hz, Channels::Stereo; q_m010 = -0.1, q_050 = 0.5, q_100 = 1.0);
+                    qualities!($hz, Channels::STEREO; q_m010 = -0.1, q_050 = 0.5, q_100 = 1.0);
                 }
             }
         };
@@ -740,6 +762,142 @@ mod oracle_parity_rate {
 }
 
 /// Reassemble Ogg packets from a stream (single logical stream).
+/// More than two channels: `oracle_parity_multichannel::...`.
+///
+/// `surround` is libvorbis's 5.1 template (`ve_setup_44_51`: 6 channels
+/// at 40..=70 kHz, two submaps, four coupling steps below q5, a separate
+/// LFE floor and residue) at 44.1 and 48 kHz and both ends of its rate
+/// range, at every quality anchor q-1..q10 and the midpoints that
+/// interpolate between them, with every signal: the channels carry
+/// distinct content (identical channels would hide coupling bugs), and
+/// `last_only` has content in the LFE alone. `uncoupled` covers the
+/// `*_uncoupled` templates, which take any channel count: 3, 4, 5, 7 and
+/// 8 channels at a rate per template family, and 6 channels outside the
+/// 5.1 template's range (32 and 96 kHz, and 39999 / 70001 Hz).
+mod oracle_parity_multichannel {
+    use super::*;
+
+    fn ch(n: u16) -> Channels {
+        Channels::new(n).expect("1..=255 channels")
+    }
+
+    macro_rules! all_signals {
+        ($hz:expr, $n:expr, $q:expr) => {
+            #[test]
+            fn silence() {
+                run_quality_case($q, SampleRate::new($hz).unwrap(), ch($n), Signal::Silence)
+            }
+            #[test]
+            fn sine() {
+                run_quality_case($q, SampleRate::new($hz).unwrap(), ch($n), Signal::Sine440)
+            }
+            #[test]
+            fn ramp() {
+                run_quality_case($q, SampleRate::new($hz).unwrap(), ch($n), Signal::Ramp)
+            }
+            #[test]
+            fn noise_tone() {
+                run_quality_case($q, SampleRate::new($hz).unwrap(), ch($n), Signal::NoiseTone)
+            }
+            #[test]
+            fn transients() {
+                run_quality_case(
+                    $q,
+                    SampleRate::new($hz).unwrap(),
+                    ch($n),
+                    Signal::Transients,
+                )
+            }
+            #[test]
+            fn last_only() {
+                run_quality_case($q, SampleRate::new($hz).unwrap(), ch($n), Signal::LastOnly)
+            }
+        };
+    }
+
+    macro_rules! qualities {
+        ($hz:expr, $n:expr; $($name:ident = $q:expr),*) => {
+            $(mod $name { use super::*; all_signals!($hz, $n, $q); })*
+        };
+    }
+
+    /// The 5.1 template's quality sweep at one rate.
+    macro_rules! surround {
+        ($name:ident, $hz:expr) => {
+            mod $name {
+                use super::*;
+                qualities!($hz, 6;
+                    q_m010 = -0.1, q_m005 = -0.05, q_000 = 0.0, q_005 = 0.05, q_010 = 0.1,
+                    q_020 = 0.2, q_030 = 0.3, q_035 = 0.35, q_040 = 0.4, q_045 = 0.45,
+                    q_050 = 0.5, q_055 = 0.55, q_060 = 0.6, q_070 = 0.7, q_080 = 0.8,
+                    q_090 = 0.9, q_095 = 0.95, q_100 = 1.0);
+            }
+        };
+    }
+
+    mod surround {
+        use super::*;
+        surround!(r44100, 44100);
+        surround!(r48000, 48000);
+        surround!(r70000, 70000);
+        surround!(r40000, 40000);
+    }
+
+    /// Uncoupled channel counts at q-1, q5 and q10.
+    macro_rules! uncoupled {
+        ($name:ident, $hz:expr, $n:expr) => {
+            mod $name {
+                use super::*;
+                qualities!($hz, $n; q_m010 = -0.1, q_050 = 0.5, q_100 = 1.0);
+            }
+        };
+    }
+
+    mod uncoupled {
+        use super::*;
+        uncoupled!(c3_r44100, 44100, 3);
+        uncoupled!(c3_r8000, 8000, 3);
+        uncoupled!(c4_r48000, 48000, 4);
+        uncoupled!(c4_r16000, 16000, 4);
+        uncoupled!(c5_r44100, 44100, 5);
+        uncoupled!(c5_r22050, 22050, 5);
+        uncoupled!(c5_r96000, 96000, 5);
+        uncoupled!(c6_r32000, 32000, 6);
+        uncoupled!(c6_r96000, 96000, 6);
+        uncoupled!(c6_r39999, 39999, 6);
+        uncoupled!(c6_r70001, 70001, 6);
+        uncoupled!(c6_r11025, 11025, 6);
+        uncoupled!(c7_r48000, 48000, 7);
+        uncoupled!(c7_r4000, 4000, 7);
+        uncoupled!(c8_r44100, 44100, 8);
+        uncoupled!(c8_r192000, 192000, 8);
+    }
+
+    /// The most channels libvorbis encodes, once and short: 0.25 s of
+    /// distinct noise and tones per channel, and every 16th channel
+    /// silent.
+    #[test]
+    fn c255_short() {
+        let n = 255usize;
+        let rate = 44100;
+        let mut rng = XorShift32(0xFF00_00FF);
+        let tau = 2.0 * std::f32::consts::PI;
+        let mut pcm = Vec::with_capacity(rate as usize / 4 * n);
+        for i in 0..rate as usize / 4 {
+            let t = i as f32 / rate as f32;
+            for c in 0..n {
+                let v = if c % 16 == 15 {
+                    0.0
+                } else {
+                    f32::sin(tau * (60.0 + 37.0 * c as f32) * t) * 5000.0 + rng.next_f32() * 3000.0
+                };
+                pcm.push(v as i16);
+            }
+        }
+        assert_parity_oracle_q(&pcm, SampleRate::HZ_44100, Channels::MAX, 0.5);
+    }
+}
+
 fn ogg_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut packets = Vec::new();
     let mut cur = Vec::new();
@@ -791,7 +949,7 @@ fn oracle_parity_long_silence_mono44() {
     assert_parity_oracle(
         &vec![0i16; 44100 * 120],
         SampleRate::HZ_44100,
-        Channels::Mono,
+        Channels::MONO,
     );
 }
 
@@ -799,7 +957,7 @@ fn oracle_parity_long_silence_mono44() {
 #[test]
 fn oracle_parity_long_silence_stereo48() {
     let stereo = vec![0i16; 48000 * 2 * 100];
-    assert_parity_oracle(&stereo, SampleRate::HZ_48000, Channels::Stereo);
+    assert_parity_oracle(&stereo, SampleRate::HZ_48000, Channels::STEREO);
 }
 
 // --- Long non-silent signals ---
@@ -945,26 +1103,26 @@ mod oracle_parity_long {
     #[rustfmt::skip]
     mod cases {
         use super::*;
-        long!(noise_tone_60s_stereo44_qm1, NoiseTone, 60.0, HZ_44100, Stereo, -0.1);
-        long!(noise_tone_60s_mono48_q10, NoiseTone, 60.0, HZ_48000, Mono, 1.0);
-        long!(noise_tone_45s_stereo48_q5, NoiseTone, 45.0, HZ_48000, Stereo, 0.5);
-        long!(noise_tone_30s_mono44_q0, NoiseTone, 30.0, HZ_44100, Mono, 0.0);
-        long!(transients_30s_mono44_q10, Transients, 30.0, HZ_44100, Mono, 1.0);
-        long!(transients_40s_stereo48_qm1, Transients, 40.0, HZ_48000, Stereo, -0.1);
-        long!(transients_30s_stereo44_q2, Transients, 30.0, HZ_44100, Stereo, 0.2);
-        long!(chirp_120s_mono44_q5, Chirp, 120.0, HZ_44100, Mono, 0.5);
-        long!(chirp_60s_mono48_qm1, Chirp, 60.0, HZ_48000, Mono, -0.1);
-        long!(chirp_45s_stereo48_q10, Chirp, 45.0, HZ_48000, Stereo, 1.0);
+        long!(noise_tone_60s_stereo44_qm1, NoiseTone, 60.0, HZ_44100, STEREO, -0.1);
+        long!(noise_tone_60s_mono48_q10, NoiseTone, 60.0, HZ_48000, MONO, 1.0);
+        long!(noise_tone_45s_stereo48_q5, NoiseTone, 45.0, HZ_48000, STEREO, 0.5);
+        long!(noise_tone_30s_mono44_q0, NoiseTone, 30.0, HZ_44100, MONO, 0.0);
+        long!(transients_30s_mono44_q10, Transients, 30.0, HZ_44100, MONO, 1.0);
+        long!(transients_40s_stereo48_qm1, Transients, 40.0, HZ_48000, STEREO, -0.1);
+        long!(transients_30s_stereo44_q2, Transients, 30.0, HZ_44100, STEREO, 0.2);
+        long!(chirp_120s_mono44_q5, Chirp, 120.0, HZ_44100, MONO, 0.5);
+        long!(chirp_60s_mono48_qm1, Chirp, 60.0, HZ_48000, MONO, -0.1);
+        long!(chirp_45s_stereo48_q10, Chirp, 45.0, HZ_48000, STEREO, 1.0);
         // Other template families: 512/512 (8/11 kHz), 512/1024 and
         // 1024/1024 (16/22 kHz), 256/2048 at 32 and 96 kHz.
-        long!(noise_tone_60s_stereo8_q5, NoiseTone, 60.0, HZ_8000, Stereo, 0.5);
-        long!(transients_60s_mono11_qm1, Transients, 60.0, HZ_11025, Mono, -0.1);
-        long!(chirp_60s_stereo16_q0, Chirp, 60.0, HZ_16000, Stereo, 0.0);
-        long!(transients_45s_stereo22_q10, Transients, 45.0, HZ_22050, Stereo, 1.0);
-        long!(noise_tone_45s_mono22_q3, NoiseTone, 45.0, HZ_22050, Mono, 0.3);
-        long!(chirp_45s_mono32_qm1, Chirp, 45.0, HZ_32000, Mono, -0.1);
-        long!(transients_30s_stereo96_q5, Transients, 30.0, HZ_96000, Stereo, 0.5);
-        long!(chirp_30s_mono192_q10, Chirp, 30.0, HZ_192000, Mono, 1.0);
+        long!(noise_tone_60s_stereo8_q5, NoiseTone, 60.0, HZ_8000, STEREO, 0.5);
+        long!(transients_60s_mono11_qm1, Transients, 60.0, HZ_11025, MONO, -0.1);
+        long!(chirp_60s_stereo16_q0, Chirp, 60.0, HZ_16000, STEREO, 0.0);
+        long!(transients_45s_stereo22_q10, Transients, 45.0, HZ_22050, STEREO, 1.0);
+        long!(noise_tone_45s_mono22_q3, NoiseTone, 45.0, HZ_22050, MONO, 0.3);
+        long!(chirp_45s_mono32_qm1, Chirp, 45.0, HZ_32000, MONO, -0.1);
+        long!(transients_30s_stereo96_q5, Transients, 30.0, HZ_96000, STEREO, 0.5);
+        long!(chirp_30s_mono192_q10, Chirp, 30.0, HZ_192000, MONO, 1.0);
     }
 }
 
@@ -1087,10 +1245,10 @@ mod oracle_parity_short_input {
         };
     }
 
-    sweep!(mono44_q5, SampleRate::HZ_44100, Channels::Mono, 0.5);
-    sweep!(stereo48_q5, SampleRate::HZ_48000, Channels::Stereo, 0.5);
-    sweep!(mono44_q2, SampleRate::HZ_44100, Channels::Mono, 0.2);
-    sweep!(stereo48_q2, SampleRate::HZ_48000, Channels::Stereo, 0.2);
+    sweep!(mono44_q5, SampleRate::HZ_44100, Channels::MONO, 0.5);
+    sweep!(stereo48_q5, SampleRate::HZ_48000, Channels::STEREO, 0.5);
+    sweep!(mono44_q2, SampleRate::HZ_44100, Channels::MONO, 0.2);
+    sweep!(stereo48_q2, SampleRate::HZ_48000, Channels::STEREO, 0.2);
 
     /// q-1 (512/4096 blocks): lengths up to 8400 frames, see
     /// [`short_input_lengths_q_minus_1`].
@@ -1122,23 +1280,23 @@ mod oracle_parity_short_input {
         };
     }
 
-    sweep_q_minus_1!(mono44_qm1, SampleRate::HZ_44100, Channels::Mono, -0.1);
+    sweep_q_minus_1!(mono44_qm1, SampleRate::HZ_44100, Channels::MONO, -0.1);
     sweep_q_minus_1!(
         stereo48_qm005,
         SampleRate::HZ_48000,
-        Channels::Stereo,
+        Channels::STEREO,
         -0.05
     );
 
     // Single-block (512/512 at 8/11 kHz, 1024/1024 at 16/22 kHz q-1..q0.5)
     // and 512/1024 templates: n_lpc is 576 or 1088 frames.
-    sweep!(mono8_q5, SampleRate::HZ_8000, Channels::Mono, 0.5);
-    sweep!(stereo11_q0, SampleRate::HZ_11025, Channels::Stereo, 0.0);
-    sweep!(stereo16_q5, SampleRate::HZ_16000, Channels::Stereo, 0.5);
-    sweep!(mono22_q0, SampleRate::HZ_22050, Channels::Mono, 0.0);
-    sweep!(mono16_q10, SampleRate::HZ_16000, Channels::Mono, 1.0);
-    sweep_q_minus_1!(stereo16_qm1, SampleRate::HZ_16000, Channels::Stereo, -0.1);
-    sweep_q_minus_1!(mono8_qm1, SampleRate::HZ_8000, Channels::Mono, -0.1);
+    sweep!(mono8_q5, SampleRate::HZ_8000, Channels::MONO, 0.5);
+    sweep!(stereo11_q0, SampleRate::HZ_11025, Channels::STEREO, 0.0);
+    sweep!(stereo16_q5, SampleRate::HZ_16000, Channels::STEREO, 0.5);
+    sweep!(mono22_q0, SampleRate::HZ_22050, Channels::MONO, 0.0);
+    sweep!(mono16_q10, SampleRate::HZ_16000, Channels::MONO, 1.0);
+    sweep_q_minus_1!(stereo16_qm1, SampleRate::HZ_16000, Channels::STEREO, -0.1);
+    sweep_q_minus_1!(mono8_qm1, SampleRate::HZ_8000, Channels::MONO, -0.1);
 }
 
 // --- Minimized parity-fuzz repros ---
@@ -1280,9 +1438,9 @@ fn oracle_parity_fuzz_repros() {
         let raw = std::fs::read(path).unwrap();
         let rate = SampleRate::new(repro.rate).expect("validated by parse_repro_name");
         let channels = if repro.channels == 2 {
-            Channels::Stereo
+            Channels::STEREO
         } else {
-            Channels::Mono
+            Channels::MONO
         };
         let (oracle_bytes, oxivorbis_bytes) = if repro.f32_input {
             let samples: Vec<f32> = raw

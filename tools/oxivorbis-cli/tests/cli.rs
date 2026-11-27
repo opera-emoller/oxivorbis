@@ -825,7 +825,7 @@ fn bitrate_flags_match_the_library() {
     let (data, vals) = quantize(Fmt::S16, &signal(60_000, 2));
     let pcm = vals.unwrap();
     let r = oxivorbis::SampleRate::HZ_44100;
-    let c = oxivorbis::Channels::Stereo;
+    let c = oxivorbis::Channels::STEREO;
     for (args, mode, q) in [
         (&["-b", "128"][..], B::Nominal { kbps: 128 }, 3.0),
         (

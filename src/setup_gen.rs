@@ -132,6 +132,13 @@ pub(crate) struct FloorEncodeParams {
     pub maxerr: f32,
     pub twofitweight: f32,
     pub twofitatten: f32,
+    /// The template's `postlist[1]`, the floor's right edge as the encoder
+    /// uses it (`look->n`). The header only stores `rangebits =
+    /// ilog(postlist[1] - 1)`, so a parser reconstructs `1 << rangebits`.
+    /// That is the same for every floor except the 5.1 template's LFE
+    /// floor (`_floor[10]`), whose `postlist[1]` is 12, not 16: libvorbis
+    /// fits and codes its posts against 12.
+    pub postlist1: i32,
 }
 
 /// Encode-only residue0 parameters. Full 64-entry arrays exactly as the
@@ -249,6 +256,7 @@ fn vorbis_encode_floor_setup(s: &mut Setup, fi: usize) {
             maxerr: t.maxerr,
             twofitweight: t.twofitweight,
             twofitatten: t.twofitatten,
+            postlist1: t.postlist[1],
         },
     };
     let nbooks = s.books.len() as i32;
@@ -257,7 +265,8 @@ fn vorbis_encode_floor_setup(s: &mut Setup, fi: usize) {
     for i in 0..f.partitions as usize {
         maxclass = maxclass.max(f.partitionclass[i]);
     }
-    for i in 0..=maxclass as usize {
+    // maxclass is -1 for the LFE floor, which has no partitions.
+    for i in 0..(maxclass + 1) as usize {
         maxbook = maxbook.max(f.class_book[i]);
         f.class_book[i] += nbooks;
         for k in 0..(1usize << f.class_subs[i]) {
@@ -335,9 +344,14 @@ fn vorbis_encode_residue_setup(
         freq = nyq;
     }
     // (f->n = freq/nyq*blocksize is dead: floor1_look uses postlist[1].)
-    // limit_type 1 (point-stereo) / 2 (LFE) only occur in the 5.1
-    // template; no 1-2 channel template uses them.
-    assert_eq!(rt.limit_type, 0, "unsupported residue limit_type");
+    // The residue may be limited by something other than the lowpass:
+    // 2 is the 5.1 template's LFE residue (lowpass at ~250 Hz). 1 (point
+    // stereo limited) appears in no libvorbis 1.3.7 template.
+    match rt.limit_type {
+        0 => {}
+        2 => freq = 250.0,
+        t => panic!("unsupported residue limit_type {t}"),
+    }
 
     let grouping = r.grouping;
     if r.res_type == 2 {
@@ -382,7 +396,10 @@ fn plan(
     lowpass_khz: f64,
     managed: bool,
 ) -> Setup {
-    assert!((1..=2).contains(&channels), "1 or 2 channels supported");
+    assert!(
+        (1..=crate::quality::MAX_CHANNELS).contains(&channels),
+        "1..=255 channels supported"
+    );
     let t = T::SETUP_LIST[template];
     let is = base_setting as usize;
     assert!(is < t.mappings as usize, "base_setting out of range");
@@ -580,7 +597,7 @@ fn pack(s: &Setup, channels: usize) -> Vec<u8> {
 
 /// Builds the Vorbis setup header libvorbis 1.3.7 emits for VBR mode with
 /// template `template` (the index `get_setup_template` picked, see
-/// `quality::select_template`) at `rate`, `channels` (1 or 2), given
+/// `quality::select_template`) at `rate`, `channels` (1..=255), given
 /// `hi.base_setting` and `hi.lowpass_kHz`, plus the encode-only
 /// floor/residue parameters.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -654,14 +671,31 @@ mod tests {
     const COMBOS: [(u32, usize); 4] = [(44100, 1), (48000, 1), (44100, 2), (48000, 2)];
 
     /// A rate per template family plus range edges and odd rates; every
-    /// one is swept mono and stereo.
-    const SWEEP_RATES: [u32; 26] = [
+    /// one is swept mono, stereo and 5.1 (the 5.1 template's 40..=70 kHz,
+    /// uncoupled 6 channels elsewhere).
+    const SWEEP_RATES: [u32; 29] = [
         1, 1000, 7999, 8000, 8999, 9000, 11025, 14999, 15000, 16000, 18999, 19000, 22050, 25999,
-        26000, 32000, 37800, 39999, 40000, 44100, 48000, 50000, 50001, 96000, 192000, 200000,
+        26000, 32000, 37800, 39999, 40000, 44100, 48000, 50000, 50001, 64000, 70000, 70001, 96000,
+        192000, 200000,
+    ];
+
+    /// Uncoupled 3 and 255 channels at a rate per family.
+    const SWEEP_MANY: [(u32, usize); 8] = [
+        (4000, 3),
+        (11025, 3),
+        (22050, 3),
+        (44100, 3),
+        (96000, 3),
+        (8000, 255),
+        (32000, 255),
+        (48000, 255),
     ];
 
     fn sweep_combos() -> impl Iterator<Item = (u32, usize)> {
-        SWEEP_RATES.iter().flat_map(|&r| [(r, 1), (r, 2)])
+        SWEEP_RATES
+            .iter()
+            .flat_map(|&r| [(r, 1), (r, 2), (r, 6)])
+            .chain(SWEEP_MANY)
     }
 
     /// Length and SHA-256 of the q=0.5 setup headers libvorbis 1.3.7 emits
@@ -814,6 +848,7 @@ mod tests {
                         maxerr: 500.0,
                         twofitweight: legacy_twofit,
                         twofitatten: 18.0,
+                        postlist1: fs.vi.postlist[1],
                     }
                 );
             }
@@ -998,9 +1033,9 @@ mod tests {
             // the quality argument). Once the lowpass exceeds nyquist the
             // header stops changing with quality (above q~0.6 at 44.1 kHz,
             // almost everywhere at the lowest rates), and rates of one
-            // family share headers, so many points repeat. 284 today.
+            // family share headers, so many points repeat. 478 today.
             assert!(
-                distinct.len() > 250,
+                distinct.len() > 450,
                 "only {} distinct headers",
                 distinct.len()
             );

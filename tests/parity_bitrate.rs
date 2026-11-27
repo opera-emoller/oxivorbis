@@ -221,22 +221,22 @@ mod bitrate_range {
                     use super::*;
                     #[test]
                     fn nominal() {
-                        run_range($hz, Channels::Mono, false)
+                        run_range($hz, Channels::MONO, false)
                     }
                     #[test]
                     fn average() {
-                        run_range($hz, Channels::Mono, true)
+                        run_range($hz, Channels::MONO, true)
                     }
                 }
                 mod stereo {
                     use super::*;
                     #[test]
                     fn nominal() {
-                        run_range($hz, Channels::Stereo, false)
+                        run_range($hz, Channels::STEREO, false)
                     }
                     #[test]
                     fn average() {
-                        run_range($hz, Channels::Stereo, true)
+                        run_range($hz, Channels::STEREO, true)
                     }
                 }
             }
@@ -436,11 +436,11 @@ mod bitrate_limits {
                 use super::*;
                 mod mono {
                     use super::*;
-                    combos!($hz, Channels::Mono);
+                    combos!($hz, Channels::MONO);
                 }
                 mod stereo {
                     use super::*;
-                    combos!($hz, Channels::Stereo);
+                    combos!($hz, Channels::STEREO);
                 }
             }
         };
@@ -472,30 +472,30 @@ mod bitrate_tuning {
     #[test]
     fn small_reservoir() {
         let t = BitrateTuning::default().with_reservoir_bits(4000);
-        run(44100, Channels::Stereo, CBR128, t);
+        run(44100, Channels::STEREO, CBR128, t);
     }
     #[test]
     fn large_reservoir() {
         let t = BitrateTuning::default().with_reservoir_bits(4_000_000);
-        run(44100, Channels::Stereo, CBR128, t);
+        run(44100, Channels::STEREO, CBR128, t);
     }
     #[test]
     fn zero_reservoir_keeps_managed_setup() {
         let t = BitrateTuning::default().with_reservoir_bits(0);
-        run(44100, Channels::Stereo, BitrateMode::average(128), t);
+        run(44100, Channels::STEREO, BitrateMode::average(128), t);
     }
     #[test]
     fn bias_0_and_1() {
         for b in [0.0, 1.0] {
             let t = BitrateTuning::default().with_reservoir_bias(b);
-            run(22050, Channels::Mono, BitrateMode::average(40), t);
+            run(22050, Channels::MONO, BitrateMode::average(40), t);
         }
     }
     #[test]
     fn damping() {
         for d in [0.05, 0.75, 20.0] {
             let t = BitrateTuning::default().with_average_damping(d);
-            run(48000, Channels::Stereo, BitrateMode::average(160), t);
+            run(48000, Channels::STEREO, BitrateMode::average(160), t);
         }
     }
     #[test]
@@ -508,17 +508,17 @@ mod bitrate_tuning {
             min_kbps: Some(48),
             max_kbps: Some(96),
         };
-        run(32000, Channels::Stereo, m, t);
+        run(32000, Channels::STEREO, m, t);
     }
     #[test]
     fn on_nominal_and_quality_limits() {
         let t = BitrateTuning::default().with_reservoir_bias(0.3);
-        run(16000, Channels::Mono, BitrateMode::Nominal { kbps: 40 }, t);
+        run(16000, Channels::MONO, BitrateMode::Nominal { kbps: 40 }, t);
         let m = BitrateMode::QualityLimits {
             min_kbps: None,
             max_kbps: Some(40),
         };
-        run(16000, Channels::Mono, m, t);
+        run(16000, Channels::MONO, m, t);
     }
 }
 
@@ -537,7 +537,7 @@ mod bitrate_long {
             min_kbps: Some(128),
             max_kbps: Some(128),
         };
-        run(90.0, 44100, Channels::Stereo, 0.5, m);
+        run(90.0, 44100, Channels::STEREO, 0.5, m);
     }
     #[test]
     fn abr192_max256_stereo48_60s() {
@@ -546,14 +546,14 @@ mod bitrate_long {
             min_kbps: None,
             max_kbps: Some(256),
         };
-        run(60.0, 48000, Channels::Stereo, 0.5, m);
+        run(60.0, 48000, Channels::STEREO, 0.5, m);
     }
     #[test]
     fn abr96_stereo44_120s() {
         run(
             120.0,
             44100,
-            Channels::Stereo,
+            Channels::STEREO,
             0.5,
             BitrateMode::average(96),
         );
@@ -564,7 +564,7 @@ mod bitrate_long {
             min_kbps: None,
             max_kbps: Some(128),
         };
-        run(60.0, 44100, Channels::Stereo, 0.5, m);
+        run(60.0, 44100, Channels::STEREO, 0.5, m);
     }
     #[test]
     fn max32_mono22_120s() {
@@ -572,7 +572,7 @@ mod bitrate_long {
             min_kbps: None,
             max_kbps: Some(32),
         };
-        run(120.0, 22050, Channels::Mono, 0.5, m);
+        run(120.0, 22050, Channels::MONO, 0.5, m);
     }
     #[test]
     fn min64_mono44_45s() {
@@ -580,18 +580,18 @@ mod bitrate_long {
             min_kbps: Some(64),
             max_kbps: None,
         };
-        run(45.0, 44100, Channels::Mono, 0.5, m);
+        run(45.0, 44100, Channels::MONO, 0.5, m);
     }
     #[test]
     fn abr16_mono8_120s() {
-        run(120.0, 8000, Channels::Mono, 0.5, BitrateMode::average(16));
+        run(120.0, 8000, Channels::MONO, 0.5, BitrateMode::average(16));
     }
     #[test]
     fn nominal80_stereo32_30s() {
         run(
             30.0,
             32000,
-            Channels::Stereo,
+            Channels::STEREO,
             0.5,
             BitrateMode::Nominal { kbps: 80 },
         );
@@ -602,7 +602,7 @@ mod bitrate_long {
         run(
             60.0,
             22050,
-            Channels::Stereo,
+            Channels::STEREO,
             0.5,
             BitrateMode::average(176),
         );
@@ -614,14 +614,14 @@ mod bitrate_long {
 fn bitrate_rejects_like_libvorbis() {
     let t = BitrateTuning::default();
     for (hz, ch, mode) in [
-        (44100, Channels::Stereo, BitrateMode::average(44)),
-        (44100, Channels::Stereo, BitrateMode::average(501)),
-        (44100, Channels::Mono, BitrateMode::Nominal { kbps: 300 }),
-        (96000, Channels::Stereo, BitrateMode::average(128)),
-        (7999, Channels::Mono, BitrateMode::average(16)),
+        (44100, Channels::STEREO, BitrateMode::average(44)),
+        (44100, Channels::STEREO, BitrateMode::average(501)),
+        (44100, Channels::MONO, BitrateMode::Nominal { kbps: 300 }),
+        (96000, Channels::STEREO, BitrateMode::average(128)),
+        (7999, Channels::MONO, BitrateMode::average(16)),
         (
             50001,
-            Channels::Stereo,
+            Channels::STEREO,
             BitrateMode::QualityLimits {
                 min_kbps: None,
                 max_kbps: Some(128),
@@ -629,7 +629,7 @@ fn bitrate_rejects_like_libvorbis() {
         ),
         (
             44100,
-            Channels::Stereo,
+            Channels::STEREO,
             BitrateMode::Limits {
                 min_kbps: None,
                 max_kbps: Some(600),
@@ -668,13 +668,13 @@ mod encoder_tuning {
     #[test]
     fn lowpass_vbr() {
         for (hz, ch, q, k) in [
-            (44100, Channels::Stereo, 0.5, 12.0),
-            (44100, Channels::Mono, -0.1, 18.5),
-            (48000, Channels::Stereo, 1.0, 30.0),
-            (22050, Channels::Mono, 0.3, 5.0),
-            (8000, Channels::Stereo, 0.5, 3.3),
-            (96000, Channels::Stereo, 0.5, 40.0),
-            (4000, Channels::Mono, 0.5, 2.0),
+            (44100, Channels::STEREO, 0.5, 12.0),
+            (44100, Channels::MONO, -0.1, 18.5),
+            (48000, Channels::STEREO, 1.0, 30.0),
+            (22050, Channels::MONO, 0.3, 5.0),
+            (8000, Channels::STEREO, 0.5, 3.3),
+            (96000, Channels::STEREO, 0.5, 40.0),
+            (4000, Channels::MONO, 0.5, 2.0),
         ] {
             run(hz, ch, q, None, lowpass(k));
         }
@@ -682,16 +682,16 @@ mod encoder_tuning {
     #[test]
     fn lowpass_clamps() {
         for k in [0.5, -3.0, 150.0, f64::INFINITY] {
-            run(44100, Channels::Stereo, 0.5, None, lowpass(k));
+            run(44100, Channels::STEREO, 0.5, None, lowpass(k));
         }
     }
     #[test]
     fn impulse_noisetune_vbr() {
         for (hz, ch, q, d) in [
-            (44100, Channels::Stereo, 0.5, -6.0),
-            (48000, Channels::Mono, -0.1, -15.0),
-            (22050, Channels::Stereo, 0.8, -2.5),
-            (11025, Channels::Mono, 0.0, -9.0),
+            (44100, Channels::STEREO, 0.5, -6.0),
+            (48000, Channels::MONO, -0.1, -15.0),
+            (22050, Channels::STEREO, 0.8, -2.5),
+            (11025, Channels::MONO, 0.0, -9.0),
         ] {
             run(hz, ch, q, None, impulse(d));
         }
@@ -699,7 +699,7 @@ mod encoder_tuning {
     #[test]
     fn impulse_noisetune_clamps() {
         for d in [3.0, -40.0] {
-            run(44100, Channels::Stereo, 0.5, None, impulse(d));
+            run(44100, Channels::STEREO, 0.5, None, impulse(d));
         }
     }
     #[test]
@@ -716,17 +716,17 @@ mod encoder_tuning {
             (96000, 0.5),
             (4000, 0.5),
         ] {
-            run(hz, Channels::Stereo, q, None, uncoupled());
+            run(hz, Channels::STEREO, q, None, uncoupled());
         }
         // Mono already uses the uncoupled templates.
-        run(44100, Channels::Mono, 0.5, None, uncoupled());
+        run(44100, Channels::MONO, 0.5, None, uncoupled());
     }
     #[test]
     fn all_three_vbr() {
         let t = lowpass(14.0)
             .with_impulse_noisetune(-4.0)
             .with_coupling_disabled();
-        run(44100, Channels::Stereo, 0.6, None, t);
+        run(44100, Channels::STEREO, 0.6, None, t);
     }
     #[test]
     fn with_bitrate_modes() {
@@ -735,14 +735,14 @@ mod encoder_tuning {
             min_kbps: Some(128),
             max_kbps: Some(128),
         };
-        run(44100, Channels::Stereo, 0.5, Some(cbr), lowpass(11.0));
-        run(44100, Channels::Stereo, 0.5, Some(cbr), impulse(-8.0));
+        run(44100, Channels::STEREO, 0.5, Some(cbr), lowpass(11.0));
+        run(44100, Channels::STEREO, 0.5, Some(cbr), impulse(-8.0));
         // Coupling can't be switched off in the bitrate modes (libvorbis
         // finds no uncoupled template for the request).
-        run(44100, Channels::Stereo, 0.5, Some(cbr), uncoupled());
+        run(44100, Channels::STEREO, 0.5, Some(cbr), uncoupled());
         run(
             22050,
-            Channels::Stereo,
+            Channels::STEREO,
             0.5,
             Some(BitrateMode::Nominal { kbps: 64 }),
             uncoupled(),
@@ -754,6 +754,6 @@ mod encoder_tuning {
         let t = lowpass(16.0)
             .with_impulse_noisetune(-3.0)
             .with_coupling_disabled();
-        run(48000, Channels::Stereo, 0.5, Some(ql), t);
+        run(48000, Channels::STEREO, 0.5, Some(ql), t);
     }
 }

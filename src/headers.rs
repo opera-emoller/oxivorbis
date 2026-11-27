@@ -20,8 +20,10 @@ const Q5_BLOCKSIZES: [usize; 2] = [256, 2048];
 /// Write the Q5 Vorbis identification header packet (packet type 0x01).
 pub fn write_id_header(rate: SampleRate, channels: Channels, w: &mut BitWriter) {
     let bitrate_nominal = match channels {
-        Channels::Mono => BITRATE_NOMINAL_MONO,
-        Channels::Stereo => BITRATE_NOMINAL_STEREO,
+        Channels::MONO => BITRATE_NOMINAL_MONO,
+        Channels::STEREO => BITRATE_NOMINAL_STEREO,
+        _ => crate::quality::quality_config(0.5, rate.hz(), channels.count() as usize)
+            .bitrate_nominal,
     };
     write_id_header_with(rate, channels, bitrate_nominal, Q5_BLOCKSIZES, w);
 }
@@ -53,10 +55,7 @@ pub fn write_id_header_bitrates(
 ) {
     debug_assert!(blocksizes.iter().all(|b| b.is_power_of_two()));
     let audio_sample_rate: u32 = rate.hz();
-    let audio_channels: u32 = match channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    };
+    let audio_channels: u32 = channels.count() as u32;
     w.write(0x01, 8);
     for &b in b"vorbis" {
         w.write(b as u32, 8);

@@ -57,7 +57,7 @@ use oxivorbis::{Channels, Options, SampleRate};
 let pcm = vec![0i16; 44_100 * 2];
 
 // Quality 5, deterministic default serial, vendor "oxivorbis <version>".
-let ogg: Vec<u8> = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+let ogg: Vec<u8> = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &Options::default());
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
@@ -69,7 +69,7 @@ use oxivorbis::{Channels, Encoder, Options, SampleRate};
 use std::io::Write;
 
 fn main() -> std::io::Result<()> {
-    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
     let mut out = std::fs::File::create("out.ogg")?;
     for chunk in vec![0i16; 10 * 44_100 * 2].chunks(4096) {
         // e.g. blocks coming from a decoder
@@ -88,10 +88,10 @@ use oxivorbis::{Channels, Encoder, Options, SampleRate};
 
 let floats: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.0576).sin() * 0.5).collect();
 
-let ogg = oxivorbis::encode_f32(&floats, SampleRate::HZ_48000, Channels::Mono, &Options::default());
+let ogg = oxivorbis::encode_f32(&floats, SampleRate::HZ_48000, Channels::MONO, &Options::default());
 
 // Encoder::write_f32 is the streaming form; it can be mixed with write().
-let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Mono, &Options::default());
+let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::MONO, &Options::default());
 let mut streamed = enc.write_f32(&floats).to_vec();
 streamed.extend_from_slice(&enc.finish());
 assert_eq!(streamed, ogg);
@@ -144,7 +144,7 @@ use std::{fs::File, io::BufWriter};
 
 fn main() -> std::io::Result<()> {
     let sink = BufWriter::new(File::create("out.ogg")?);
-    let mut ogg = OggWriter::new(sink, SampleRate::HZ_48000, Channels::Stereo, &Options::default())?;
+    let mut ogg = OggWriter::new(sink, SampleRate::HZ_48000, Channels::STEREO, &Options::default())?;
     let (left, right) = (vec![0.0f32; 4800], vec![0.0f32; 4800]);
     for _ in 0..10 {
         ogg.write_planar_f32(&[&left, &right])?; // or write_i16 / write_f32
@@ -184,7 +184,7 @@ configured by those oggenc flags:
 ```rust
 use oxivorbis::{BitrateMode, Channels, Options, SampleRate};
 
-let (rate, ch) = (SampleRate::HZ_44100, Channels::Stereo);
+let (rate, ch) = (SampleRate::HZ_44100, Channels::STEREO);
 // oggenc --managed -b 128 -m 128 -M 128
 let cbr = BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) };
 let opts = Options::default().with_bitrate(rate, ch, cbr).expect("in libvorbis's range");

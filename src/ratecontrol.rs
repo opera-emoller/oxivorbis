@@ -39,19 +39,19 @@ const MAX_KBPS: u32 = i32::MAX as u32 / 1000;
 ///
 /// // oggenc --managed -b 128: average bitrate 128 kb/s.
 /// let abr = Options::default()
-///     .with_bitrate(SampleRate::HZ_44100, Channels::Stereo, BitrateMode::average(128))
+///     .with_bitrate(SampleRate::HZ_44100, Channels::STEREO, BitrateMode::average(128))
 ///     .expect("128 kb/s is in range at 44.1 kHz stereo");
 ///
 /// // oggenc --managed -b 128 -m 128 -M 128: "CBR".
 /// let cbr = BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) };
-/// assert!(Options::default().with_bitrate(SampleRate::HZ_44100, Channels::Stereo, cbr).is_ok());
+/// assert!(Options::default().with_bitrate(SampleRate::HZ_44100, Channels::STEREO, cbr).is_ok());
 ///
 /// // oggenc -q 6 -M 192: quality 6 with a hard maximum.
 /// let capped = Options::default()
 ///     .with_quality(oxivorbis::Quality::new(6.0).unwrap())
 ///     .with_bitrate(
 ///         SampleRate::HZ_48000,
-///         Channels::Stereo,
+///         Channels::STEREO,
 ///         BitrateMode::QualityLimits { min_kbps: None, max_kbps: Some(192) },
 ///     )
 ///     .unwrap();
@@ -130,8 +130,8 @@ impl BitrateMode {
     /// ```
     /// use oxivorbis::{BitrateMode, Channels, SampleRate};
     ///
-    /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_44100, Channels::Stereo), Some(45..=500));
-    /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_96000, Channels::Stereo), None);
+    /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_44100, Channels::STEREO), Some(45..=500));
+    /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_96000, Channels::STEREO), None);
     /// ```
     pub fn supported_kbps(rate: SampleRate, channels: Channels) -> Option<RangeInclusive<u32>> {
         let ch = channels.count() as i64;
@@ -701,7 +701,7 @@ mod tests {
     #[test]
     fn supported_range_is_contiguous() {
         for &hz in &RATES {
-            for ch in [Channels::Mono, Channels::Stereo] {
+            for ch in [Channels::MONO, Channels::STEREO] {
                 let rate = SampleRate::new(hz).unwrap();
                 let r = BitrateMode::supported_kbps(rate, ch).expect("8-50 kHz have setups");
                 for k in r.clone() {
@@ -720,13 +720,13 @@ mod tests {
         }
         for hz in [7999, 50001, 96000] {
             let rate = SampleRate::new(hz).unwrap();
-            assert_eq!(BitrateMode::supported_kbps(rate, Channels::Stereo), None);
+            assert_eq!(BitrateMode::supported_kbps(rate, Channels::STEREO), None);
         }
     }
 
     #[test]
     fn header_fields_follow_oggenc() {
-        let (r, c) = (SampleRate::HZ_44100, Channels::Stereo);
+        let (r, c) = (SampleRate::HZ_44100, Channels::STEREO);
         let none = BitrateTuning::default();
         let p = |m| plan(&m, &none, Quality::Q5, r, c).unwrap();
         // -b 128: no management, nominal 128000, limits -1.
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn invalid_requests() {
-        let (r, c) = (SampleRate::HZ_44100, Channels::Stereo);
+        let (r, c) = (SampleRate::HZ_44100, Channels::STEREO);
         let none = BitrateTuning::default();
         let bad = |m: BitrateMode, t: &BitrateTuning| {
             matches!(

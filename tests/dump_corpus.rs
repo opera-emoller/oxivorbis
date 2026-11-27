@@ -57,7 +57,7 @@ fn dump_corpus_one() {
     let lw = oxivorbis::encode_with_serial_and_meta(
         &samples,
         oxivorbis::SampleRate::HZ_44100,
-        oxivorbis::Channels::Stereo,
+        oxivorbis::Channels::STEREO,
         serial,
         Some(vendor),
         Some(encoder_tag),

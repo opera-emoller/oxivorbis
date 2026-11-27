@@ -56,7 +56,8 @@ fn render(g: Gen, frames: usize, rate: u32, ch: usize, seed: u32) -> Vec<i32> {
     let mut rng = Xs(seed);
     let mut out = Vec::with_capacity(frames * ch);
     let step = |hz: u64| ((hz << 32) / rate as u64) as u32;
-    let mut ph = [0u32; 4];
+    // Two phase accumulators per channel (`c` and `c + ch`).
+    let mut ph = vec![0u32; 2 * ch];
     let mut env: i64 = 0; // Q16
     let mut next_burst = rate as usize / 10;
     for i in 0..frames {
@@ -70,8 +71,8 @@ fn render(g: Gen, frames: usize, rate: u32, ch: usize, seed: u32) -> Vec<i32> {
             let v = match g {
                 Gen::ToneNoise => {
                     ph[c] = ph[c].wrapping_add(step(330 + 110 * c as u64));
-                    ph[c + 2] = ph[c + 2].wrapping_add(step(2900 + 400 * c as u64));
-                    (tri(ph[c]) / 3 + tri(ph[c + 2]) / 6 + rng.sample() / 5) * level / 8
+                    ph[c + ch] = ph[c + ch].wrapping_add(step(2900 + 400 * c as u64));
+                    (tri(ph[c]) / 3 + tri(ph[c + ch]) / 6 + rng.sample() / 5) * level / 8
                 }
                 Gen::Transients => {
                     ph[c] = ph[c].wrapping_add(step(220 + 110 * c as u64));
@@ -110,7 +111,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 44100 * 2,
         rate: SampleRate::HZ_44100,
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: -0.1,
         f32_input: false,
         bitrate: None,
@@ -121,7 +122,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 44100 * 2,
         rate: SampleRate::HZ_44100,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.5,
         f32_input: false,
         bitrate: None,
@@ -132,7 +133,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 48000 * 3 / 2,
         rate: SampleRate::HZ_48000,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 1.0,
         f32_input: false,
         bitrate: None,
@@ -143,7 +144,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 48000 * 2,
         rate: SampleRate::HZ_48000,
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: 0.2,
         f32_input: false,
         bitrate: None,
@@ -154,7 +155,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 3000,
         rate: SampleRate::HZ_44100,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: -0.1,
         f32_input: false,
         bitrate: None,
@@ -165,7 +166,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 48000 * 2,
         rate: SampleRate::HZ_48000,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.5,
         f32_input: true,
         bitrate: None,
@@ -177,7 +178,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 8000 * 2,
         rate: SampleRate::HZ_8000,
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: 0.5,
         f32_input: false,
         bitrate: None,
@@ -188,7 +189,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 11025 * 2,
         rate: SampleRate::HZ_11025,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.0,
         f32_input: true,
         bitrate: None,
@@ -199,7 +200,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 16000 * 2,
         rate: SampleRate::HZ_16000,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: -0.1,
         f32_input: false,
         bitrate: None,
@@ -210,7 +211,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 22050 * 2,
         rate: SampleRate::HZ_22050,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 1.0,
         f32_input: false,
         bitrate: None,
@@ -221,7 +222,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 32000 * 2,
         rate: SampleRate::HZ_32000,
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: -0.1,
         f32_input: false,
         bitrate: None,
@@ -232,18 +233,54 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 96000,
         rate: SampleRate::HZ_96000,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.5,
         f32_input: false,
         bitrate: None,
         golden: golden!("tone_noise_stereo96_q5"),
+    },
+    // More than two channels: 5.1 with the coupled (q < 5) and the
+    // uncoupled (q >= 5) mappings of libvorbis's 5.1 template, and
+    // uncoupled 4 channels.
+    Case {
+        name: "tone_noise_51_48_q3",
+        signal: Gen::ToneNoise,
+        frames: 48000 * 3 / 2,
+        rate: SampleRate::HZ_48000,
+        channels: Channels::SURROUND_5_1,
+        quality: 0.3,
+        f32_input: false,
+        bitrate: None,
+        golden: golden!("tone_noise_51_48_q3"),
+    },
+    Case {
+        name: "f32_transients_51_44_q7",
+        signal: Gen::Transients,
+        frames: 44100 * 3 / 2,
+        rate: SampleRate::HZ_44100,
+        channels: Channels::SURROUND_5_1,
+        quality: 0.7,
+        f32_input: true,
+        bitrate: None,
+        golden: golden!("f32_transients_51_44_q7"),
+    },
+    Case {
+        name: "transients_4ch22_qm1",
+        signal: Gen::Transients,
+        frames: 22050,
+        rate: SampleRate::HZ_22050,
+        channels: Channels::new(4).unwrap(),
+        quality: -0.1,
+        f32_input: false,
+        bitrate: None,
+        golden: golden!("transients_4ch22_qm1"),
     },
     Case {
         name: "short_mono4_q3",
         signal: Gen::ToneNoise,
         frames: 3000,
         rate: SampleRate::new(4000).unwrap(),
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: 0.3,
         f32_input: false,
         bitrate: None,
@@ -256,7 +293,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 44100 * 3,
         rate: SampleRate::HZ_44100,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.5,
         f32_input: false,
         bitrate: Some(BitrateMode::Average {
@@ -271,7 +308,7 @@ const CASES: &[Case] = &[
         signal: Gen::Transients,
         frames: 22050 * 3,
         rate: SampleRate::HZ_22050,
-        channels: Channels::Mono,
+        channels: Channels::MONO,
         quality: 0.5,
         f32_input: false,
         bitrate: Some(BitrateMode::Limits {
@@ -285,7 +322,7 @@ const CASES: &[Case] = &[
         signal: Gen::ToneNoise,
         frames: 48000 * 3,
         rate: SampleRate::HZ_48000,
-        channels: Channels::Stereo,
+        channels: Channels::STEREO,
         quality: 0.8,
         f32_input: false,
         bitrate: Some(BitrateMode::QualityLimits {

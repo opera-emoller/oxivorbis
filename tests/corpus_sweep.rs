@@ -11,7 +11,12 @@
 //! - `CORPUS_QUALITY=<q>[,<q>...]` libvorbis base_quality list (-0.1..1.0,
 //!   default `0.5` = q5).
 //! - `CORPUS_CONFIGS=<rate>x<ch>[,...]` or `all` (default `44100x2`).
-//!   `all` = `44100x2,44100x1,48000x2,48000x1`.
+//!   `all` = `44100x2,44100x1,48000x2,48000x1`. `ch` is 1..=255.
+//!   6-channel configs synthesize 5.1 with distinct content per channel:
+//!   FL/FR from the file, C its mid delayed 13 ms, BL/BR from the *next*
+//!   file in the sorted list, LFE the mid low-passed at 120 Hz, in Vorbis
+//!   order (FL, C, FR, BL, BR, LFE). Other channel counts use ffmpeg's
+//!   `-ac` up/downmix.
 //! - `CORPUS_JOBS=N` worker threads (default: available parallelism).
 //! - `CORPUS_LIMIT=N` only the first N files (sorted).
 //! - `CORPUS_BITRATE="<oracle flags>"` encode in a bitrate mode instead of
@@ -57,11 +62,11 @@ impl SweepConfig {
         let parsed = s.split_once(['x', 'X']).and_then(|(r, c)| {
             let rate: u32 = r.trim().parse().ok()?;
             let ch: u16 = c.trim().parse().ok()?;
-            (oxivorbis::SampleRate::new(rate).is_some() && matches!(ch, 1 | 2))
+            (oxivorbis::SampleRate::new(rate).is_some() && oxivorbis::Channels::new(ch).is_some())
                 .then_some((rate, ch))
         });
         let Some((rate, ch)) = parsed else {
-            panic!("CORPUS_CONFIGS entry {s:?} is not <rate 1..=200000>x<1|2>");
+            panic!("CORPUS_CONFIGS entry {s:?} is not <rate 1..=200000>x<1..=255>");
         };
         SweepConfig { rate, ch }
     }
@@ -73,7 +78,12 @@ impl SweepConfig {
 
     /// Human description used in the summary header, e.g. `stereo, 44.1k`.
     fn describe(&self) -> String {
-        let ch = if self.ch == 1 { "mono" } else { "stereo" };
+        let ch = match self.ch {
+            1 => "mono".to_string(),
+            2 => "stereo".to_string(),
+            6 => "5.1".to_string(),
+            n => format!("{n} ch"),
+        };
         let rate = if self.rate % 1000 == 0 {
             format!("{}k", self.rate / 1000)
         } else {
@@ -84,10 +94,7 @@ impl SweepConfig {
 
     fn oxivorbis(&self) -> (oxivorbis::SampleRate, oxivorbis::Channels) {
         let r = oxivorbis::SampleRate::new(self.rate).expect("validated in parse");
-        let c = match self.ch {
-            1 => oxivorbis::Channels::Mono,
-            _ => oxivorbis::Channels::Stereo,
-        };
+        let c = oxivorbis::Channels::new(self.ch).expect("validated in parse");
         (r, c)
     }
 }
@@ -157,22 +164,27 @@ fn failures_root() -> PathBuf {
         .join("corpus-failures")
 }
 
-fn ffmpeg_decode(path: &Path, rate: u32, ch: u16) -> Vec<i16> {
-    let out = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            path.to_str().unwrap(),
-            "-f",
-            "s16le",
-            "-ac",
-            &ch.to_string(),
-            "-ar",
-            &rate.to_string(),
-            "-",
-        ])
+fn ffmpeg_decode(path: &Path, partner: &Path, rate: u32, ch: u16) -> Vec<i16> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-i", path.to_str().unwrap()]);
+    if ch == 6 {
+        // 5.1 with distinct channels (see the module docs). `apad` keeps
+        // the partner from cutting the file short; amerge stops at the
+        // file's own end.
+        let graph = format!(
+            "[0:a]aresample={rate},aformat=sample_fmts=fltp:channel_layouts=stereo,asplit=2[f][g];\
+             [1:a]aresample={rate},aformat=sample_fmts=fltp:channel_layouts=stereo,apad[r];\
+             [g]pan=mono|c0=0.5*c0+0.5*c1,asplit=2[c][l];\
+             [c]adelay=13[cd];\
+             [l]lowpass=f=120,lowpass=f=120[lfe];\
+             [f][cd][r][lfe]amerge=inputs=4,pan=6c|c0=c0|c1=c2|c2=c1|c3=c3|c4=c4|c5=c5[out]"
+        );
+        cmd.args(["-i", partner.to_str().unwrap(), "-filter_complex", &graph]);
+        cmd.args(["-map", "[out]", "-f", "s16le", "-"]);
+    } else {
+        cmd.args(["-f", "s16le", "-ac", &ch.to_string(), "-ar", &rate.to_string(), "-"]);
+    }
+    let out = cmd
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke ffmpeg on {}: {e}", path.display()));
     out.stdout
@@ -559,7 +571,8 @@ fn corpus_parity_sweep() {
                     let path = &files[fi];
                     let cfg = configs[ci];
                     let rel = path.strip_prefix(&root).unwrap();
-                    let samples = ffmpeg_decode(path, cfg.rate, cfg.ch);
+                    let partner = &files[(fi + 1) % files.len()];
+                    let samples = ffmpeg_decode(path, partner, cfg.rate, cfg.ch);
                     let raw: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
                     let per_q: UnitResult = qualities
                         .iter()

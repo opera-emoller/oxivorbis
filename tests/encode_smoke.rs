@@ -30,7 +30,7 @@ fn encode_silence_mono44_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(44100),
         SampleRate::HZ_44100,
-        Channels::Mono,
+        Channels::MONO,
         &Options::default(),
     );
     check_ogg(&bytes);
@@ -41,7 +41,7 @@ fn encode_silence_mono48_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(48000),
         SampleRate::HZ_48000,
-        Channels::Mono,
+        Channels::MONO,
         &Options::default(),
     );
     check_ogg(&bytes);
@@ -52,7 +52,7 @@ fn encode_silence_stereo44_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(44100 * 2),
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     check_ogg(&bytes);
@@ -63,7 +63,7 @@ fn encode_silence_stereo48_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(48000 * 2),
         SampleRate::HZ_48000,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     check_ogg(&bytes);
@@ -75,7 +75,7 @@ fn encode_sine_stereo44_does_not_panic() {
     let bytes = oxivorbis::encode(
         &samples,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     check_ogg(&bytes);
@@ -86,7 +86,7 @@ fn lewton_can_decode_our_silence_mono44() {
     let bytes = oxivorbis::encode(
         &silence(44100),
         SampleRate::HZ_44100,
-        Channels::Mono,
+        Channels::MONO,
         &Options::default(),
     );
     let cursor = std::io::Cursor::new(bytes);
@@ -118,7 +118,7 @@ fn lewton_can_decode_our_silence_stereo44() {
     let bytes = oxivorbis::encode(
         &silence(44100 * 2),
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     let cursor = std::io::Cursor::new(bytes);
@@ -156,14 +156,14 @@ fn explicit_q5_matches_default_and_others_decode() {
     let a = oxivorbis::encode(
         &samples,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
-    let b = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::Stereo, &at(5.0));
+    let b = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::STEREO, &at(5.0));
     assert_eq!(a, b);
     let mut prev_len = 0;
     for q in [-1.0f32, -0.5, 0.0, 2.5, 6.0, 10.0] {
-        let bytes = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::Stereo, &at(q));
+        let bytes = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::STEREO, &at(q));
         check_ogg(&bytes);
         assert!(bytes.len() > prev_len, "q{q} not larger than lower quality");
         prev_len = bytes.len();
@@ -202,13 +202,23 @@ fn rate_and_channel_conversions() {
         "unsupported sample rate 200001"
     );
     assert_eq!(SampleRate::try_from(48000).unwrap().hz(), 48000);
-    assert_eq!(Channels::try_from(2u16), Ok(Channels::Stereo));
-    assert_eq!(Channels::Mono.count(), 1);
-    assert!(Channels::try_from(3u16).is_err());
+    assert_eq!(Channels::try_from(2u16), Ok(Channels::STEREO));
+    assert_eq!(Channels::MONO.count(), 1);
+    assert_eq!(Channels::try_from(6u16), Ok(Channels::SURROUND_5_1));
+    assert_eq!(Channels::try_from(3u16).unwrap().count(), 3);
+    assert_eq!(Channels::try_from(255u16), Ok(Channels::MAX));
+    assert_eq!(u16::from(Channels::SURROUND_5_1), 6);
+    assert_eq!(Channels::STEREO.to_string(), "2 channels");
+    assert_eq!(Channels::MONO.to_string(), "1 channel");
+    assert!(Channels::try_from(256u16).is_err());
     assert_eq!(
         Channels::try_from(0u16).unwrap_err().to_string(),
         "unsupported channel count 0"
     );
+    // Every libvorbis channel count, and nothing else.
+    for n in 0..=300u16 {
+        assert_eq!(Channels::new(n).is_some(), (1..=255).contains(&n), "{n}");
+    }
 }
 
 /// Default output is deterministic: fixed serial, oxivorbis vendor, no
@@ -219,13 +229,13 @@ fn default_headers_are_deterministic() {
     let a = oxivorbis::encode(
         &pcm,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     let b = oxivorbis::encode(
         &pcm,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     assert_eq!(a, b);
@@ -250,7 +260,7 @@ fn options_set_serial_vendor_and_comments() {
         .with_vendor("my vendor")
         .with_comment("TITLE", "Tone")
         .with_comment("ARTIST", "A=B");
-    let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
+    let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &opts);
     assert_eq!(
         u32::from_le_bytes(ogg[14..18].try_into().unwrap()),
         0xDEAD_BEEF
@@ -269,7 +279,7 @@ fn options_set_serial_vendor_and_comments() {
     let plain = oxivorbis::encode(
         &pcm,
         SampleRate::HZ_44100,
-        Channels::Stereo,
+        Channels::STEREO,
         &Options::default(),
     );
     assert_eq!(audio_packets(&ogg), audio_packets(&plain));

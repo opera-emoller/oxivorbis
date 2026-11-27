@@ -96,8 +96,8 @@ const COMBOS: [(u32, usize); 4] = [(44100, 1), (44100, 2), (48000, 1), (48000, 2
 const GRID_RATES: &[u32] = &[
     1, 2, 100, 1000, 4000, 7999, 8000, 8001, 8999, 9000, 9001, 11025, 12000, 14999, 15000, 15001,
     16000, 18999, 19000, 19001, 22050, 24000, 25999, 26000, 26001, 32000, 37800, 39999, 40000,
-    40001, 44056, 44100, 48000, 49999, 50000, 50001, 64000, 88200, 96000, 176400, 192000, 199999,
-    200000, 200001, 1_000_000,
+    40001, 44056, 44100, 48000, 49999, 50000, 50001, 64000, 69999, 70000, 70001, 88200, 96000,
+    176400, 192000, 199999, 200000, 200001, 1_000_000,
 ];
 
 fn base_setting_for(q: f32) -> Option<f64> {
@@ -146,7 +146,7 @@ fn templates_cover_every_rate_and_quality() {
         );
         assert_eq!(tpl.quality_mapping[tpl.mappings], 1.0, "{}", tpl.name);
     }
-    for ch in [1usize, 2] {
+    for ch in [1usize, 2, 3, 6, 7, 255] {
         let mut ranges: Vec<(i64, i64)> = t::SETUP_LIST
             .iter()
             .filter(|t| t.coupling_restriction == -1 || t.coupling_restriction as usize == ch)
@@ -165,7 +165,7 @@ fn templates_cover_every_rate_and_quality() {
         assert_eq!(ranges.iter().map(|r| r.1).max(), Some(MAX_RATE as i64));
     }
     for rate in [MIN_RATE, 8000, 22050, 44100, MAX_RATE] {
-        for ch in [1, 2] {
+        for ch in [1, 2, 6, MAX_CHANNELS] {
             for q in [MIN_BASE_QUALITY, 0.0, 0.5, 1.0] {
                 assert!(select_template(q, rate, ch).is_some(), "{rate} {ch} {q}");
             }
@@ -192,7 +192,7 @@ fn libvorbis_oob_inputs_are_exactly_known() {
         (48000, false),
         (96000, false),
     ] {
-        for ch in [1, 2] {
+        for ch in [1, 2, 6] {
             let oob: Vec<u32> = (lo..=hi)
                 .filter(|&b| is_libvorbis_oob(f32::from_bits(b), rate, ch))
                 .collect();
@@ -234,6 +234,35 @@ fn template_selection_edges() {
     for &(rate, fam) in cases {
         assert_eq!(name(rate, 2), format!("{fam}_STEREO"), "{rate}");
         assert_eq!(name(rate, 1), format!("{fam}_UNCOUPLED"), "{rate}");
+        for ch in [3, 4, 5, 7, 8, MAX_CHANNELS] {
+            assert_eq!(name(rate, ch), format!("{fam}_UNCOUPLED"), "{rate} {ch} ch");
+        }
+        // 6 channels: the 5.1 template at 40..=70 kHz (ahead of the
+        // uncoupled 44 and X templates in setup_list), else uncoupled.
+        let six = if (40_000..=70_000).contains(&rate) {
+            "44_51".to_string()
+        } else {
+            format!("{fam}_UNCOUPLED")
+        };
+        assert_eq!(name(rate, 6), six, "{rate} 6 ch");
+    }
+    for (rate, want) in [
+        (39_999, "32_UNCOUPLED"),
+        (40_000, "44_51"),
+        (60_000, "44_51"),
+        (70_000, "44_51"),
+        (70_001, "X_UNCOUPLED"),
+    ] {
+        assert_eq!(name(rate, 6), want, "{rate} 6 ch");
+    }
+    // The 5.1 template covers every quality (its mapping is the 44.1 kHz
+    // one, -0.1..=1.0), so 6 channels never fall through to uncoupled.
+    for i in -10..=100 {
+        let q = i as f32 / 100.0;
+        assert_eq!(
+            t::SETUP_LIST[select_template(q, 48_000, 6).unwrap().0].name,
+            "44_51"
+        );
     }
 }
 
@@ -340,7 +369,11 @@ fn quality_oracle_grid() {
     let mut checked = 0usize;
     let mut skipped_oob = 0usize;
     let mut failures = Vec::new();
-    let combos = GRID_RATES.iter().flat_map(|&r| [(r, 1usize), (r, 2)]);
+    // Mono, stereo, 5.1 (coupled at 40..=70 kHz, uncoupled elsewhere) and
+    // uncoupled 3 and 255 channels.
+    let combos = GRID_RATES
+        .iter()
+        .flat_map(|&r| [1usize, 2, 3, 6, 255].map(|ch| (r, ch)));
     for (rate, ch) in combos {
         // libvorbis reads out of bounds for these (undefined output; at
         // 1 Hz it can even crash dump_params); see `is_libvorbis_oob`.

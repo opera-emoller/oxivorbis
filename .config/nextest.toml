@@ -14,9 +14,12 @@ slow-timeout = { period = "60s" }
 # silence, ~20 s each in a debug build on an M4), oracle_parity_long::*
 # (30-120 s of noise/transients/chirps) and the short-input sweeps (a few
 # hundred oracle round trips each). On a loaded 2-4 core CI runner these
-# take several times longer, so allow up to 4 min each.
+# take several times longer, so allow up to 4 min each. The same goes for
+# the multichannel parity cases (up to 10 s of 8 channels, or 255
+# channels, through the -O0 oracle) and the setup-header / quality-grid
+# sweeps, which run thousands of oracle round trips at up to 255 channels.
 [[profile.default.overrides]]
-filter = 'test(oracle_parity_long) | test(oracle_parity_short_input::)'
+filter = 'test(oracle_parity_long) | test(oracle_parity_short_input::) | test(oracle_parity_multichannel::) | test(oracle_setup_header_sweep) | test(quality_oracle_grid)'
 slow-timeout = { period = "60s", terminate-after = 4 }
 
 # The streaming chunking-invariance tests re-encode each signal under many

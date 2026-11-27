@@ -141,17 +141,19 @@ struct BlockJob {
     /// replaces it with the channel's spectra (see [`block_spectra`]).
     pcm: Vec<Vec<f32>>,
     /// Per channel, the clamped local ampmax (set by pass A).
-    local_ampmax: [f32; 2],
+    local_ampmax: Vec<f32>,
     mode: BlockMode,
     blocktype: BlockType,
     granulepos: u64,
     eos: bool,
 }
 
-/// Upper bound on a parallel batch, in long-block samples: 256 blocks of
-/// 2048 (q0..q10) or 128 of 4096 (q-1), i.e. about 6 s of audio at
-/// 44.1 kHz and 4 MiB of windowed stereo PCM (spectra after pass A) per
-/// batch, whatever the thread count.
+/// Upper bound on a parallel batch, in long-block samples per channel
+/// pair: 256 blocks of 2048 (q0..q10) or 128 of 4096 (q-1), i.e. about
+/// 6 s of audio at 44.1 kHz and 4 MiB of windowed stereo PCM (spectra
+/// after pass A) per batch, whatever the thread count. With more than two
+/// channels the batch shrinks in proportion, so a batch never holds more
+/// than those 4 MiB (and at least one block).
 #[cfg(feature = "parallel")]
 const MAX_BATCH_SAMPLES: usize = 256 * 2048;
 
@@ -162,8 +164,11 @@ const MAX_BATCH_SAMPLES: usize = 256 * 2048;
 /// latency and memory independent of the core count. About three batches
 /// are alive at once (one being filled, one in pass A, one in pass C).
 #[cfg(feature = "parallel")]
-fn default_batch(long_block: usize) -> usize {
-    (32 * rayon::current_num_threads().max(1)).min(MAX_BATCH_SAMPLES / long_block)
+fn default_batch(long_block: usize, channels: usize) -> usize {
+    let pairs = channels.div_ceil(2);
+    (32 * rayon::current_num_threads().max(1))
+        .min(MAX_BATCH_SAMPLES / (long_block * pairs))
+        .max(1)
 }
 
 /// The result of a spawned pass, still being computed.
@@ -215,8 +220,9 @@ pub(crate) struct EncoderCore {
     pcm_current: i64,
     /// Frames appended to `pcm` but not yet passed to `wrote` (< 64).
     unwritten: usize,
-    /// Left sample of a stereo frame split across `write` calls.
-    partial: Option<f32>,
+    /// The leading samples (fewer than `ch`) of a frame split across
+    /// `write` calls, converted.
+    partial: Vec<f32>,
     /// `v->preextrapolate`.
     preextrapolated: bool,
     /// `v->eofflag`: 0 = open, > 0 = absolute end of real audio, -1 = done.
@@ -307,10 +313,7 @@ impl EncoderCore {
         vendor: &[u8],
         comments: &[Vec<u8>],
     ) -> Self {
-        let ch = match channels {
-            Channels::Mono => 1usize,
-            Channels::Stereo => 2usize,
-        };
+        let ch = channels.count() as usize;
         let rate_hz = rate.hz() as i64;
 
         let setup = encoder_setup_for_key(
@@ -398,7 +401,7 @@ impl EncoderCore {
             base: 0,
             pcm_current: center0,
             unwritten: 0,
-            partial: None,
+            partial: Vec::with_capacity(ch - 1),
             preextrapolated: false,
             eofflag: 0,
             env: EnvelopeLookup::new(ch, minenergy),
@@ -423,7 +426,7 @@ impl EncoderCore {
             #[cfg(feature = "parallel")]
             jobs: Vec::new(),
             #[cfg(feature = "parallel")]
-            batch: default_batch(bs.long),
+            batch: default_batch(bs.long, ch),
             #[cfg(feature = "parallel")]
             pass_a: None,
             #[cfg(feature = "parallel")]
@@ -442,44 +445,52 @@ impl EncoderCore {
     // Input
     // -----------------------------------------------------------------
 
-    /// Append interleaved samples (any count; a trailing half stereo frame
-    /// is held until the next call) and run every block that becomes
+    /// Append interleaved samples (any count; a trailing partial frame is
+    /// held until the next call) and run every block that becomes
     /// available.
     pub(crate) fn feed<T: Copy>(&mut self, samples: &[T], conv: impl Fn(T) -> f32) {
         debug_assert_eq!(self.eofflag, 0, "feed after finish");
-        let mut s = samples;
-        if let Some(left) = self.partial {
-            let Some((&right, rest)) = s.split_first() else {
-                return;
-            };
-            self.partial = None;
-            self.pcm[0].push(left);
-            self.pcm[1].push(conv(right));
-            self.frames_appended(1);
-            s = rest;
-        }
         let ch = self.ch;
+        let mut s = samples;
+        if !self.partial.is_empty() {
+            let need = (ch - self.partial.len()).min(s.len());
+            self.partial.extend(s[..need].iter().map(|&x| conv(x)));
+            s = &s[need..];
+            if self.partial.len() < ch {
+                return;
+            }
+            for (buf, &v) in self.pcm.iter_mut().zip(&self.partial) {
+                buf.push(v);
+            }
+            self.partial.clear();
+            self.frames_appended(1);
+        }
         let frames = s.len() / ch;
         let mut i = 0;
         while i < frames {
             let n = (ANALYSIS_CHUNK - self.unwritten).min(frames - i);
             let chunk = &s[i * ch..(i + n) * ch];
-            if ch == 1 {
-                self.pcm[0].extend(chunk.iter().map(|&x| conv(x)));
-            } else {
-                let (l, r) = self.pcm.split_at_mut(1);
-                let (l, r) = (&mut l[0], &mut r[0]);
-                for f in chunk.chunks_exact(2) {
-                    l.push(conv(f[0]));
-                    r.push(conv(f[1]));
+            match ch {
+                1 => self.pcm[0].extend(chunk.iter().map(|&x| conv(x))),
+                2 => {
+                    let (l, r) = self.pcm.split_at_mut(1);
+                    let (l, r) = (&mut l[0], &mut r[0]);
+                    for f in chunk.chunks_exact(2) {
+                        l.push(conv(f[0]));
+                        r.push(conv(f[1]));
+                    }
+                }
+                _ => {
+                    for (c, buf) in self.pcm.iter_mut().enumerate() {
+                        buf.extend(chunk[c..].iter().step_by(ch).map(|&x| conv(x)));
+                    }
                 }
             }
             self.frames_appended(n);
             i += n;
         }
-        if s.len() % ch != 0 {
-            self.partial = Some(conv(s[s.len() - 1]));
-        }
+        let rest = &s[frames * ch..];
+        self.partial.extend(rest.iter().map(|&x| conv(x)));
     }
 
     fn frames_appended(&mut self, n: usize) {
@@ -528,9 +539,9 @@ impl EncoderCore {
         if self.output_returned {
             self.ogg.clear_output();
         }
-        // A dangling half stereo frame can't be encoded; drop it (the
-        // one-shot API has always ignored a trailing odd sample).
-        self.partial = None;
+        // A dangling partial frame can't be encoded; drop it (the one-shot
+        // API has always ignored a trailing incomplete frame).
+        self.partial.clear();
         if self.unwritten > 0 {
             self.wrote(self.unwritten);
         }
@@ -928,7 +939,7 @@ impl EncoderCore {
         self.dump_first_block(&pcm[0], block);
         self.jobs.push(BlockJob {
             pcm,
-            local_ampmax: [0.0; 2],
+            local_ampmax: vec![0.0; self.ch],
             mode: self.block_mode(block),
             blocktype: block.blocktype,
             granulepos: block.granulepos,
@@ -1332,7 +1343,7 @@ mod tests {
         let pcm: Vec<i16> = (0..44100 * 2)
             .map(|i: i32| (i % 65536 - 32768) as i16)
             .collect();
-        let mut core = EncoderCore::new(SampleRate::HZ_44100, Channels::Stereo, 0.5, 1, b"v", &[]);
+        let mut core = EncoderCore::new(SampleRate::HZ_44100, Channels::STEREO, 0.5, 1, b"v", &[]);
         core.feed(&pcm, i16_to_f32);
         let log = core.w_log.clone();
         core.finish();
@@ -1357,11 +1368,11 @@ mod tests {
         {
             let q = [0.5f32, 0.2, -0.05][k % 3];
             let channels = if k % 2 == 0 {
-                Channels::Stereo
+                Channels::STEREO
             } else {
-                Channels::Mono
+                Channels::MONO
             };
-            let ch = if channels == Channels::Stereo { 2 } else { 1 };
+            let ch = if channels == Channels::STEREO { 2 } else { 1 };
             let pcm = signal(&mut rng, frames, ch);
             let oneshot = one_shot(&pcm, SampleRate::HZ_44100, channels, q);
             let chunked = streaming(&pcm, SampleRate::HZ_44100, channels, q, &mut rng);
@@ -1374,7 +1385,7 @@ mod tests {
     fn buffer_is_bounded() {
         for q in [0.5f32, -0.1] {
             let mut core =
-                EncoderCore::new(SampleRate::HZ_44100, Channels::Stereo, q, 1, b"v", &[]);
+                EncoderCore::new(SampleRate::HZ_44100, Channels::STEREO, q, 1, b"v", &[]);
             let mut rng = Rng(3);
             let mut max = 0;
             for _ in 0..200 {

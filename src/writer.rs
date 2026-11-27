@@ -36,12 +36,12 @@ use std::io::{self, Write};
 ///
 /// # fn main() -> std::io::Result<()> {
 /// let pcm = vec![0i16; 44_100 * 2]; // 1 s of stereo silence
-/// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Stereo, &Options::default())?;
+/// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::STEREO, &Options::default())?;
 /// for chunk in pcm.chunks(4096) {
 ///     w.write_i16(chunk)?;
 /// }
 /// let ogg: Vec<u8> = w.finish()?;
-/// assert_eq!(ogg, oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default()));
+/// assert_eq!(ogg, oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &Options::default()));
 /// # Ok(())
 /// # }
 /// ```
@@ -54,7 +54,7 @@ use std::io::{self, Write};
 ///
 /// # fn main() -> std::io::Result<()> {
 /// let file = BufWriter::new(File::create("out.ogg")?);
-/// let mut w = OggWriter::new(file, SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+/// let mut w = OggWriter::new(file, SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
 /// w.write_f32(&[0.0; 48_000])?;
 /// w.finish()?;
 /// # Ok(())
@@ -79,7 +79,7 @@ impl<W: Write> OggWriter<W> {
     /// ```
     /// use oxivorbis::{Channels, OggWriter, Options, SampleRate};
     ///
-    /// let w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Mono, &Options::default())?;
+    /// let w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::MONO, &Options::default())?;
     /// let ogg = w.finish()?; // an empty but complete stream
     /// assert_eq!(&ogg[..4], b"OggS");
     /// # Ok::<(), std::io::Error>(())
@@ -103,7 +103,7 @@ impl<W: Write> OggWriter<W> {
     /// ```
     /// use oxivorbis::{Channels, Encoder, OggWriter, Options, SampleRate};
     ///
-    /// let enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+    /// let enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
     /// let mut w = OggWriter::from_encoder(enc, Vec::new());
     /// w.write_i16(&[0; 1024])?;
     /// let ogg = w.finish()?;
@@ -119,7 +119,7 @@ impl<W: Write> OggWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Stereo, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::STEREO, &Options::default())?;
     /// w.write_i16(&[0, 0, 100, -100])?; // two stereo frames
     /// # w.finish()?;
     /// # Ok::<(), std::io::Error>(())
@@ -134,7 +134,7 @@ impl<W: Write> OggWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
     /// w.write_f32(&[0.0, 0.25, 0.5])?;
     /// # w.finish()?;
     /// # Ok::<(), std::io::Error>(())
@@ -151,7 +151,7 @@ impl<W: Write> OggWriter<W> {
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
     /// let (left, right) = (vec![0.1f32; 1000], vec![-0.1f32; 1000]);
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Stereo, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::STEREO, &Options::default())?;
     /// w.write_planar_f32(&[&left, &right])?;
     /// # w.finish()?;
     /// # Ok::<(), std::io::Error>(())
@@ -167,7 +167,7 @@ impl<W: Write> OggWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Mono, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::MONO, &Options::default())?;
     /// w.write_planar_i16(&[vec![0i16; 1000]])?;
     /// # w.finish()?;
     /// # Ok::<(), std::io::Error>(())
@@ -178,13 +178,13 @@ impl<W: Write> OggWriter<W> {
     }
 
     /// End the stream: encode the buffered input, write the remaining
-    /// pages, flush the sink and return it. A stereo sample still waiting
-    /// for its pair is dropped, as in [`Encoder::finish`]. On error the
+    /// pages, flush the sink and return it. A partial frame still waiting
+    /// for the rest of its samples is dropped, as in [`Encoder::finish`]. On error the
     /// sink is dropped.
     ///
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Mono, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::MONO, &Options::default())?;
     /// w.write_i16(&[0; 44_100])?;
     /// let ogg: Vec<u8> = w.finish()?;
     /// # assert_eq!(&ogg[..4], b"OggS");
@@ -201,7 +201,7 @@ impl<W: Write> OggWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
-    /// let w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Mono, &Options::default())?;
+    /// let w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::MONO, &Options::default())?;
     /// assert!(w.get_ref().is_empty()); // headers go out with the first write
     /// # Ok::<(), std::io::Error>(())
     /// ```
@@ -215,7 +215,7 @@ impl<W: Write> OggWriter<W> {
     /// ```
     /// # use oxivorbis::{Channels, OggWriter, Options, SampleRate};
     /// use std::io::Write;
-    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Mono, &Options::default())?;
+    /// let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::MONO, &Options::default())?;
     /// w.write_i16(&[0; 44_100])?;
     /// w.get_mut().flush()?;
     /// # Ok::<(), std::io::Error>(())
@@ -236,7 +236,7 @@ const SCRATCH: usize = 2048;
 /// Writes may split samples and frames anywhere: an odd trailing byte is
 /// carried over and joined with the first byte of the next write.
 /// [`finish`](Self::finish) ends the stream (dropping a dangling odd byte,
-/// and a dangling unpaired stereo sample) and returns the sink.
+/// and a dangling partial frame) and returns the sink.
 ///
 /// [`Write::flush`] flushes the sink. It cannot force out audio the
 /// encoder is still holding; only `finish` does that.
@@ -254,10 +254,10 @@ const SCRATCH: usize = 2048;
 /// let pcm = vec![0i16; 44_100 * 2];
 /// let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
 ///
-/// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::Stereo, &Options::default())?;
+/// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_44100, Channels::STEREO, &Options::default())?;
 /// std::io::copy(&mut &bytes[..], &mut w)?;
 /// let ogg = w.finish()?;
-/// assert_eq!(ogg, oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default()));
+/// assert_eq!(ogg, oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &Options::default()));
 /// # Ok(())
 /// # }
 /// ```
@@ -271,7 +271,7 @@ impl<W: Write> S16LeWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, Options, S16LeWriter, SampleRate};
-    /// let w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+    /// let w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
     /// # w.finish()?;
     /// # Ok::<(), std::io::Error>(())
     /// ```
@@ -290,7 +290,7 @@ impl<W: Write> S16LeWriter<W> {
     /// ```
     /// # use oxivorbis::{Channels, Options, S16LeWriter, SampleRate};
     /// use std::io::Write;
-    /// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+    /// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
     /// w.write_all(&[0x00, 0x10, 0xff])?; // one sample and a dangling byte
     /// let ogg = w.finish()?;
     /// # assert_eq!(&ogg[..4], b"OggS");
@@ -304,7 +304,7 @@ impl<W: Write> S16LeWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, Options, S16LeWriter, SampleRate};
-    /// let w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+    /// let w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
     /// assert!(w.get_ref().is_empty());
     /// # Ok::<(), std::io::Error>(())
     /// ```
@@ -316,7 +316,7 @@ impl<W: Write> S16LeWriter<W> {
     ///
     /// ```
     /// # use oxivorbis::{Channels, Options, S16LeWriter, SampleRate};
-    /// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Mono, &Options::default())?;
+    /// let mut w = S16LeWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::MONO, &Options::default())?;
     /// let _sink: &mut Vec<u8> = w.get_mut();
     /// # Ok::<(), std::io::Error>(())
     /// ```

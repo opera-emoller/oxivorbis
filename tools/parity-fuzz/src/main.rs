@@ -124,11 +124,7 @@ fn oxivorbis_encode<S: Sample>(
 ) -> Vec<u8> {
     debug_assert!(quality_supported(quality));
     let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
-    let c = match channels {
-        1 => oxivorbis::Channels::Mono,
-        2 => oxivorbis::Channels::Stereo,
-        _ => unreachable!("channels validated at CLI"),
-    };
+    let c = oxivorbis::Channels::new(channels).expect("channels validated at CLI");
     // Stream through `Encoder` in pseudo-random chunk sizes (seeded by the
     // input length, so a case stays reproducible): every case then checks
     // chunking invariance against the oracle too. Sizes include 1 and odd
@@ -175,8 +171,8 @@ fn oxivorbis_encode_ctl<S: Sample>(
 ) -> Result<Vec<u8>, String> {
     let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
     let c = match channels {
-        1 => oxivorbis::Channels::Mono,
-        _ => oxivorbis::Channels::Stereo,
+        1 => oxivorbis::Channels::MONO,
+        _ => oxivorbis::Channels::STEREO,
     };
     let mut opts = oxivorbis::Options::default()
         .with_quality(oxivorbis::Quality::from_base_quality(quality).expect("validated"))
@@ -348,8 +344,8 @@ fn parse_args() -> Config {
         }
     }
     for &c in &chans {
-        if c != 1 && c != 2 {
-            eprintln!("parity-fuzz: unsupported channel count {c} (1 or 2)");
+        if oxivorbis::Channels::new(c).is_none() {
+            eprintln!("parity-fuzz: unsupported channel count {c} (1..=255)");
             std::process::exit(2);
         }
     }

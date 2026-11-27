@@ -38,7 +38,7 @@ fn q5_header_packets() -> Vec<Vec<u8>> {
     let ogg = oxivorbis::encode(
         &[0i16; 1024],
         oxivorbis::SampleRate::HZ_44100,
-        oxivorbis::Channels::Mono,
+        oxivorbis::Channels::MONO,
         &oxivorbis::Options::default(),
     );
     let mut reader = ogg::PacketReader::new(std::io::Cursor::new(ogg));

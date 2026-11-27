@@ -9,10 +9,10 @@ use common::{ALL_SIGS, Rng, Sig, ch_count, rate_hz, signal_f32, signal_i16};
 use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::HZ_44100, Channels::Mono),
-    (SampleRate::HZ_44100, Channels::Stereo),
-    (SampleRate::HZ_48000, Channels::Mono),
-    (SampleRate::HZ_48000, Channels::Stereo),
+    (SampleRate::HZ_44100, Channels::MONO),
+    (SampleRate::HZ_44100, Channels::STEREO),
+    (SampleRate::HZ_48000, Channels::MONO),
+    (SampleRate::HZ_48000, Channels::STEREO),
 ];
 
 fn opts(q: f32) -> Options {
@@ -169,6 +169,60 @@ fn chunking_invariance_q5() {
     check_invariance(5.0);
 }
 
+/// More than two channels: 5.1 (coupled at 44.1/48 kHz, uncoupled at
+/// 32 kHz) and uncoupled 3, 5 and 8 channels. Random chunkings split
+/// frames anywhere, including inside a frame across several writes.
+#[test]
+fn chunking_invariance_multichannel() {
+    let configs: [(u32, u16, f32); 7] = [
+        (44100, 6, 5.0),
+        (48000, 6, -1.0),
+        (44100, 6, 2.0),
+        (32000, 6, 5.0),
+        (44100, 3, 5.0),
+        (22050, 5, -1.0),
+        (48000, 8, 10.0),
+    ];
+    let mut seed = 500u64;
+    for (hz, n, q) in configs {
+        let rate = SampleRate::new(hz).unwrap();
+        let channels = Channels::new(n).unwrap();
+        let ch = n as usize;
+        let o = opts(q);
+        for sig in ALL_SIGS {
+            for frames in [0, 1, 63, 65, 2113, 3 * bs1(q) + 1, 20_000] {
+                seed += 1;
+                let pcm = signal_i16(sig, frames, ch, hz, seed);
+                let want = oxivorbis::encode(&pcm, rate, channels, &o);
+                let mut cs = vec![
+                    Chunking::Random(seed),
+                    Chunking::Split(n_lpc(q) * ch - 1),
+                    Chunking::Split(n_lpc(q) * ch + 1),
+                ];
+                if frames <= 2113 {
+                    cs.push(Chunking::Ones);
+                }
+                for c in cs {
+                    let got = stream_i16(&pcm, rate, channels, &o, &c);
+                    assert!(
+                        got == want,
+                        "i16 q{q} {hz} Hz {n} ch {sig:?} {frames} frames, {c:?}: \
+                         differs at byte {}",
+                        common::first_diff(&got, &want)
+                    );
+                }
+                let pcm = signal_f32(sig, frames, ch, hz, seed);
+                let want = oxivorbis::encode_f32(&pcm, rate, channels, &o);
+                let got = stream_f32(&pcm, rate, channels, &o, &Chunking::Random(seed ^ 7));
+                assert!(
+                    got == want,
+                    "f32 q{q} {hz} Hz {n} ch {sig:?} {frames} frames"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn chunking_invariance_q2() {
     check_invariance(2.0);
@@ -216,8 +270,8 @@ fn mixed_i16_and_f32_writes() {
     let pcm = signal_i16(Sig::Transients, 20_000, 2, 44100, 5);
     let floats: Vec<f32> = pcm.iter().map(|&x| x as f32 / 32768.0).collect();
     let o = Options::default();
-    let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o);
-    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
+    let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &o);
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &o);
     let mut out = Vec::new();
     let mut i = 0;
     let mut rng = Rng(77);
@@ -239,7 +293,7 @@ fn mixed_i16_and_f32_writes() {
 #[test]
 fn headers_first_and_trailing_half_frame() {
     let o = Options::default();
-    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &o);
     let headers = enc.write(&[]).to_vec();
     assert_eq!(&headers[..4], b"OggS");
     assert!(enc.write(&[]).is_empty());
@@ -248,10 +302,10 @@ fn headers_first_and_trailing_half_frame() {
     out.extend_from_slice(enc.write(&pcm));
     out.extend_from_slice(enc.write(&[123]));
     out.extend_from_slice(&enc.finish());
-    assert!(out == oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &o));
     let mut odd = pcm.clone();
     odd.push(123);
-    assert!(out == oxivorbis::encode(&odd, SampleRate::HZ_44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&odd, SampleRate::HZ_44100, Channels::STEREO, &o));
 }
 
 /// A 60 s input produces almost all of its pages before `finish` (the
@@ -263,7 +317,7 @@ fn streaming_emits_pages_before_finish() {
     let rate = SampleRate::HZ_44100;
     let pcm = signal_i16(Sig::Noise, 60 * 44100, 2, 44100, 9);
     let o = Options::default();
-    let mut enc = Encoder::new(rate, Channels::Stereo, &o);
+    let mut enc = Encoder::new(rate, Channels::STEREO, &o);
     // The parallel build holds back a few batches; use small ones here.
     #[cfg(feature = "parallel")]
     enc.set_parallel_batch(16);
@@ -280,7 +334,7 @@ fn streaming_emits_pages_before_finish() {
     }
     let before_finish = out.len();
     out.extend_from_slice(&enc.finish());
-    assert!(out == oxivorbis::encode(&pcm, rate, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&pcm, rate, Channels::STEREO, &o));
     let at = first_audio_page_at.expect("no pages before finish");
     assert!(
         at < 20,
@@ -294,12 +348,44 @@ fn streaming_emits_pages_before_finish() {
     );
 }
 
+/// 5.1 streams through `write` page by page too, and its analysis buffer
+/// stays as bounded (in frames) as stereo's.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
+fn surround_streams_with_bounded_buffer() {
+    let rate = SampleRate::HZ_48000;
+    let o = Options::default();
+    let mut enc = Encoder::new(rate, Channels::SURROUND_5_1, &o);
+    #[cfg(feature = "parallel")]
+    enc.set_parallel_batch(16);
+    let second = signal_i16(Sig::Transients, 48_000, 6, 48_000, 11);
+    let mut out = Vec::new();
+    let mut max = 0;
+    let mut first_audio_at = None;
+    for s in 0..120 {
+        for c in second.chunks(4801) {
+            out.extend_from_slice(enc.write(c));
+            max = max.max(enc.buffered_frames());
+        }
+        if first_audio_at.is_none() && out.len() > 40_000 {
+            first_audio_at = Some(s);
+        }
+    }
+    let before_finish = out.len();
+    out.extend_from_slice(&enc.finish());
+    assert!(max <= 12_000, "buffered up to {max} frames");
+    assert!(first_audio_at.is_some_and(|s| s < 20), "{first_audio_at:?}");
+    assert!(before_finish as f64 > 0.95 * out.len() as f64);
+    let pcm: Vec<i16> = (0..120).flat_map(|_| second.iter().copied()).collect();
+    assert!(out == oxivorbis::encode(&pcm, rate, Channels::SURROUND_5_1, &o));
+}
+
 /// The analysis buffer stays bounded independent of input length.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
 fn buffer_is_bounded_over_10_minutes() {
     for (q, minutes, limit) in [(5.0f32, 10, 12_000), (-1.0, 2, 20_000)] {
-        let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Stereo, &opts(q));
+        let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::STEREO, &opts(q));
         let mut max = 0;
         let second = signal_i16(Sig::Transients, 48_000, 2, 48_000, 3);
         for _ in 0..minutes * 60 {
@@ -333,7 +419,7 @@ fn extreme_f32_does_not_panic() {
                     }
                 })
                 .collect();
-            let ogg = oxivorbis::encode_f32(&s, SampleRate::HZ_44100, Channels::Stereo, &opts(q));
+            let ogg = oxivorbis::encode_f32(&s, SampleRate::HZ_44100, Channels::STEREO, &opts(q));
             assert_eq!(&ogg[..4], b"OggS");
         }
     }
@@ -350,9 +436,9 @@ fn parallel_batch_sizes_give_identical_bytes() {
     ] {
         let pcm = signal_i16(sig, 5 * 44100, 2, 44100, 4);
         let o = opts(q);
-        let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o);
+        let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &o);
         for batch in [1usize, 3, 256] {
-            let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
+            let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &o);
             enc.set_parallel_batch(batch);
             let mut out = Vec::new();
             for c in pcm.chunks(7777) {
@@ -360,6 +446,23 @@ fn parallel_batch_sizes_give_identical_bytes() {
             }
             out.extend_from_slice(&enc.finish());
             assert!(out == want, "q{q} batch {batch}");
+        }
+    }
+    // More than two channels: 5.1 (coupled) and 7 uncoupled channels.
+    for (n, q) in [(6u16, 2.0f32), (7, 5.0)] {
+        let channels = Channels::new(n).unwrap();
+        let pcm = signal_i16(Sig::Transients, 3 * 48000, n as usize, 48000, 5);
+        let o = opts(q);
+        let want = oxivorbis::encode(&pcm, SampleRate::HZ_48000, channels, &o);
+        for batch in [1usize, 5, 64] {
+            let mut enc = Encoder::new(SampleRate::HZ_48000, channels, &o);
+            enc.set_parallel_batch(batch);
+            let mut out = Vec::new();
+            for c in pcm.chunks(9999) {
+                out.extend_from_slice(enc.write(c));
+            }
+            out.extend_from_slice(&enc.finish());
+            assert!(out == want, "{n} ch q{q} batch {batch}");
         }
     }
 }

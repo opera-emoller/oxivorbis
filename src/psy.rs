@@ -40,9 +40,11 @@ const MAX_LINESPER: usize = 64;
 /// Q5 normal_partition is 32; older 16-partition layouts also fit. Used for
 /// stack-allocated scratch in `vp_couple_quantize_normalize`.
 const MAX_PARTITION: usize = 32;
-/// Mono or stereo for the supported input space.
+/// Channels and coupling steps `vp_couple_quantize_normalize` keeps on the
+/// stack (mono and stereo: 0 or 1 step). More channels (5.1 has four
+/// coupling steps over six channels; uncoupled streams up to 255
+/// channels) use heap scratch.
 const MAX_CH: usize = 2;
-/// Stereo Q5 has 1 coupling step; mono has 0. 2 is overkill safe.
 const MAX_COUPLING_STEPS: usize = 2;
 
 pub const P_BANDS: usize = 17;
@@ -1960,21 +1962,120 @@ pub fn vp_couple_quantize_normalize(
         postpoint = STEREO_THRESHHOLDS_LIMITED[g.coupling_postpointamp[blobno] as usize] as f32;
     }
 
-    // Stack-allocated per-block scratch. Q5 has partition <= 32, ch <= 2,
-    // coupling_steps <= 1. Fixed bounds avoid the per-call heap-alloc churn
-    // of vec![vec![0.0; partition]; ch].
     debug_assert!(
         partition <= MAX_PARTITION,
         "partition {} > MAX_PARTITION",
         partition
     );
-    debug_assert!(ch <= MAX_CH, "ch {} > MAX_CH", ch);
-    let mut raw: [[f32; MAX_PARTITION]; MAX_CH] = [[0.0; MAX_PARTITION]; MAX_CH];
-    let mut quant: [[f32; MAX_PARTITION]; MAX_CH] = [[0.0; MAX_PARTITION]; MAX_CH];
-    let mut floor_v: [[f32; MAX_PARTITION]; MAX_CH] = [[0.0; MAX_PARTITION]; MAX_CH];
-    let mut flag: [[i32; MAX_PARTITION]; MAX_CH] = [[0; MAX_PARTITION]; MAX_CH];
-    let mut nz: [i32; MAX_CH] = [0; MAX_CH];
-    let mut acc: [f32; MAX_CH + MAX_COUPLING_STEPS] = [0.0; MAX_CH + MAX_COUPLING_STEPS];
+    let params = CoupleParams {
+        n,
+        partition,
+        limit,
+        prepoint,
+        postpoint,
+        sliding_lowpass,
+        ch,
+    };
+    if ch <= MAX_CH && vi.coupling_steps <= MAX_COUPLING_STEPS {
+        // Mono and stereo: fixed-size stack scratch, so the per-block call
+        // allocates nothing.
+        let mut raw = [[0.0f32; MAX_PARTITION]; MAX_CH];
+        let mut quant = [[0.0f32; MAX_PARTITION]; MAX_CH];
+        let mut floor_v = [[0.0f32; MAX_PARTITION]; MAX_CH];
+        let mut flag = [[0i32; MAX_PARTITION]; MAX_CH];
+        let mut nz = [0i32; MAX_CH];
+        let mut acc = [0.0f32; MAX_CH + MAX_COUPLING_STEPS];
+        let mut sc = CoupleScratch {
+            raw: &mut raw,
+            quant: &mut quant,
+            floor_v: &mut floor_v,
+            flag: &mut flag,
+            nz: &mut nz,
+            acc: &mut acc,
+        };
+        couple_quantize_normalize_in(&params, p, vi, mdct, iwork, nonzero, &mut sc);
+    } else {
+        // More channels (5.1, uncoupled multichannel): one partition per
+        // channel, as libvorbis's alloca'd arrays.
+        let mut raw = vec![[0.0f32; MAX_PARTITION]; ch];
+        let mut quant = vec![[0.0f32; MAX_PARTITION]; ch];
+        let mut floor_v = vec![[0.0f32; MAX_PARTITION]; ch];
+        let mut flag = vec![[0i32; MAX_PARTITION]; ch];
+        let mut nz = vec![0i32; ch];
+        let mut acc = vec![0.0f32; ch + vi.coupling_steps];
+        let mut sc = CoupleScratch {
+            raw: &mut raw,
+            quant: &mut quant,
+            floor_v: &mut floor_v,
+            flag: &mut flag,
+            nz: &mut nz,
+            acc: &mut acc,
+        };
+        couple_quantize_normalize_in(&params, p, vi, mdct, iwork, nonzero, &mut sc);
+    }
+}
+
+/// Per-block constants of [`vp_couple_quantize_normalize`].
+struct CoupleParams {
+    n: usize,
+    partition: usize,
+    limit: i32,
+    prepoint: f32,
+    postpoint: f32,
+    sliding_lowpass: i32,
+    ch: usize,
+}
+
+/// libvorbis's per-call `raw`/`quant`/`floor`/`flag` (one partition per
+/// channel), `nz` and `acc` (`ch + coupling_steps`) arrays.
+struct CoupleScratch<'a> {
+    raw: &'a mut [[f32; MAX_PARTITION]],
+    quant: &'a mut [[f32; MAX_PARTITION]],
+    floor_v: &'a mut [[f32; MAX_PARTITION]],
+    flag: &'a mut [[i32; MAX_PARTITION]],
+    nz: &'a mut [i32],
+    acc: &'a mut [f32],
+}
+
+/// The partition loop of `_vp_couple_quantize_normalize`. Coupling steps
+/// run in order on the same per-channel arrays, so a channel that is the
+/// magnitude of several steps (5.1: L is coupled with R, C and BL) sees
+/// the previous steps' results, as in libvorbis.
+#[inline(always)]
+fn couple_quantize_normalize_in(
+    params: &CoupleParams,
+    p: &VorbisLookPsy,
+    vi: &VorbisInfoMapping0,
+    mdct: &mut [Vec<f32>],
+    iwork: &mut [Vec<i32>],
+    nonzero: &mut [i32],
+    sc: &mut CoupleScratch<'_>,
+) {
+    let CoupleParams {
+        n,
+        partition,
+        limit,
+        prepoint,
+        postpoint,
+        sliding_lowpass,
+        ch,
+    } = *params;
+    let CoupleScratch {
+        raw,
+        quant,
+        floor_v,
+        flag,
+        nz,
+        acc,
+    } = sc;
+    let (raw, quant, floor_v, flag, nz, acc) = (
+        &mut **raw,
+        &mut **quant,
+        &mut **floor_v,
+        &mut **flag,
+        &mut **nz,
+        &mut **acc,
+    );
 
     let mut i = 0;
     while i < n {
@@ -2052,10 +2153,10 @@ pub fn vp_couple_quantize_normalize(
                 // Branch-free form of libvorbis's per-line coupling: every
                 // candidate is computed and the line's case selects one, so
                 // the loop vectorizes. Each case does exactly libvorbis's ops.
-                let (raw_m, raw_a) = pair_mut(&mut raw, mi, ai);
-                let (quant_m, quant_a) = pair_mut(&mut quant, mi, ai);
-                let (flag_m, flag_a) = pair_mut(&mut flag, mi, ai);
-                let (floor_m, floor_a) = pair_mut(&mut floor_v, mi, ai);
+                let (raw_m, raw_a) = pair_mut(raw, mi, ai);
+                let (quant_m, quant_a) = pair_mut(quant, mi, ai);
+                let (flag_m, flag_a) = pair_mut(flag, mi, ai);
+                let (floor_m, floor_a) = pair_mut(floor_v, mi, ai);
                 let (iw_m, iw_a) = pair_mut(iwork, mi, ai);
                 let active = (sliding_lowpass - i as i32).clamp(0, jn as i32) as usize;
                 let dipole = (limit - i as i32).clamp(0, jn as i32) as usize;
@@ -2204,7 +2305,9 @@ mod tests {
         let mut bad = Vec::new();
         let mut ns: Vec<usize> = Vec::new();
         let mut guards: Vec<(i32, i32)> = Vec::new();
-        for ch in [1, 2] {
+        // 6: the 5.1 template at 40..=70 kHz (the 44.1 kHz psy tables, also
+        // above 50 kHz where 1-2 channels use the X templates).
+        for ch in [1, 2, 6] {
             for q in [-0.1f32, 0.0, 0.5, 1.0] {
                 let c = crate::quality::quality_config(q, rate, ch);
                 ns.extend(c.blocksizes.iter().map(|b| b / 2));

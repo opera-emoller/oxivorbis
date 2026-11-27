@@ -67,11 +67,11 @@ fn audio_bytes_and_header(ogg: &[u8]) -> (usize, [i32; 3]) {
 fn chunking_invariance_managed() {
     let mut rng = Rng(0xB17);
     for (hz, ch, mode) in [
-        (44100, Channels::Stereo, CBR),
-        (22050, Channels::Mono, BitrateMode::average(40)),
+        (44100, Channels::STEREO, CBR),
+        (22050, Channels::MONO, BitrateMode::average(40)),
         (
             48000,
-            Channels::Stereo,
+            Channels::STEREO,
             BitrateMode::QualityLimits {
                 min_kbps: Some(64),
                 max_kbps: Some(160),
@@ -115,10 +115,10 @@ fn parallel_batch_sizes_give_identical_bytes_managed() {
     let rate = SampleRate::HZ_44100;
     let pcm = music(8, 2, 44100);
     for mode in [CBR, BitrateMode::Nominal { kbps: 128 }] {
-        let o = opts(rate, Channels::Stereo, mode);
-        let want = oxivorbis::encode(&pcm, rate, Channels::Stereo, &o);
+        let o = opts(rate, Channels::STEREO, mode);
+        let want = oxivorbis::encode(&pcm, rate, Channels::STEREO, &o);
         for batch in [1usize, 5, 256] {
-            let mut enc = Encoder::new(rate, Channels::Stereo, &o);
+            let mut enc = Encoder::new(rate, Channels::STEREO, &o);
             enc.set_parallel_batch(batch);
             let mut out = Vec::new();
             for c in pcm.chunks(9999) {
@@ -137,16 +137,16 @@ fn bitrates_hit_their_targets() {
     let secs = 20;
     let pcm = music(secs, 2, 44100);
     let kbps = |o: &Options| {
-        let ogg = oxivorbis::encode(&pcm, rate, Channels::Stereo, o);
+        let ogg = oxivorbis::encode(&pcm, rate, Channels::STEREO, o);
         let (bytes, hdr) = audio_bytes_and_header(&ogg);
         (bytes as f64 * 8.0 / secs as f64 / 1000.0, hdr)
     };
     // CBR-like: within the 2 s reservoir of 96 kb/s.
-    let (k, hdr) = kbps(&opts(rate, Channels::Stereo, CBR));
+    let (k, hdr) = kbps(&opts(rate, Channels::STEREO, CBR));
     assert!((k - 96.0).abs() < 96.0 * 2.0 / secs as f64 + 1.0, "{k}");
     assert_eq!(hdr, [96_000, 96_000, 96_000]);
     // ABR
-    let (k, hdr) = kbps(&opts(rate, Channels::Stereo, BitrateMode::average(160)));
+    let (k, hdr) = kbps(&opts(rate, Channels::STEREO, BitrateMode::average(160)));
     assert!((k - 160.0).abs() < 16.0, "{k}");
     assert_eq!(hdr, [-1, 160_000, -1]);
     // A hard maximum well below what quality 8 wants.
@@ -156,7 +156,7 @@ fn bitrates_hit_their_targets() {
         .clone()
         .with_bitrate(
             rate,
-            Channels::Stereo,
+            Channels::STEREO,
             BitrateMode::QualityLimits {
                 min_kbps: None,
                 max_kbps: Some(128),
@@ -175,18 +175,18 @@ fn bitrates_hit_their_targets() {
 
 #[test]
 fn options_api() {
-    let o = opts(SampleRate::HZ_44100, Channels::Stereo, CBR);
+    let o = opts(SampleRate::HZ_44100, Channels::STEREO, CBR);
     assert_eq!(o.bitrate(), Some(CBR));
     assert_eq!(o.bitrate_tuning(), Some(BitrateTuning::default()));
     let vbr = o.clone().without_bitrate();
     assert_eq!(vbr.bitrate(), None);
     let pcm = music(2, 2, 44100);
     assert_eq!(
-        oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &vbr),
+        oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &vbr),
         oxivorbis::encode(
             &pcm,
             SampleRate::HZ_44100,
-            Channels::Stereo,
+            Channels::STEREO,
             &Options::default()
         )
     );
@@ -194,7 +194,7 @@ fn options_api() {
     let other = oxivorbis::encode(
         &music(2, 1, 48000),
         SampleRate::HZ_48000,
-        Channels::Mono,
+        Channels::MONO,
         &o,
     );
     assert_eq!(&other[..4], b"OggS");
@@ -203,22 +203,22 @@ fn options_api() {
 #[test]
 #[should_panic(expected = "Options::with_bitrate was checked for")]
 fn options_checked_for_another_rate_panic_where_unsupported() {
-    let o = opts(SampleRate::HZ_44100, Channels::Stereo, CBR);
-    let _ = Encoder::new(SampleRate::HZ_96000, Channels::Stereo, &o);
+    let o = opts(SampleRate::HZ_44100, Channels::STEREO, CBR);
+    let _ = Encoder::new(SampleRate::HZ_96000, Channels::STEREO, &o);
 }
 
 #[test]
 fn errors() {
     let r = SampleRate::HZ_44100;
     let e = Options::default()
-        .with_bitrate(r, Channels::Stereo, BitrateMode::average(600))
+        .with_bitrate(r, Channels::STEREO, BitrateMode::average(600))
         .unwrap_err();
     assert_eq!(
         e,
         BitrateError::OutOfRange {
             bps: 600_000,
             rate: r,
-            channels: Channels::Stereo,
+            channels: Channels::STEREO,
             supported: Some(45..=500),
         }
     );
@@ -229,7 +229,7 @@ fn errors() {
     let e = Options::default()
         .with_bitrate(
             SampleRate::HZ_192000,
-            Channels::Mono,
+            Channels::MONO,
             BitrateMode::average(128),
         )
         .unwrap_err();
@@ -256,7 +256,7 @@ fn errors() {
         BitrateMode::Nominal { kbps: 0 },
         BitrateMode::average(u32::MAX),
     ] {
-        let e = Options::default().with_bitrate(r, Channels::Stereo, m);
+        let e = Options::default().with_bitrate(r, Channels::STEREO, m);
         assert!(matches!(e, Err(BitrateError::Invalid(_))), "{m:?}: {e:?}");
     }
     for t in [
@@ -265,7 +265,7 @@ fn errors() {
         BitrateTuning::default().with_average_damping(0.0),
         BitrateTuning::default().with_average_damping(-1.0),
     ] {
-        let e = Options::default().with_bitrate_tuning(r, Channels::Stereo, CBR, t);
+        let e = Options::default().with_bitrate_tuning(r, Channels::STEREO, CBR, t);
         assert!(matches!(e, Err(BitrateError::Invalid(_))), "{t:?}: {e:?}");
     }
 }
@@ -278,7 +278,7 @@ fn edges_do_not_panic() {
         8000, 8999, 9000, 14999, 15000, 18999, 19000, 25999, 26000, 39999, 40000, 50000,
     ] {
         let rate = SampleRate::new(hz).unwrap();
-        for ch in [Channels::Mono, Channels::Stereo] {
+        for ch in [Channels::MONO, Channels::STEREO] {
             let r = BitrateMode::supported_kbps(rate, ch).unwrap();
             let (lo, hi) = (*r.start(), *r.end());
             for mode in [
@@ -314,7 +314,7 @@ fn edges_do_not_panic() {
 #[test]
 fn encoder_tuning_defaults_nan_and_clamps() {
     use oxivorbis::EncoderTuning;
-    let (r, c) = (SampleRate::HZ_44100, Channels::Stereo);
+    let (r, c) = (SampleRate::HZ_44100, Channels::STEREO);
     let pcm = music(3, 2, 44100);
     let enc = |t: EncoderTuning| {
         let o = Options::default().with_encoder_tuning(t);

@@ -9,13 +9,17 @@
 use crate::Encoder;
 use crate::encode::{self, EncoderCore};
 
-/// Interleave scratch size in samples (1024 stereo frames; 8 KiB of `f32`
-/// or 4 KiB of `i16` on the stack).
+/// Interleave scratch size in samples (1024 stereo frames, 341 5.1
+/// frames; 8 KiB of `f32` or 4 KiB of `i16` on the stack). Holds at least
+/// 8 frames of the most channels an encoder takes (255).
 const SCRATCH: usize = 2048;
 
 impl Encoder {
     /// Encode planar `f32` audio: one slice per channel (`[left, right]`
-    /// for stereo), the layout most DSP and decoding crates produce.
+    /// for stereo, six slices in Vorbis order for 5.1; see [`Channels`]),
+    /// the layout most DSP and decoding crates produce.
+    ///
+    /// [`Channels`]: crate::Channels
     /// Returns the Ogg bytes completed by this call, like
     /// [`write_f32`](Self::write_f32), and gives exactly the bytes of
     /// interleaving the channels and calling `write_f32`. Samples are
@@ -41,14 +45,14 @@ impl Encoder {
     /// let left: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.03).sin() * 0.5).collect();
     /// let right: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
     ///
-    /// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+    /// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::STEREO, &Options::default());
     /// let mut ogg = enc.write_planar_f32(&[&left, &right]).to_vec();
     /// ogg.extend_from_slice(&enc.finish());
     ///
     /// // Same bytes as interleaving first.
     /// let interleaved: Vec<f32> = left.iter().zip(&right).flat_map(|(&l, &r)| [l, r]).collect();
     /// let one_shot = oxivorbis::encode_f32(
-    ///     &interleaved, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
+    ///     &interleaved, SampleRate::HZ_44100, Channels::STEREO, &Options::default());
     /// assert_eq!(ogg, one_shot);
     /// ```
     pub fn write_planar_f32<S: AsRef<[f32]>>(&mut self, channels: &[S]) -> &[u8] {
@@ -67,7 +71,7 @@ impl Encoder {
     ///
     /// let left = vec![1000i16; 4800];
     /// let right = vec![-1000i16; 4800];
-    /// let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Stereo, &Options::default());
+    /// let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::STEREO, &Options::default());
     /// let mut ogg = enc.write_planar_i16(&[left, right]).to_vec();
     /// ogg.extend_from_slice(&enc.finish());
     /// assert_eq!(&ogg[..4], b"OggS");
@@ -107,8 +111,23 @@ where
                 core.feed(out, conv);
             }
         }
-        // Unreachable: only mono and stereo encoders exist, and the count
-        // was checked above.
-        _ => {}
+        _ => {
+            let ch = channels.len();
+            let per = SCRATCH / ch;
+            let mut buf = [T::default(); SCRATCH];
+            let mut start = 0;
+            while start < frames {
+                let len = per.min(frames - start);
+                let out = &mut buf[..len * ch];
+                for (c, src) in channels.iter().enumerate() {
+                    let src = &src.as_ref()[start..start + len];
+                    for (o, &v) in out[c..].iter_mut().step_by(ch).zip(src) {
+                        *o = v;
+                    }
+                }
+                core.feed(out, conv);
+                start += len;
+            }
+        }
     }
 }
