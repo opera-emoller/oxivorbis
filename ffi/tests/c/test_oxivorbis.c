@@ -13,6 +13,11 @@
  *
  * Keep the generators and options here in sync with c_api.rs.
  */
+/* MSVC CRT: fopen is standard C99, not "deprecated". */
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include "oxivorbis.h"
 
 #include <math.h>

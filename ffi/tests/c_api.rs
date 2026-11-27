@@ -7,15 +7,17 @@
 //!
 //! Environment:
 //!
-//! - `CC`, `CXX`: compilers (default `cc`, `c++`).
+//! - `CC`, `CXX`: compilers (default `cc`, `c++`; `clang`, `clang++` on
+//!   Windows, where the MSVC-targeting clang driver accepts these flags).
 //! - `OXV_FFI_SANITIZE`: e.g. `address` or `address,undefined`; builds the
 //!   shared-library C test with `-fsanitize=<value>` (CI uses `address`).
 //! - `OXV_FFI_LEAK_CHECK`: a command prefix to run the (unsanitized) C test
 //!   under, e.g. `leaks --atExit --` on macOS or
 //!   `valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite,indirect`.
 //!
-//! Unix only (it shells out to a Unix C compiler driver).
-#![cfg(unix)]
+//! Unix and Windows (MSVC target, with clang as the driver). Sanitizers and
+//! the leak check are opt-in and only wired up for Unix.
+#![cfg(any(unix, windows))]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -128,7 +130,9 @@ fn lib_dir() -> PathBuf {
                 cargo.args(["--features", "parallel"]);
             }
             run(&mut cargo);
-            let dylib = dir.join(if cfg!(target_os = "macos") {
+            let dylib = dir.join(if cfg!(windows) {
+                "oxivorbis.dll"
+            } else if cfg!(target_os = "macos") {
                 "liboxivorbis.dylib"
             } else {
                 "liboxivorbis.so"
@@ -141,6 +145,29 @@ fn lib_dir() -> PathBuf {
 
 fn tool(var: &str, default: &str) -> String {
     std::env::var(var).unwrap_or_else(|_| default.to_owned())
+}
+
+fn cc() -> String {
+    tool("CC", if cfg!(windows) { "clang" } else { "cc" })
+}
+
+fn cxx() -> String {
+    tool("CXX", if cfg!(windows) { "clang++" } else { "c++" })
+}
+
+/// Link `cmd` against the shared library: `-loxivorbis` plus an rpath on
+/// Unix; the import library on Windows, with the DLL copied next to the
+/// executable in `exe_dir` (Windows has no rpath).
+fn link_shared(cmd: &mut Command, libs: &Path, exe_dir: &Path) {
+    if cfg!(windows) {
+        cmd.arg(libs.join("oxivorbis.dll.lib"));
+        std::fs::copy(libs.join("oxivorbis.dll"), exe_dir.join("oxivorbis.dll")).unwrap();
+    } else {
+        cmd.arg("-L")
+            .arg(libs)
+            .arg("-loxivorbis")
+            .arg(format!("-Wl,-rpath,{}", libs.display()));
+    }
 }
 
 fn run(cmd: &mut Command) {
@@ -161,7 +188,16 @@ fn fresh_dir(name: &str) -> PathBuf {
 /// Native libraries a C program linking the static library needs (from
 /// `cargo rustc --crate-type staticlib -- --print native-static-libs`).
 fn native_static_libs() -> &'static [&'static str] {
-    if cfg!(target_os = "macos") {
+    if cfg!(windows) {
+        // MSVC: kernel32 ntdll userenv ws2_32 dbghelp (msvcrt is the default).
+        &[
+            "-lkernel32",
+            "-lntdll",
+            "-luserenv",
+            "-lws2_32",
+            "-ldbghelp",
+        ]
+    } else if cfg!(target_os = "macos") {
         // libSystem (which rustc lists) is linked by cc anyway.
         &[]
     } else {
@@ -182,8 +218,8 @@ fn native_static_libs() -> &'static [&'static str] {
 fn c_test(name: &str, static_link: bool, sanitize: Option<&str>, wrapper: &[String]) {
     let libs = lib_dir();
     let dir = fresh_dir(name);
-    let exe = dir.join("test_oxivorbis");
-    let mut cc = Command::new(tool("CC", "cc"));
+    let exe = dir.join(format!("test_oxivorbis{}", std::env::consts::EXE_SUFFIX));
+    let mut cc = Command::new(cc());
     cc.args([
         "-std=c99",
         "-Wall",
@@ -203,13 +239,14 @@ fn c_test(name: &str, static_link: bool, sanitize: Option<&str>, wrapper: &[Stri
             .arg("-fno-omit-frame-pointer");
     }
     if static_link {
-        cc.arg(libs.join("liboxivorbis.a"))
-            .args(native_static_libs());
+        let lib = if cfg!(windows) {
+            "oxivorbis.lib"
+        } else {
+            "liboxivorbis.a"
+        };
+        cc.arg(libs.join(lib)).args(native_static_libs());
     } else {
-        cc.arg("-L")
-            .arg(&libs)
-            .arg("-loxivorbis")
-            .arg(format!("-Wl,-rpath,{}", libs.display()));
+        link_shared(&mut cc, &libs, &dir);
     }
     run(&mut cc);
 
@@ -284,18 +321,21 @@ fn c_api_leak_check() {
 fn cpp_header_smoke() {
     let libs = lib_dir();
     let dir = fresh_dir("ffi-cpp");
-    let exe = dir.join("smoke");
-    let mut cxx = Command::new(tool("CXX", "c++"));
-    cxx.args(["-std=c++11", "-Wall", "-Wextra", "-Werror", "-pedantic"])
+    let exe = dir.join(format!("smoke{}", std::env::consts::EXE_SUFFIX));
+    let mut cxx = Command::new(cxx());
+    // The header itself is C++11-clean; MSVC's own STL needs C++14.
+    let std = if cfg!(windows) {
+        "-std=c++14"
+    } else {
+        "-std=c++11"
+    };
+    cxx.args([std, "-Wall", "-Wextra", "-Werror", "-pedantic"])
         .arg("-I")
         .arg(ffi_dir().join("include"))
         .arg(ffi_dir().join("tests/c/smoke.cpp"))
         .arg("-o")
-        .arg(&exe)
-        .arg("-L")
-        .arg(&libs)
-        .arg("-loxivorbis")
-        .arg(format!("-Wl,-rpath,{}", libs.display()));
+        .arg(&exe);
+    link_shared(&mut cxx, &libs, &dir);
     run(&mut cxx);
     run(&mut Command::new(&exe));
 }
@@ -311,7 +351,7 @@ fn header_is_self_contained_c99() {
         "#include \"oxivorbis.h\"\nint main(void) { return OXV_STATUS_OK; }\n",
     )
     .unwrap();
-    run(Command::new(tool("CC", "cc"))
+    run(Command::new(cc())
         .args([
             "-std=c99",
             "-Wall",
