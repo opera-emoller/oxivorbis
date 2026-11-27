@@ -1,13 +1,30 @@
 name: CI
 
+# Docs that aren't compiled don't need CI. The root README.md is not in
+# this list: its code blocks run as doctests.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "CONTRIBUTING.md"
+      - "ffi/README.md"
+      - "tools/**/README.md"
+      - "LICENSE"
+      - "NOTICE"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "CONTRIBUTING.md"
+      - "ffi/README.md"
+      - "tools/**/README.md"
+      - "LICENSE"
+      - "NOTICE"
 
+# A newer push supersedes an older run on the same branch or PR.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
