@@ -956,7 +956,13 @@ fn seed_curve(
     // recurrence is `seedptr0 + lp*(i-post0)`, so we can solve for i directly
     // and drop the per-iter `if seedptr > 0` and `if seedptr >= n` branches.
     // ceil_div for positive (a, b > 0): (a + b - 1) / b
-    let ceil_div = |a: i64, b: i64| -> i64 { (a + b - 1) / b };
+    // `lp` is 8 in every libvorbis setup: divide by shifting then (the
+    // dividends here are all positive, so shift == division).
+    let lp_us = lp as usize;
+    let pow2 = lp_us.is_power_of_two();
+    let sh = lp_us.trailing_zeros();
+    let div = |a: usize| if pow2 { a >> sh } else { a / lp_us };
+    let ceil_div = |a: i64, b: i64| -> i64 { div((a + b - 1) as usize) as i64 };
     let i_lo = if seedptr0 > 0 {
         post0
     } else {
@@ -980,9 +986,9 @@ fn seed_curve(
     // `sp_lo + k*lp`, are therefore contiguous, so the max below is a plain
     // element-wise loop the compiler vectorizes (each lane does the scalar
     // add and compare-select).
-    let lp_us = lp as usize;
     let sp_lo = (seedptr0 + lp * (lo as i64 - post0 as i64)) as usize;
-    let start = (sp_lo % lp_us) * qlen + sp_lo / lp_us;
+    let q = div(sp_lo);
+    let start = (sp_lo - q * lp_us) * qlen + q;
     let dst = &mut seed[start..start + (hi - lo)];
     let src = &curve[lo..hi];
     let len = dst.len();
