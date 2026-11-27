@@ -87,6 +87,24 @@ impl<'a> BitReader<'a> {
     /// Read `bits` bits (LSB-first) and return as a `u32`. `bits` must be <= 32.
     pub fn read(&mut self, bits: u32) -> u32 {
         debug_assert!(bits <= 32, "bits must be <= 32, got {bits}");
+        // Fast path: the whole field is inside the buffer. A field of up to
+        // 32 bits at bit offset 0..8 spans at most 5 bytes.
+        if bits > 0 && self.bit_pos + bits as usize <= self.bytes.len() * 8 {
+            let byte_idx = self.bit_pos / 8;
+            let window = match self.bytes.get(byte_idx..byte_idx + 8) {
+                Some(w) => u64::from_le_bytes(w.try_into().expect("8 bytes")),
+                None => {
+                    let mut window = 0u64;
+                    for (k, &b) in self.bytes[byte_idx..].iter().take(5).enumerate() {
+                        window |= (b as u64) << (8 * k);
+                    }
+                    window
+                }
+            };
+            let value = (window >> (self.bit_pos % 8)) & ((1u64 << bits) - 1);
+            self.bit_pos += bits as usize;
+            return value as u32;
+        }
         let mut acc: u32 = 0;
         for i in 0..bits {
             let byte_idx = self.bit_pos / 8;

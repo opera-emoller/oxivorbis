@@ -108,11 +108,20 @@ fn _book_maptype1_quantvals(entries: i64, dim: i64) -> i64 {
 // _make_words: port of libvorbis _make_words (sparsecount=0 path for encode)
 // ---------------------------------------------------------------------------
 
+///
+/// One deviation in form, not in result: C prunes the markers of every
+/// depth up to 32 after each entry, but no entry reads a marker deeper than
+/// the book's longest codeword, and `marker[2]` feeds the single-entry
+/// exception. Deeper markers are left at 0, which the underpopulation check
+/// accepts; C's deeper markers always hang below `marker[top]` and pass the
+/// check exactly when it does. (`make_words_matches_libvorbis` checks every
+/// static book and random length sets against the literal port.)
 #[allow(non_snake_case)]
 fn _make_words(lengths: &[u8], n: usize) -> Option<Vec<u32>> {
     let mut marker = [0u32; 33];
     let mut r = vec![0u32; n];
     let mut count = 0usize;
+    let top = (lengths[..n].iter().copied().max().unwrap_or(0) as usize).clamp(2, 32);
 
     for i in 0..n {
         let length = lengths[i] as usize;
@@ -137,7 +146,7 @@ fn _make_words(lengths: &[u8], n: usize) -> Option<Vec<u32>> {
                 marker[j] += 1;
             }
 
-            for j in (length + 1)..33 {
+            for j in (length + 1)..=top {
                 if (marker[j] >> 1) == entry {
                     entry = marker[j];
                     marker[j] = marker[j - 1] << 1;
@@ -164,20 +173,16 @@ fn _make_words(lengths: &[u8], n: usize) -> Option<Vec<u32>> {
         }
     }
 
-    // bitreverse the words (LSB endian packer)
-    let mut out = vec![0u32; n];
-    let mut count = 0usize;
-    for i in 0..n {
-        let mut temp = 0u32;
-        for j in 0..lengths[i] {
-            temp <<= 1;
-            temp |= (r[count] >> j) & 1;
-        }
-        out[count] = temp;
-        count += 1;
+    // bitreverse the words (LSB endian packer): the low `length` bits of
+    // each word, reversed (C shifts them out one at a time).
+    for (w, &len) in r.iter_mut().zip(&lengths[..n]) {
+        *w = match len {
+            0 => 0,
+            len => w.reverse_bits() >> (32 - len as u32),
+        };
     }
 
-    Some(out)
+    Some(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,9 +270,7 @@ pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookErr
             };
             // The quantized values themselves only matter for decoding
             // (`_book_unquantize`); the encoder needs just minval / delta.
-            for _ in 0..quantvals_count {
-                r.read(q_quant);
-            }
+            r.skip(quantvals_count * q_quant as usize);
             if r.overran() {
                 return Err(CodebookError::Eof);
             }
@@ -346,6 +349,138 @@ impl Codebook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The literal port of `_make_words` (prunes all 32 depths).
+    fn make_words_reference(lengths: &[u8], n: usize) -> Option<Vec<u32>> {
+        let mut marker = [0u32; 33];
+        let mut r = vec![0u32; n];
+        let mut count = 0usize;
+
+        for i in 0..n {
+            let length = lengths[i] as usize;
+            if length > 0 {
+                let mut entry = marker[length];
+
+                if length < 32 && (entry >> length) != 0 {
+                    return None; // overpopulated tree
+                }
+                r[count] = entry;
+                count += 1;
+
+                for j in (1..=length).rev() {
+                    if marker[j] & 1 != 0 {
+                        if j == 1 {
+                            marker[1] += 1;
+                        } else {
+                            marker[j] = marker[j - 1] << 1;
+                        }
+                        break;
+                    }
+                    marker[j] += 1;
+                }
+
+                for j in (length + 1)..33 {
+                    if (marker[j] >> 1) == entry {
+                        entry = marker[j];
+                        marker[j] = marker[j - 1] << 1;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                count += 1;
+            }
+        }
+
+        // check for underpopulated tree (allow single-entry codebook exception)
+        if !(count == 1 && marker[2] == 2) {
+            for i in 1usize..33 {
+                let mask = if i < 32 {
+                    0xffff_ffffu32 >> (32 - i)
+                } else {
+                    0xffff_ffffu32
+                };
+                if marker[i] & mask != 0 {
+                    return None;
+                }
+            }
+        }
+
+        // bitreverse the words (LSB endian packer)
+        let mut out = vec![0u32; n];
+        let mut count = 0usize;
+        for i in 0..n {
+            let mut temp = 0u32;
+            for j in 0..lengths[i] {
+                temp <<= 1;
+                temp |= (r[count] >> j) & 1;
+            }
+            out[count] = temp;
+            count += 1;
+        }
+
+        Some(out)
+    }
+
+    /// `_make_words` against the literal port: every static book, then
+    /// random length sets (mostly invalid, some complete trees).
+    #[test]
+    fn make_words_matches_libvorbis() {
+        use crate::setup_templates as T;
+        for (id, &(offset, bits)) in T::BOOKS.iter().enumerate() {
+            let bytes = &T::BOOKS_PACKED[offset as usize..][..bits.div_ceil(8) as usize];
+            let book = unpack_codebook(&mut BitReader::new(bytes)).unwrap();
+            let lengths = &book.codeword_lengths;
+            assert_eq!(
+                _make_words(lengths, lengths.len()),
+                make_words_reference(lengths, lengths.len()),
+                "static book {id}"
+            );
+        }
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for case in 0..20_000 {
+            let n = 1 + (next() % 40) as usize;
+            let maxlen = 1 + (next() % 32) as u8;
+            let mut lengths: Vec<u8> = (0..n)
+                .map(|_| (next() % (maxlen as u64 + 1)) as u8)
+                .collect();
+            if case % 2 == 0 {
+                // Make a complete tree: split leaves until there are n.
+                lengths = vec![1, 1];
+                while lengths.len() < n {
+                    let i = (next() % lengths.len() as u64) as usize;
+                    if lengths[i] < 32 {
+                        let l = lengths[i] + 1;
+                        lengths[i] = l;
+                        lengths.insert(i + 1, l);
+                    }
+                }
+                if case % 4 == 0 {
+                    lengths.push(0);
+                    let k = (next() % lengths.len() as u64) as usize;
+                    lengths.rotate_right(k);
+                }
+            }
+            assert_eq!(
+                _make_words(&lengths, lengths.len()),
+                make_words_reference(&lengths, lengths.len()),
+                "lengths {lengths:?}"
+            );
+        }
+        for lengths in [&[1u8][..], &[2], &[0, 1], &[1, 0], &[32, 32], &[0]] {
+            assert_eq!(
+                _make_words(lengths, lengths.len()),
+                make_words_reference(lengths, lengths.len()),
+                "lengths {lengths:?}"
+            );
+        }
+    }
 
     /// Pack a synthetic codebook using BitWriter (same format as vorbis_staticbook_pack)
     /// and verify our unpack recovers the correct fields.
