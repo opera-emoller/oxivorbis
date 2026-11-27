@@ -880,11 +880,19 @@ impl EncoderCore {
             writers,
         );
         self.win[block.w as usize] = win;
-        let mut blobs: Vec<Vec<u8>> = writers
-            .iter_mut()
-            .map(|w| std::mem::replace(w, BitWriter::new()).into_bytes())
-            .collect();
-        self.write_block(&mut blobs, block.granulepos, block.eos, block.w);
+        let mut blobs: Vec<Vec<u8>>;
+        let mut one: [Vec<u8>; 1];
+        let packets: &mut [Vec<u8>] = if writers.len() == 1 {
+            one = [std::mem::take(&mut writers[0]).into_bytes()];
+            &mut one
+        } else {
+            blobs = writers
+                .iter_mut()
+                .map(|w| std::mem::take(w).into_bytes())
+                .collect();
+            &mut blobs
+        };
+        self.write_block(packets, block.granulepos, block.eos, block.w);
     }
 
     /// Packetblobs per block: [`PACKETBLOBS`] when the bitrate manager is
@@ -1155,45 +1163,62 @@ fn analyze_batch(
     let gi = &setup.cfg.psy_global;
     let psy_looks = &setup.psy_looks;
     let setup = &setup.setup;
-    jobs.par_iter()
-        .zip(input_ampmax.par_iter())
-        .map_init(
-            || floor_seed.to_vec(),
-            |floors, (job, &amp)| {
-                let mapping = &setup.mappings[setup.modes[job.mode.mode_number].mapping];
-                let mut ampmax = amp;
-                let mut w: Vec<BitWriter> = (0..blobs).map(|_| BitWriter::new()).collect();
-                with_scratch(ch, |scratch| {
-                    let n = job.pcm[0].len();
-                    let n2 = n / 2;
-                    for (c, spectra) in job.pcm.iter().enumerate() {
-                        scratch.logfft[c][..n2].copy_from_slice(&spectra[..n2]);
-                        scratch.gmdct[c][..n2].copy_from_slice(&spectra[n2..]);
-                        scratch.local_ampmax[c] = job.local_ampmax[c];
-                    }
-                    mapping0_forward_spectra(
-                        n,
-                        ch,
-                        &psy_looks[job.blocktype as usize],
-                        gi,
-                        &mut ampmax,
-                        floors,
-                        &setup.residue_types,
-                        &setup.residue_setups,
-                        &setup.residue_looks,
-                        mapping,
-                        &job.mode,
-                        &setup.books,
-                        scratch,
-                        &mut w,
-                        false,
-                    )
-                });
-                w
-            },
-        )
-        .flat_map_iter(|w| w.into_iter().map(BitWriter::into_bytes))
-        .collect()
+    let analyze = |floors: &mut Vec<Floor1State>, job: &BlockJob, amp: f32, w: &mut [BitWriter]| {
+        let mapping = &setup.mappings[setup.modes[job.mode.mode_number].mapping];
+        let mut ampmax = amp;
+        with_scratch(ch, |scratch| {
+            let n = job.pcm[0].len();
+            let n2 = n / 2;
+            for (c, spectra) in job.pcm.iter().enumerate() {
+                scratch.logfft[c][..n2].copy_from_slice(&spectra[..n2]);
+                scratch.gmdct[c][..n2].copy_from_slice(&spectra[n2..]);
+                scratch.local_ampmax[c] = job.local_ampmax[c];
+            }
+            mapping0_forward_spectra(
+                n,
+                ch,
+                &psy_looks[job.blocktype as usize],
+                gi,
+                &mut ampmax,
+                floors,
+                &setup.residue_types,
+                &setup.residue_setups,
+                &setup.residue_looks,
+                mapping,
+                &job.mode,
+                &setup.books,
+                scratch,
+                w,
+                false,
+            )
+        });
+    };
+    let blocks = jobs.par_iter().zip(input_ampmax.par_iter());
+    if blobs == 1 {
+        blocks
+            .map_init(
+                || floor_seed.to_vec(),
+                |floors, (job, &amp)| {
+                    let mut w = [BitWriter::new()];
+                    analyze(floors, job, amp, &mut w);
+                    let [w] = w;
+                    w.into_bytes()
+                },
+            )
+            .collect()
+    } else {
+        blocks
+            .map_init(
+                || floor_seed.to_vec(),
+                |floors, (job, &amp)| {
+                    let mut w: Vec<BitWriter> = (0..blobs).map(|_| BitWriter::new()).collect();
+                    analyze(floors, job, amp, &mut w);
+                    w
+                },
+            )
+            .flat_map_iter(|w| w.into_iter().map(BitWriter::into_bytes))
+            .collect()
+    }
 }
 
 /// libvorbis-driver i16 scaling: `sample / 32768.0f`.
