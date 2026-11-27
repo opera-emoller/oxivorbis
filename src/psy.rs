@@ -1603,9 +1603,25 @@ pub fn vp_tonemask(
     let phase = &mut scratch.phase[..qlen * lp];
     phase.fill(NEGINF);
     seed_loop(p, &p.tonecurves, logfft, logmask, phase, global_specmax, qlen);
-    for (q, chunk) in seed.chunks_mut(lp).enumerate() {
-        for (r, s) in chunk.iter_mut().enumerate() {
+    if lp == 8 {
+        // Every libvorbis setup: a fixed-size inner loop (8 strided loads,
+        // one contiguous 8-line store per column).
+        let (full, rest) = seed.split_at_mut(total / 8 * 8);
+        for (q, chunk) in full.chunks_exact_mut(8).enumerate() {
+            let chunk: &mut [f32; 8] = chunk.try_into().unwrap();
+            for (r, s) in chunk.iter_mut().enumerate() {
+                *s = phase[r * qlen + q];
+            }
+        }
+        let q = total / 8;
+        for (r, s) in rest.iter_mut().enumerate() {
             *s = phase[r * qlen + q];
+        }
+    } else {
+        for (q, chunk) in seed.chunks_mut(lp).enumerate() {
+            for (r, s) in chunk.iter_mut().enumerate() {
+                *s = phase[r * qlen + q];
+            }
         }
     }
     if crate::debug_dump::dump_enabled() {
