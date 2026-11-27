@@ -36,6 +36,32 @@ impl BitWriter {
         self.bytes
     }
 
+    /// Append the first `bits` bits of the LSB-first bit string `src`
+    /// (`src` holds at least `bits.div_ceil(8)` bytes). The same as writing
+    /// its bytes one by one with [`Self::write`] (the last one with
+    /// `bits % 8` bits).
+    pub fn write_bits_from(&mut self, src: &[u8], bits: usize) {
+        let full = bits / 8;
+        let rem = (bits % 8) as u32;
+        if self.bytes.is_empty() || self.bits_in_last == 8 {
+            // Byte-aligned: the bytes are appended as they are.
+            self.bytes.extend_from_slice(&src[..full]);
+            if full > 0 {
+                self.bits_in_last = 8;
+            }
+        } else {
+            let shift = self.bits_in_last;
+            self.bytes.reserve(full);
+            for &b in &src[..full] {
+                *self.bytes.last_mut().expect("not aligned, so not empty") |= b << shift;
+                self.bytes.push(b >> (8 - shift));
+            }
+        }
+        if rem != 0 {
+            self.write(src[full] as u32, rem);
+        }
+    }
+
     /// LSB-first; `bits` must be `<= 32`.
     pub fn write(&mut self, value: u32, bits: u32) {
         debug_assert!(bits <= 32, "bits must be <= 32, got {bits}");
@@ -153,6 +179,31 @@ impl<'a> BitReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `write_bits_from` is bytewise `write`, at every bit offset.
+    #[test]
+    fn write_bits_from_matches_bytewise_writes() {
+        let src: Vec<u8> = (0..40u32).map(|i| (i * 37 + 11) as u8).collect();
+        for lead in 0..17u32 {
+            for bits in 0..(src.len() * 8) {
+                let mut a = BitWriter::new();
+                let mut b = BitWriter::new();
+                a.write(0x5a5a & ((1 << lead) - 1), lead);
+                b.write(0x5a5a & ((1 << lead) - 1), lead);
+                a.write_bits_from(&src, bits);
+                for &x in &src[..bits / 8] {
+                    b.write(x as u32, 8);
+                }
+                if bits % 8 != 0 {
+                    b.write(src[bits / 8] as u32, (bits % 8) as u32);
+                }
+                assert_eq!(a.bit_len(), b.bit_len(), "lead {lead} bits {bits}");
+                a.write(1, 1);
+                b.write(1, 1);
+                assert_eq!(a.into_bytes(), b.into_bytes(), "lead {lead} bits {bits}");
+            }
+        }
+    }
 
     #[test]
     fn empty_writer_has_zero_bit_len_and_no_bytes() {

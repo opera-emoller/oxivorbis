@@ -435,14 +435,7 @@ fn plan(rate: u32, channels: usize, base_setting: f64, lowpass_khz: f64) -> Setu
 fn copy_packed_book(w: &mut BitWriter, id: u16) {
     let (offset, bits) = T::BOOKS[id as usize];
     let bytes = &T::BOOKS_PACKED[offset as usize..offset as usize + bits.div_ceil(8) as usize];
-    let full = (bits / 8) as usize;
-    for &b in &bytes[..full] {
-        w.write(b as u32, 8);
-    }
-    let rem = bits % 8;
-    if rem != 0 {
-        w.write(bytes[full] as u32, rem);
-    }
+    w.write_bits_from(bytes, bits as usize);
 }
 
 fn floor1_pack(w: &mut BitWriter, f: &Floor) {
