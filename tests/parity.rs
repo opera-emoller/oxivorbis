@@ -1365,7 +1365,7 @@ fn parse_repro_name(file_name: &str) -> Result<ReproName, String> {
     };
     if !(-0.1..=1.0).contains(&quality)
         || SampleRate::new(rate).is_none()
-        || !(1..=2).contains(&channels)
+        || Channels::new(channels).is_none()
     {
         return Err(format!("{file_name}: unsupported quality/rate/channels"));
     }
@@ -1416,6 +1416,10 @@ fn oracle_parity_fuzz_repro_names() {
     assert!(p("s9-i9-q0.5-22050-1ch.s16le").is_ok());
     assert!(p("s9-i9-q0.5-200001-1ch.s16le").is_err());
     assert!(p("s9-i9-q0.5-0-1ch.s16le").is_err());
+    assert_eq!(p("s8-i3-q0.3-48000-6ch.s16le").unwrap().channels, 6);
+    assert!(p("s9-i9-q0.5-44100-255ch.s16le").is_ok());
+    assert!(p("s9-i9-q0.5-44100-256ch.s16le").is_err());
+    assert!(p("s9-i9-q0.5-44100-0ch.s16le").is_err());
 }
 
 /// Replays every minimized tools/parity-fuzz failure kept in
@@ -1437,11 +1441,7 @@ fn oracle_parity_fuzz_repros() {
         let repro = parse_repro_name(name).unwrap_or_else(|e| panic!("{e}"));
         let raw = std::fs::read(path).unwrap();
         let rate = SampleRate::new(repro.rate).expect("validated by parse_repro_name");
-        let channels = if repro.channels == 2 {
-            Channels::STEREO
-        } else {
-            Channels::MONO
-        };
+        let channels = Channels::new(repro.channels).expect("validated by parse_repro_name");
         let (oracle_bytes, oxivorbis_bytes) = if repro.f32_input {
             let samples: Vec<f32> = raw
                 .chunks_exact(4)

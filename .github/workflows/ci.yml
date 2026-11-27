@@ -29,6 +29,12 @@ env:
   FUZZ_BITRATE_RATES: "8000,8999,11025,15000,22050,25999,32000,40000,44100,48000,50000"
   FUZZ_BITRATE_ITERS: "300"
   FUZZ_BITRATE_QUALITIES: "-0.1 0.5 1.0"
+  # More than two channels: 5.1 at the 5.1 template's rates (40-70 kHz)
+  # and outside it, and uncoupled 3, 4, 5, 7 and 8 channels.
+  FUZZ_MC_ITERS: "120"
+  FUZZ_MC_QUALITIES: "-0.1 0.3 0.5 1.0"
+  FUZZ_MC_RATES: "44100,48000,70000,32000,96000"
+  FUZZ_MC_CHANNELS: "3,4,5,6,7,8"
 
 jobs:
   test:
@@ -121,6 +127,9 @@ jobs:
           parity oracle_parity_long::cases::|18
           parity oracle_parity_long_silence_|2
           parity oracle_parity_transients_signal_uses_short_blocks|1
+          parity oracle_parity_multichannel::surround::|432
+          parity oracle_parity_multichannel::uncoupled::|288
+          parity oracle_parity_multichannel::c255_short|1
           parity parity_oggenc_quality_conversion|1
           parity parity_silence_|4
           parity_bitrate bitrate_range::|72
@@ -138,7 +147,9 @@ jobs:
           ratecontrol::tests::|3
           dsp_manifest_|6
           parity_f32 |9
-          streaming |6
+          streaming |8
+          streaming chunking_invariance_multichannel|1
+          conveniences planar_multichannel_matches_interleaved|1
           golden golden_vectors_match|1
           golden golden_vectors_are_fresh|1
           EOF
@@ -161,7 +172,7 @@ jobs:
         # #[ignore]d in debug builds (too slow there).
         run: >-
           cargo nextest run --release --status-level=fail --no-tests=fail --features parallel
-          -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes))'
+          -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes) | test(surround_streams_with_bounded_buffer))'
       - name: Doc tests
         run: cargo test --doc --features parallel
       - name: parity-fuzz smoke
@@ -199,6 +210,14 @@ jobs:
           done
           ./target/release/parity-fuzz --bitrate --f32 --rates "$FUZZ_BITRATE_RATES" \
             --iters "$FUZZ_BITRATE_ITERS" --seed 9 --minimize-per-sig 1
+      - name: parity-fuzz smoke (more than two channels)
+        run: |
+          for q in $FUZZ_MC_QUALITIES; do
+            ./target/release/parity-fuzz --rates "$FUZZ_MC_RATES" --channels "$FUZZ_MC_CHANNELS" \
+              --iters "$FUZZ_MC_ITERS" --seed 8 --quality "$q" --minimize-per-sig 1
+            ./target/release/parity-fuzz --f32 --rates "$FUZZ_MC_RATES" --channels 6 \
+              --iters "$FUZZ_MC_ITERS" --seed 9 --quality "$q" --minimize-per-sig 1
+          done
       - name: parity-fuzz against an AddressSanitizer oracle
         # Same pristine sources, built with -fsanitize=address: any
         # out-of-bounds access in libvorbis/libogg on these inputs makes
@@ -211,6 +230,8 @@ jobs:
               --quality "$q" --no-minimize
             ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --iters 150 --seed 7 \
               --rates "$FUZZ_FAMILY_RATES" --quality "$q" --no-minimize
+            ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --iters 60 --seed 10 \
+              --rates "$FUZZ_MC_RATES" --channels "$FUZZ_MC_CHANNELS" --quality "$q" --no-minimize
           done
           # bitrate.c's packetblob indexing and truncation
           ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --bitrate --iters 150 \
@@ -267,7 +288,7 @@ jobs:
       - name: Release-only streaming tests
         run: >-
           cargo nextest run --release --status-level=fail --no-tests=fail
-          -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes))'
+          -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes) | test(surround_streams_with_bounded_buffer))'
       - name: parity-fuzz smoke
         run: |
           cargo build -q --release -p parity-fuzz
@@ -290,6 +311,10 @@ jobs:
           for q in $FUZZ_BITRATE_QUALITIES; do
             ./target/release/parity-fuzz --bitrate --rates "$FUZZ_BITRATE_RATES" \
               --iters "$FUZZ_BITRATE_ITERS" --seed 8 --quality "$q" --max-len 20 --minimize-per-sig 1
+          done
+          for q in $FUZZ_MC_QUALITIES; do
+            ./target/release/parity-fuzz --rates "$FUZZ_MC_RATES" --channels "$FUZZ_MC_CHANNELS" \
+              --iters "$FUZZ_MC_ITERS" --seed 8 --quality "$q" --minimize-per-sig 1
           done
       - name: Upload parity-fuzz failures
         if: failure()

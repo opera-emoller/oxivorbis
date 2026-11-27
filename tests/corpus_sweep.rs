@@ -166,7 +166,13 @@ fn failures_root() -> PathBuf {
 
 fn ffmpeg_decode(path: &Path, partner: &Path, rate: u32, ch: u16) -> Vec<i16> {
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-hide_banner", "-loglevel", "error", "-i", path.to_str().unwrap()]);
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        path.to_str().unwrap(),
+    ]);
     if ch == 6 {
         // 5.1 with distinct channels (see the module docs). `apad` keeps
         // the partner from cutting the file short; amerge stops at the
@@ -182,7 +188,15 @@ fn ffmpeg_decode(path: &Path, partner: &Path, rate: u32, ch: u16) -> Vec<i16> {
         cmd.args(["-i", partner.to_str().unwrap(), "-filter_complex", &graph]);
         cmd.args(["-map", "[out]", "-f", "s16le", "-"]);
     } else {
-        cmd.args(["-f", "s16le", "-ac", &ch.to_string(), "-ar", &rate.to_string(), "-"]);
+        cmd.args([
+            "-f",
+            "s16le",
+            "-ac",
+            &ch.to_string(),
+            "-ar",
+            &rate.to_string(),
+            "-",
+        ]);
     }
     let out = cmd
         .output()

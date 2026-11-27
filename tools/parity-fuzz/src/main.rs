@@ -5,7 +5,7 @@
 //!
 //! Usage:
 //!   cargo run -p parity-fuzz --release -- --iters N --seed S [--quality Q]
-//!       [--rates 44100,48000] [--channels 1,2] [--jobs J] [--max-secs T]
+//!       [--rates 44100,48000] [--channels 1,2] (1..=255) [--jobs J] [--max-secs T]
 //!       [--max-len SECS] [--keep-going] [--no-minimize] [--start I]
 //!       [--min-frames N] [--minimize-per-sig N] [--min-evals N] [--f32]
 //!
@@ -236,7 +236,7 @@ struct Config {
 fn usage() -> ! {
     eprintln!(
         "usage: parity-fuzz [--iters N] [--seed S] [--start I] [--quality Q] \
-         [--rates 44100,48000] [--channels 1,2] [--jobs J] [--max-secs T] [--max-len SECS] \
+         [--rates 44100,48000] [--channels 1,2 (1..=255)] [--jobs J] [--max-secs T] [--max-len SECS] \
          [--keep-going] [--no-minimize] [--min-evals N] [--min-frames N] [--minimize-per-sig N] [--out DIR] [--oracle PATH] [--pcm FILE] [--f32] \
          [--bitrate] [--mode \"ORACLE FLAGS\"]"
     );

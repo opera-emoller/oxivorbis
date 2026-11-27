@@ -224,6 +224,7 @@ impl Case {
                 continue;
             }
             let r = right_channel(seg, &l, self.rate);
+            let extra = extra_channels(seg, &l, ch, self.rate);
             for i in 0..seg.frames {
                 let (mut a, mut b) = (l[i] * seg.gain + seg.dc, r[i] * seg.gain + seg.dc);
                 match seg.stereo {
@@ -233,10 +234,46 @@ impl Case {
                 }
                 out.push(quant(a));
                 out.push(quant(b));
+                for e in &extra {
+                    out.push(quant(e[i] * seg.gain + seg.dc));
+                }
             }
         }
         out
     }
+}
+
+/// Channels 2.. of a segment with more than two channels. Each is drawn
+/// from its own RNG stream (seeded by the segment seed and the channel
+/// index), so mono and stereo cases render exactly as before. The mix
+/// covers what coupling is sensitive to: copies and scaled copies of the
+/// left channel (coupled pairs with zero or tiny side signal), silence
+/// (one zero and one nonzero channel in a coupling step, e.g. an LFE-only
+/// or center-only 5.1 stream), independent noise and other generators.
+fn extra_channels(seg: &Segment, l: &[f64], ch: usize, rate: u32) -> Vec<Vec<f64>> {
+    (2..ch)
+        .map(|c| {
+            let mut rng = Rng::new(seg.seed ^ (c as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            match rng.below(8) {
+                0 => l.to_vec(),
+                1 => l.iter().map(|x| -x).collect(),
+                2 => {
+                    let k = rng.range(-1.0, 1.0);
+                    l.iter().map(|x| x * k).collect()
+                }
+                3 => vec![0.0; l.len()],
+                4 | 5 => {
+                    let mut r2 = Rng::new(rng.next_u64());
+                    render_gen(&seg.generator, seg.frames, rate, &mut r2)
+                }
+                _ => {
+                    let g = random_gen(&mut rng, rate);
+                    let mut r2 = Rng::new(rng.next_u64());
+                    render_gen(&g, seg.frames, rate, &mut r2)
+                }
+            }
+        })
+        .collect()
 }
 
 impl Case {
@@ -252,6 +289,7 @@ impl Case {
                 continue;
             }
             let r = right_channel(seg, &l, self.rate);
+            let extra = extra_channels(seg, &l, ch, self.rate);
             for i in 0..seg.frames {
                 let (mut a, mut b) = (l[i] * seg.gain + seg.dc, r[i] * seg.gain + seg.dc);
                 match seg.stereo {
@@ -261,6 +299,9 @@ impl Case {
                 }
                 out.push(self.f32_quant(a));
                 out.push(self.f32_quant(b));
+                for e in &extra {
+                    out.push(self.f32_quant(e[i] * seg.gain + seg.dc));
+                }
             }
         }
         if !out.is_empty() {
