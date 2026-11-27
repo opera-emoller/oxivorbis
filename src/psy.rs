@@ -443,16 +443,50 @@ struct ToneGeom {
 /// [`ToneGeom::slot`] of a curve point pulled from outside [0, n).
 const NO_SLOT: u8 = u8::MAX;
 
+/// `sorted.partition_point(|&b| b < x)`, searched linearly from `hint`.
+fn lower_bound_from(sorted: &[usize], x: usize, hint: usize) -> usize {
+    let mut i = hint.min(sorted.len());
+    while i > 0 && sorted[i - 1] >= x {
+        i -= 1;
+    }
+    while i < sorted.len() && sorted[i] < x {
+        i += 1;
+    }
+    i
+}
+
+/// `Vec::dedup` for a sorted slice: moves the distinct values to the front
+/// and returns their count.
+fn dedup_sorted(v: &mut [usize]) -> usize {
+    let mut len = 0;
+    for i in 0..v.len() {
+        if len == 0 || v[i] != v[len - 1] {
+            v[len] = v[i];
+            len += 1;
+        }
+    }
+    len
+}
+
 impl ToneGeom {
     fn new(bin_hz: f32, n: usize) -> Self {
         let bin_hz_d = bin_hz as f64;
+        // Every fromOC argument below is `m*.125 + c` for an integer m and
+        // c = -2.0625 or -2.: `j*.125+k*.5` is (j+4k)*.125, `j*.125+k*.5
+        // -1.9375` is (j+4k+1)*.125-2.0625 and `i*.5` is (4i+16)*.125-2.
+        // These are small multiples of 1/16, so each side of every such
+        // identity is computed exactly in f64 and the fromOC arguments are
+        // bit-identical. That leaves 121 + 120 distinct exp() calls instead
+        // of about 2900.
+        const M: usize = EHMER_MAX + 4 * (P_BANDS - 1) + 1;
+        let from_lo: [f64; M] = std::array::from_fn(|m| from_oc(m as f64 * 0.125 - 2.0625));
+        let from_pull: [f64; M - 1] = std::array::from_fn(|m| from_oc(m as f64 * 0.125 - 2.0));
         let mut spread = [[(0usize, 0usize); EHMER_MAX]; P_BANDS];
         for (k, row) in spread.iter_mut().enumerate() {
             for (j, e) in row.iter_mut().enumerate() {
-                let lo_bin =
-                    (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 2.0625) / bin_hz_d) as i64;
-                let hi_bin =
-                    (from_oc(j as f64 * 0.125 + k as f64 * 0.5 - 1.9375) / bin_hz_d) as i64 + 1;
+                // fromOC(j*.125+k*.5-2.0625) and fromOC(j*.125+k*.5-1.9375)
+                let lo_bin = (from_lo[j + 4 * k] / bin_hz_d) as i64;
+                let hi_bin = (from_lo[j + 4 * k + 1] / bin_hz_d) as i64 + 1;
                 *e = (
                     lo_bin.max(0).min(n as i64) as usize,
                     hi_bin.max(0).min(n as i64) as usize,
@@ -466,7 +500,8 @@ impl ToneGeom {
             // `toOC(bin*binHz+1)` / `toOC((bin+1)*binHz)`: int*float is
             // float, so those arguments are float; the toOC results stay
             // double.
-            let bin = (from_oc(i as f64 * 0.5) / bin_hz_d).floor() as i64;
+            // fromOC(i*.5)
+            let bin = (from_pull[4 * i + 16] / bin_hz_d).floor() as i64;
             let lo_curve_f = to_oc((bin as f32 * bin_hz + 1.0) as f64) * 2.0;
             let hi_curve_f = to_oc(((bin + 1) as f32 * bin_hz) as f64) * 2.0;
             let mut lo_curve = lo_curve_f.ceil() as i64;
@@ -482,7 +517,8 @@ impl ToneGeom {
             }
             curves[i] = (lo_curve, hi_curve);
             for (j, b) in pull[i].iter_mut().enumerate() {
-                *b = (from_oc(j as f64 * 0.125 + i as f64 * 0.5 - 2.0) / bin_hz_d) as i64;
+                // fromOC(j*.125+i*.5-2.)
+                *b = (from_pull[j + 4 * i] / bin_hz_d) as i64;
             }
         }
 
@@ -501,24 +537,30 @@ impl ToneGeom {
             // The distinct pulled bins inside [0, n), sorted. Points pulled
             // from the same bin read the same brute cell, so they share a
             // slot (low bands pull many points from the same few bins).
-            let mut bins: Vec<usize> = pull[i]
-                .iter()
-                .filter(|&&b| (0..n as i64).contains(&b))
-                .map(|&b| b as usize)
-                .collect();
+            let mut all = [0usize; EHMER_MAX];
+            let mut len = 0;
+            for &b in &pull[i] {
+                if (0..n as i64).contains(&b) {
+                    all[len] = b as usize;
+                    len += 1;
+                }
+            }
+            let bins = &mut all[..len];
             bins.sort_unstable();
-            bins.dedup();
+            let len = dedup_sorted(bins);
+            let bins = &all[..len];
             for (c, s) in slot[i].iter_mut().enumerate() {
                 *s = match usize::try_from(pull[i][c]) {
                     Ok(b) => bins.binary_search(&b).map_or(NO_SLOT, |s| s as u8),
                     Err(_) => NO_SLOT,
                 };
             }
-            // The slots of the bins in [lo, hi).
-            let covered = |lo: usize, hi: usize| {
-                bins.partition_point(|&b| b < lo)..bins.partition_point(|&b| b < hi)
-            };
             let mut walk = |row: &[(usize, usize); EHMER_MAX], src: usize| {
+                // Slot indices bounding the bins in [first, l): the first
+                // slot with bin >= first, and with bin >= l. Both move little
+                // between curve points, so they are searched from where they
+                // were.
+                let (mut a, mut b) = (0usize, 0usize);
                 let mut l: usize = 0;
                 for (j, &(lo_bin, hi_bin)) in row.iter().enumerate() {
                     if lo_bin < l {
@@ -528,11 +570,13 @@ impl ToneGeom {
                     if l < hi_bin.min(n) {
                         l = hi_bin.min(n);
                     }
-                    for c in covered(first, l) {
+                    a = lower_bound_from(bins, first, a);
+                    b = lower_bound_from(bins, l, b);
+                    for c in a..b {
                         ops.push((src as u8, j as u8, c as u8));
                     }
                 }
-                for c in covered(l.min(n), n) {
+                for c in lower_bound_from(bins, l.min(n), a)..bins.len() {
                     ops.push((src as u8, (EHMER_MAX - 1) as u8, c as u8));
                 }
             };
