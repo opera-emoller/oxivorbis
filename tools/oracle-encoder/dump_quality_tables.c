@@ -1,8 +1,8 @@
 /*
  * dump_quality_tables — prints the libvorbis 1.3.7 mode-template tables that
- * drive quality-dependent psy / global / ID-header setup, for every 1-2
- * channel ve_setup_data_template in vorbisenc.c's setup_list, as Rust source
- * on stdout. The output is src/tables/quality.rs.
+ * drive quality-dependent psy / global / ID-header setup, for every
+ * ve_setup_data_template in vorbisenc.c's setup_list, as Rust source on
+ * stdout. The output is src/tables/quality.rs.
  *
  * Why generate instead of transcribing: psych_44.h contains rows with
  * missing commas (e.g. `-7  -3` parses as the single value -10), and the
@@ -72,6 +72,7 @@ static void register_tables(void) {
     /* setup_*.h */
     REG(K_F64, rate_mapping_44_stereo);
     REG(K_F64, rate_mapping_44_un);
+    REG(K_F64, rate_mapping_44p51);
     REG(K_F64, quality_mapping_44);
     REG(K_I32, blocksize_short_44);
     REG(K_I32, blocksize_long_44);
@@ -365,20 +366,20 @@ static void emit_table(int k, const reg_t *r) {
 /* Templates                                                          */
 /* ---------------------------------------------------------------- */
 
-/* setup_list order minus ve_setup_44_51 (6 channels only); must match
+/* vorbisenc.c's setup_list, in list order; must match
  * tools/gen-setup-templates/gen.c, which a unit test cross-checks. */
 static const ve_setup_data_template *const templates[] = {
-    &ve_setup_44_stereo, &ve_setup_44_uncoupled, &ve_setup_32_stereo,
-    &ve_setup_32_uncoupled, &ve_setup_22_stereo, &ve_setup_22_uncoupled,
-    &ve_setup_16_stereo, &ve_setup_16_uncoupled, &ve_setup_11_stereo,
-    &ve_setup_11_uncoupled, &ve_setup_8_stereo, &ve_setup_8_uncoupled,
-    &ve_setup_X_stereo, &ve_setup_X_uncoupled, &ve_setup_XX_stereo,
-    &ve_setup_XX_uncoupled,
+    &ve_setup_44_stereo, &ve_setup_44_51, &ve_setup_44_uncoupled,
+    &ve_setup_32_stereo, &ve_setup_32_uncoupled, &ve_setup_22_stereo,
+    &ve_setup_22_uncoupled, &ve_setup_16_stereo, &ve_setup_16_uncoupled,
+    &ve_setup_11_stereo, &ve_setup_11_uncoupled, &ve_setup_8_stereo,
+    &ve_setup_8_uncoupled, &ve_setup_X_stereo, &ve_setup_X_uncoupled,
+    &ve_setup_XX_stereo, &ve_setup_XX_uncoupled,
 };
 static const char *const template_names[] = {
-    "44_STEREO", "44_UNCOUPLED", "32_STEREO", "32_UNCOUPLED", "22_STEREO", "22_UNCOUPLED",
-    "16_STEREO", "16_UNCOUPLED", "11_STEREO", "11_UNCOUPLED", "8_STEREO", "8_UNCOUPLED",
-    "X_STEREO",  "X_UNCOUPLED",  "XX_STEREO", "XX_UNCOUPLED",
+    "44_STEREO", "44_51", "44_UNCOUPLED", "32_STEREO", "32_UNCOUPLED", "22_STEREO",
+    "22_UNCOUPLED", "16_STEREO", "16_UNCOUPLED", "11_STEREO", "11_UNCOUPLED", "8_STEREO",
+    "8_UNCOUPLED", "X_STEREO", "X_UNCOUPLED", "XX_STEREO", "XX_UNCOUPLED",
 };
 #define NTEMPLATES N(templates)
 
@@ -388,19 +389,14 @@ typedef struct {
 static resolved res[NTEMPLATES];
 
 static void check_setup_list(void) {
-    int i, t = 0;
+    int i;
     for (i = 0; setup_list[i]; i++) {
-        if (setup_list[i] == &ve_setup_44_51) {
-            if (setup_list[i]->coupling_restriction != 6) exit(1);
-            continue;
-        }
-        if (t >= NTEMPLATES || setup_list[i] != templates[t]) {
+        if (i >= NTEMPLATES || setup_list[i] != templates[i]) {
             fprintf(stderr, "dump_quality_tables: templates[] is not setup_list\n");
             exit(1);
         }
-        t++;
     }
-    if (t != NTEMPLATES) exit(1);
+    if (i != NTEMPLATES) exit(1);
 }
 
 enum {
@@ -551,8 +547,8 @@ int main(void) {
     printf("// vendored libvorbis 1.3.7 modes/{setup_*,psych_*}.h.\n");
     printf("// Do not edit. Regenerate via `just regen-quality-tables`.\n");
     printf("//\n");
-    printf("// The quality-dependent half of every 1-2 channel ve_setup_data_template\n");
-    printf("// in vorbisenc.c's setup_list (all but ve_setup_44_51), in list order.\n");
+    printf("// The quality-dependent half of every ve_setup_data_template in\n");
+    printf("// vorbisenc.c's setup_list, in list order.\n");
     printf("// Each table appears once under its C name (leading `_` dropped,\n");
     printf("// upper-cased) with its full C length.\n");
     printf("#![allow(clippy::excessive_precision)]\n");
@@ -652,8 +648,8 @@ int main(void) {
 
     for (t = 0; t < NTEMPLATES; t++) emit_template(t);
 
-    printf("/// vorbisenc.c `setup_list` without `ve_setup_44_51` (6 channels), in\n");
-    printf("/// list order: `get_setup_template` returns the first match.\n");
+    printf("/// vorbisenc.c `setup_list`, in list order: `get_setup_template`\n");
+    printf("/// returns the first match.\n");
     printf("pub(crate) static SETUP_LIST: [&QualityTemplate; %d] = [\n", NTEMPLATES);
     for (t = 0; t < NTEMPLATES; t++) printf("    &SETUP_%s,\n", template_names[t]);
     printf("];\n");

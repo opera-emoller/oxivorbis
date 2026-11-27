@@ -3,7 +3,8 @@
  *
  * Reads interleaved PCM from stdin, writes Ogg Vorbis to stdout.
  * Args: [bitrate options] <rate> <channels> [base_quality [format [comment]]]
- *       e.g. ./oracle-encoder 44100 1
+ *       e.g. ./oracle-encoder 44100 1; any channel count libvorbis
+ *       accepts (1..=255), interleaved in Vorbis channel order.
  *       base_quality: libvorbis -0.1..1.0 scale (q-1..q10), default 0.5.
  *       format: s16 (default; i16 LE, fed as sample/32768.0f) or f32
  *               (f32 LE, fed to vorbis_analysis_buffer unchanged).
@@ -218,7 +219,8 @@ int main(int argc, char **argv) {
             "<rate> <channels> [base_quality [s16|f32 [comment]]]");
     long rate = atol(argv[1]);
     int channels = atoi(argv[2]);
-    if (rate <= 0 || channels < 1 || channels > 2) die("invalid rate/channels");
+    /* libvorbis itself rejects more than 255 channels (OV_EINVAL). */
+    if (rate <= 0 || channels < 1) die("invalid rate/channels");
     /* Optional libvorbis base_quality (-0.1..1.0 == q-1..q10); default q5. */
     float quality = 0.5f;
     if (argc >= 4) {

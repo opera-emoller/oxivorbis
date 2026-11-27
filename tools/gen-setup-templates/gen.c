@@ -2,7 +2,7 @@
  * libvorbis 1.3.7 sources:
  *
  *   src/setup_books.bin     every static codebook reachable from the
- *                           1-2 channel stereo + uncoupled templates,
+ *                           stereo, 5.1 and uncoupled templates,
  *                           each packed with libvorbis's own
  *                           vorbis_staticbook_pack() and byte-aligned.
  *   src/setup_templates.rs  Rust consts: book index (offset/bits), floor1
@@ -97,7 +97,8 @@ static int resset_id(const vorbis_residue_template *r, int len) {
 }
 
 #define NFLOORS ((int)(sizeof(_floor) / sizeof(_floor[0])))
-static int floor_nbooks[NFLOORS]; /* 0 = unreachable */
+static int floor_nbooks[NFLOORS]; /* 0 for unreachable floors and the LFE floor */
+static int floor_reached[NFLOORS];
 static int floor_book_ids[NFLOORS][64];
 
 /* Mirrors the maxbook computation in vorbis_encode_floor_setup. */
@@ -113,20 +114,17 @@ static int floor_maxbook(const vorbis_info_floor1 *f) {
   return maxbook;
 }
 
-/* Every ve_setup_data_template in vorbisenc.c's setup_list, in list order,
- * except ve_setup_44_51 (6 channels only; its coupling_restriction can
- * never match 1 or 2 channels, so dropping it does not change which
- * template get_setup_template picks). */
+/* Every ve_setup_data_template in vorbisenc.c's setup_list, in list order. */
 static const ve_setup_data_template *const templates[] = {
-    &ve_setup_44_stereo, &ve_setup_44_uncoupled, &ve_setup_32_stereo,
-    &ve_setup_32_uncoupled, &ve_setup_22_stereo, &ve_setup_22_uncoupled,
-    &ve_setup_16_stereo, &ve_setup_16_uncoupled, &ve_setup_11_stereo,
-    &ve_setup_11_uncoupled, &ve_setup_8_stereo, &ve_setup_8_uncoupled,
-    &ve_setup_X_stereo, &ve_setup_X_uncoupled, &ve_setup_XX_stereo,
-    &ve_setup_XX_uncoupled,
+    &ve_setup_44_stereo, &ve_setup_44_51, &ve_setup_44_uncoupled,
+    &ve_setup_32_stereo, &ve_setup_32_uncoupled, &ve_setup_22_stereo,
+    &ve_setup_22_uncoupled, &ve_setup_16_stereo, &ve_setup_16_uncoupled,
+    &ve_setup_11_stereo, &ve_setup_11_uncoupled, &ve_setup_8_stereo,
+    &ve_setup_8_uncoupled, &ve_setup_X_stereo, &ve_setup_X_uncoupled,
+    &ve_setup_XX_stereo, &ve_setup_XX_uncoupled,
 };
 static const char *const template_names[] = {
-    "SETUP_44_STEREO", "SETUP_44_UNCOUPLED", "SETUP_32_STEREO",
+    "SETUP_44_STEREO", "SETUP_44_51", "SETUP_44_UNCOUPLED", "SETUP_32_STEREO",
     "SETUP_32_UNCOUPLED", "SETUP_22_STEREO", "SETUP_22_UNCOUPLED",
     "SETUP_16_STEREO", "SETUP_16_UNCOUPLED", "SETUP_11_STEREO",
     "SETUP_11_UNCOUPLED", "SETUP_8_STEREO", "SETUP_8_UNCOUPLED",
@@ -134,19 +132,19 @@ static const char *const template_names[] = {
     "SETUP_XX_UNCOUPLED",
 };
 #define NTEMPLATES ((int)(sizeof(templates) / sizeof(templates[0])))
+/* ve_setup_44_51, the one template with more than two channels, is walked
+ * last so the ids of everything the 1-2 channel templates reach stay as
+ * they were before it was added (ids are internal; only stability of the
+ * generated diff depends on this). */
+#define T_44_51 1
 
-/* Check that `templates` is setup_list minus the 6-channel template. */
+/* Check that `templates` is setup_list. */
 static void check_setup_list(void) {
-  int i, t = 0;
-  for (i = 0; setup_list[i]; i++) {
-    if (setup_list[i] == &ve_setup_44_51) {
-      assert(setup_list[i]->coupling_restriction == 6);
-      continue;
-    }
-    assert(t < NTEMPLATES && setup_list[i] == templates[t]);
-    t++;
-  }
-  assert(t == NTEMPLATES);
+  int i;
+  for (i = 0; setup_list[i]; i++) assert(i < NTEMPLATES && setup_list[i] == templates[i]);
+  assert(i == NTEMPLATES);
+  assert(templates[T_44_51] == &ve_setup_44_51);
+  assert(ve_setup_44_51.coupling_restriction == 6);
 }
 
 /* vorbis_encode_map_n_res_setup uses one mode (and so only map[0]) when
@@ -158,8 +156,10 @@ static int template_modes(const ve_setup_data_template *s, int is) {
 /* Walk the templates in the same order libvorbis consumes them, so book
  * ids come out in a stable, meaningful order. */
 static void walk(void) {
-  int t, i, is, m, j, k;
-  for (t = 0; t < NTEMPLATES; t++) {
+  int w, i, is, m, j, k;
+  for (w = 0; w < NTEMPLATES; w++) {
+    /* list order, with T_44_51 moved to the end */
+    int t = w < T_44_51 ? w : w == NTEMPLATES - 1 ? T_44_51 : w + 1;
     const ve_setup_data_template *s = templates[t];
     assert(s->floor_books == _floor_books);
     assert(s->floor_params == _floor);
@@ -167,9 +167,11 @@ static void walk(void) {
       for (i = 0; i < s->floor_mappings; i++) {
         int fi = s->floor_mapping_list[i][is];
         assert(fi >= 0 && fi < NFLOORS);
-        if (!floor_nbooks[fi]) {
+        if (!floor_reached[fi]) {
           int mb = floor_maxbook(&_floor[fi]);
-          assert(mb >= 0 && mb < 64);
+          /* -1: the LFE floor (_floor[10]) has no partitions, so no books */
+          assert(mb >= -1 && mb < 64);
+          floor_reached[fi] = 1;
           for (k = 0; k <= mb; k++)
             floor_book_ids[fi][k] = book_id(_floor_books[fi][k]);
           floor_nbooks[fi] = mb + 1;
@@ -210,8 +212,10 @@ static void walk(void) {
  * unmanaged book and block, so the unmanaged ids are those walk() alone
  * assigns. */
 static void walk_managed(void) {
-  int t, is, j, i, k, m;
-  for (t = 0; t < NTEMPLATES; t++) {
+  int w, is, j, i, k, m;
+  for (w = 0; w < NTEMPLATES; w++) {
+    /* the same order as walk(): T_44_51 last */
+    int t = w < T_44_51 ? w : w == NTEMPLATES - 1 ? T_44_51 : w + 1;
     const ve_setup_data_template *s = templates[t];
     for (is = 0; is < s->mappings; is++) {
       const vorbis_mapping_template *mt = &s->maps[is];
@@ -429,7 +433,7 @@ int main(int argc, char **argv) {
   for (i = 0; i < NFLOORS; i++) emit_floor(i);
   p("];\n\n");
   p("/// `_floor_books[fi][0..=maxbook]` as book ids; empty for floors no\n"
-    "/// 1-2 channel template reaches.\n");
+    "/// template reaches.\n");
   p("pub(crate) static FLOOR_BOOKS: [&[u16]; %d] = [\n", NFLOORS);
   for (i = 0; i < NFLOORS; i++) {
     p("    &[");
@@ -497,7 +501,8 @@ int main(int argc, char **argv) {
   p("];\n\n");
 
   /* ---- mapping templates ---- */
-  p("/// `vorbis_info_mapping0[2]` templates (`_map_nominal`, `_map_nominal_u`).\n");
+  p("/// `vorbis_info_mapping0[2]` templates (`_map_nominal`, `_map_nominal_u`,\n"
+    "/// `_map_nominal_51`, `_map_nominal_51u`).\n");
   p("pub(crate) static MAPPINGS: [[Mapping0Template; 2]; %d] = [\n", nmaps);
   for (i = 0; i < nmaps; i++) {
     p("    [\n");
@@ -544,8 +549,8 @@ int main(int argc, char **argv) {
     p("    ],\n};\n");
   }
 
-  p("\n/// vorbisenc.c `setup_list` without `ve_setup_44_51` (6 channels), in\n"
-    "/// list order: `get_setup_template` returns the first match.\n");
+  p("\n/// vorbisenc.c `setup_list`, in list order: `get_setup_template`\n"
+    "/// returns the first match.\n");
   p("pub(crate) static SETUP_LIST: [&SetupTemplate; %d] = [\n", NTEMPLATES);
   for (t = 0; t < NTEMPLATES; t++) p("    &%s,\n", template_names[t]);
   p("];\n");

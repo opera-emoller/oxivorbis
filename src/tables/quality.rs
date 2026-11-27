@@ -2,8 +2,8 @@
 // vendored libvorbis 1.3.7 modes/{setup_*,psych_*}.h.
 // Do not edit. Regenerate via `just regen-quality-tables`.
 //
-// The quality-dependent half of every 1-2 channel ve_setup_data_template
-// in vorbisenc.c's setup_list (all but ve_setup_44_51), in list order.
+// The quality-dependent half of every ve_setup_data_template in
+// vorbisenc.c's setup_list, in list order.
 // Each table appears once under its C name (leading `_` dropped,
 // upper-cased) with its full C length.
 #![allow(clippy::excessive_precision)]
@@ -104,6 +104,12 @@ pub(crate) static RATE_MAPPING_44_STEREO: [f64; 12] = [
 pub(crate) static RATE_MAPPING_44_UN: [f64; 12] = [
     32000_f64, 48000_f64, 60000_f64, 70000_f64, 80000_f64, 86000_f64, 96000_f64, 110000_f64,
     120000_f64, 140000_f64, 160000_f64, 240001_f64,
+];
+
+/// `rate_mapping_44p51`.
+pub(crate) static RATE_MAPPING_44P51: [f64; 12] = [
+    14000_f64, 20000_f64, 28000_f64, 38000_f64, 46000_f64, 54000_f64, 75000_f64, 96000_f64,
+    120000_f64, 140000_f64, 180000_f64, 240001_f64,
 ];
 
 /// `quality_mapping_44`.
@@ -1834,6 +1840,43 @@ pub(crate) static SETUP_44_STEREO: QualityTemplate = QualityTemplate {
     stereo_modes: Some(&PSY_STEREO_MODES_44),
 };
 
+/// `ve_setup_44_51`.
+pub(crate) static SETUP_44_51: QualityTemplate = QualityTemplate {
+    name: "44_51",
+    mappings: 11,
+    rate_mapping: &RATE_MAPPING_44P51,
+    quality_mapping: &QUALITY_MAPPING_44,
+    coupling_restriction: 6,
+    samplerate_min_restriction: 40000,
+    samplerate_max_restriction: 70000,
+    blocksize_short: &BLOCKSIZE_SHORT_44,
+    blocksize_long: &BLOCKSIZE_LONG_44,
+    psy_tone_masteratt: &PSY_TONE_MASTERATT_44,
+    psy_tone_0db: &PSY_TONE_0DB,
+    psy_tone_dbsuppress: &PSY_TONE_SUPPRESS,
+    psy_tone_adj_impulse: &VP_TONEMASK_ADJ_OTHERBLOCK,
+    psy_tone_adj_long: Some(&VP_TONEMASK_ADJ_LONGBLOCK),
+    psy_tone_adj_other: &VP_TONEMASK_ADJ_OTHERBLOCK,
+    psy_noiseguards: &PSY_NOISEGUARDS_44,
+    psy_noise_bias_impulse: &PSY_NOISEBIAS_IMPULSE,
+    psy_noise_bias_padding: &PSY_NOISEBIAS_PADDING,
+    psy_noise_bias_trans: Some(&PSY_NOISEBIAS_TRANS),
+    psy_noise_bias_long: Some(&PSY_NOISEBIAS_LONG),
+    psy_noise_dbsuppress: &PSY_NOISE_SUPPRESS,
+    psy_noise_compand: &PSY_COMPAND_44,
+    psy_noise_compand_short_mapping: &PSY_COMPAND_SHORT_MAPPING,
+    psy_noise_compand_long_mapping: Some(&PSY_COMPAND_LONG_MAPPING),
+    psy_noise_normal_start: [&NOISE_START_SHORT_44, &NOISE_START_LONG_44],
+    psy_noise_normal_partition: [&NOISE_PART_SHORT_44, &NOISE_PART_LONG_44],
+    psy_noise_normal_thresh: &NOISE_THRESH_44,
+    psy_ath_float: &PSY_ATH_FLOATER,
+    psy_ath_abs: &PSY_ATH_ABS,
+    psy_lowpass: &PSY_LOWPASS_44,
+    global_params: &PSY_GLOBAL_44,
+    global_mapping: &GLOBAL_MAPPING_44,
+    stereo_modes: Some(&PSY_STEREO_MODES_44),
+};
+
 /// `ve_setup_44_uncoupled`.
 pub(crate) static SETUP_44_UNCOUPLED: QualityTemplate = QualityTemplate {
     name: "44_UNCOUPLED",
@@ -2389,10 +2432,11 @@ pub(crate) static SETUP_XX_UNCOUPLED: QualityTemplate = QualityTemplate {
     stereo_modes: Some(&PSY_STEREO_MODES_8),
 };
 
-/// vorbisenc.c `setup_list` without `ve_setup_44_51` (6 channels), in
-/// list order: `get_setup_template` returns the first match.
-pub(crate) static SETUP_LIST: [&QualityTemplate; 16] = [
+/// vorbisenc.c `setup_list`, in list order: `get_setup_template`
+/// returns the first match.
+pub(crate) static SETUP_LIST: [&QualityTemplate; 17] = [
     &SETUP_44_STEREO,
+    &SETUP_44_51,
     &SETUP_44_UNCOUPLED,
     &SETUP_32_STEREO,
     &SETUP_32_UNCOUPLED,

@@ -22,6 +22,7 @@
 /tools/debug-libvorbis-dump/ramp_harness.dSYM/
 /tools/oracle-encoder/dump_quality_tables
 /tools/oracle-encoder/dump_params
+/tools/oracle-encoder/probe_channels
 
 # oracle-encoder is the parity oracle used by tests/parity.rs. It must be
 # rebuilt locally from the pristine vendored libvorbis sources (run

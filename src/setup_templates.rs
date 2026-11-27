@@ -16,605 +16,807 @@ use crate::setup_gen::{
 pub(crate) static BOOKS_PACKED: &[u8] = include_bytes!("setup_books.bin");
 
 /// Book id -> (byte offset into BOOKS_PACKED, packed length in bits).
-pub(crate) static BOOKS: [(u32, u32); 598] = [
-    (0, 1350),     // 0: dim 1, entries 256, maptype 0
-    (169, 77),     // 1: dim 1, entries 4, maptype 0
-    (179, 110),    // 2: dim 1, entries 10, maptype 0
-    (193, 170),    // 3: dim 1, entries 25, maptype 0
-    (215, 329),    // 4: dim 1, entries 64, maptype 0
-    (257, 150),    // 5: dim 1, entries 16, maptype 0
-    (276, 110),    // 6: dim 1, entries 8, maptype 0
-    (290, 1350),   // 7: dim 1, entries 256, maptype 0
-    (459, 390),    // 8: dim 1, entries 64, maptype 0
-    (508, 710),    // 9: dim 1, entries 128, maptype 0
-    (597, 230),    // 10: dim 1, entries 32, maptype 0
-    (626, 678),    // 11: dim 1, entries 128, maptype 0
-    (711, 230),    // 12: dim 1, entries 32, maptype 0
-    (740, 678),    // 13: dim 1, entries 128, maptype 0
-    (825, 173),    // 14: dim 1, entries 18, maptype 0
-    (847, 280),    // 15: dim 1, entries 50, maptype 0
-    (882, 588),    // 16: dim 1, entries 128, maptype 0
-    (956, 173),    // 17: dim 1, entries 18, maptype 0
-    (978, 280),    // 18: dim 1, entries 50, maptype 0
-    (1013, 588),   // 19: dim 1, entries 128, maptype 0
-    (1087, 475),   // 20: dim 2, entries 81, maptype 0
-    (1147, 7111),  // 21: dim 8, entries 6561, maptype 1
-    (2036, 904),   // 22: dim 4, entries 625, maptype 1
-    (2149, 351),   // 23: dim 2, entries 81, maptype 1
-    (2193, 531),   // 24: dim 2, entries 81, maptype 1
-    (2260, 1568),  // 25: dim 2, entries 289, maptype 1
-    (2456, 550),   // 26: dim 4, entries 81, maptype 1
-    (2525, 788),   // 27: dim 2, entries 121, maptype 1
-    (2624, 1075),  // 28: dim 2, entries 169, maptype 1
-    (2759, 279),   // 29: dim 2, entries 25, maptype 1
-    (2794, 3279),  // 30: dim 4, entries 625, maptype 1
-    (3204, 1036),  // 31: dim 2, entries 169, maptype 1
-    (3334, 1669),  // 32: dim 2, entries 289, maptype 1
-    (3543, 475),   // 33: dim 2, entries 81, maptype 0
-    (3603, 1350),  // 34: dim 1, entries 256, maptype 0
-    (3772, 77),    // 35: dim 1, entries 4, maptype 0
-    (3782, 110),   // 36: dim 1, entries 10, maptype 0
-    (3796, 170),   // 37: dim 1, entries 25, maptype 0
-    (3818, 329),   // 38: dim 1, entries 64, maptype 0
-    (3860, 150),   // 39: dim 1, entries 16, maptype 0
-    (3879, 110),   // 40: dim 1, entries 8, maptype 0
-    (3893, 1350),  // 41: dim 1, entries 256, maptype 0
-    (4062, 390),   // 42: dim 1, entries 64, maptype 0
-    (4111, 710),   // 43: dim 1, entries 128, maptype 0
-    (4200, 230),   // 44: dim 1, entries 32, maptype 0
-    (4229, 678),   // 45: dim 1, entries 128, maptype 0
-    (4314, 230),   // 46: dim 1, entries 32, maptype 0
-    (4343, 678),   // 47: dim 1, entries 128, maptype 0
-    (4428, 173),   // 48: dim 1, entries 18, maptype 0
-    (4450, 280),   // 49: dim 1, entries 50, maptype 0
-    (4485, 588),   // 50: dim 1, entries 128, maptype 0
-    (4559, 173),   // 51: dim 1, entries 18, maptype 0
-    (4581, 280),   // 52: dim 1, entries 50, maptype 0
-    (4616, 588),   // 53: dim 1, entries 128, maptype 0
-    (4690, 475),   // 54: dim 2, entries 81, maptype 0
-    (4750, 7111),  // 55: dim 8, entries 6561, maptype 1
-    (5639, 904),   // 56: dim 4, entries 625, maptype 1
-    (5752, 351),   // 57: dim 2, entries 81, maptype 1
-    (5796, 531),   // 58: dim 2, entries 81, maptype 1
-    (5863, 1568),  // 59: dim 2, entries 289, maptype 1
-    (6059, 550),   // 60: dim 4, entries 81, maptype 1
-    (6128, 788),   // 61: dim 2, entries 121, maptype 1
-    (6227, 1075),  // 62: dim 2, entries 169, maptype 1
-    (6362, 279),   // 63: dim 2, entries 25, maptype 1
-    (6397, 3279),  // 64: dim 4, entries 625, maptype 1
-    (6807, 1036),  // 65: dim 2, entries 169, maptype 1
-    (6937, 1669),  // 66: dim 2, entries 289, maptype 1
-    (7146, 475),   // 67: dim 2, entries 81, maptype 0
-    (7206, 475),   // 68: dim 2, entries 81, maptype 0
-    (7266, 7111),  // 69: dim 8, entries 6561, maptype 1
-    (8155, 904),   // 70: dim 4, entries 625, maptype 1
-    (8268, 366),   // 71: dim 2, entries 81, maptype 1
-    (8314, 531),   // 72: dim 2, entries 81, maptype 1
-    (8381, 1568),  // 73: dim 2, entries 289, maptype 1
-    (8577, 550),   // 74: dim 4, entries 81, maptype 1
-    (8646, 788),   // 75: dim 2, entries 121, maptype 1
-    (8745, 1075),  // 76: dim 2, entries 169, maptype 1
-    (8880, 279),   // 77: dim 2, entries 25, maptype 1
-    (8915, 1036),  // 78: dim 2, entries 169, maptype 1
-    (9045, 1036),  // 79: dim 2, entries 169, maptype 1
-    (9175, 1669),  // 80: dim 2, entries 289, maptype 1
-    (9384, 475),   // 81: dim 2, entries 81, maptype 0
-    (9444, 390),   // 82: dim 1, entries 64, maptype 0
-    (9493, 1350),  // 83: dim 1, entries 256, maptype 0
-    (9662, 119),   // 84: dim 1, entries 9, maptype 0
-    (9677, 175),   // 85: dim 1, entries 25, maptype 0
-    (9699, 329),   // 86: dim 1, entries 64, maptype 0
-    (9741, 119),   // 87: dim 1, entries 9, maptype 0
-    (9756, 175),   // 88: dim 1, entries 25, maptype 0
-    (9778, 329),   // 89: dim 1, entries 64, maptype 0
-    (9820, 570),   // 90: dim 2, entries 100, maptype 0
-    (9892, 7111),  // 91: dim 8, entries 6561, maptype 1
-    (10781, 1184), // 92: dim 4, entries 625, maptype 1
-    (10929, 904),  // 93: dim 4, entries 625, maptype 1
-    (11042, 381),  // 94: dim 2, entries 81, maptype 1
-    (11090, 561),  // 95: dim 2, entries 81, maptype 1
-    (11161, 1598), // 96: dim 2, entries 289, maptype 1
-    (11361, 550),  // 97: dim 4, entries 81, maptype 1
-    (11430, 788),  // 98: dim 2, entries 121, maptype 1
-    (11529, 1075), // 99: dim 2, entries 169, maptype 1
-    (11664, 279),  // 100: dim 2, entries 25, maptype 1
-    (11699, 1036), // 101: dim 2, entries 169, maptype 1
-    (11829, 1036), // 102: dim 2, entries 169, maptype 1
-    (11959, 1669), // 103: dim 2, entries 289, maptype 1
-    (12168, 570),  // 104: dim 2, entries 100, maptype 0
-    (12240, 570),  // 105: dim 2, entries 100, maptype 0
-    (12312, 7111), // 106: dim 8, entries 6561, maptype 1
-    (13201, 1184), // 107: dim 4, entries 625, maptype 1
-    (13349, 904),  // 108: dim 4, entries 625, maptype 1
-    (13462, 381),  // 109: dim 2, entries 81, maptype 1
-    (13510, 561),  // 110: dim 2, entries 81, maptype 1
-    (13581, 1598), // 111: dim 2, entries 289, maptype 1
-    (13781, 550),  // 112: dim 4, entries 81, maptype 1
-    (13850, 788),  // 113: dim 2, entries 121, maptype 1
-    (13949, 1075), // 114: dim 2, entries 169, maptype 1
-    (14084, 279),  // 115: dim 2, entries 25, maptype 1
-    (14119, 1036), // 116: dim 2, entries 169, maptype 1
-    (14249, 1324), // 117: dim 2, entries 225, maptype 1
-    (14415, 1669), // 118: dim 2, entries 289, maptype 1
-    (14624, 570),  // 119: dim 2, entries 100, maptype 0
-    (14696, 110),  // 120: dim 1, entries 8, maptype 0
-    (14710, 390),  // 121: dim 1, entries 64, maptype 0
-    (14759, 390),  // 122: dim 1, entries 64, maptype 0
-    (14808, 710),  // 123: dim 1, entries 128, maptype 0
-    (14897, 230),  // 124: dim 1, entries 32, maptype 0
-    (14926, 678),  // 125: dim 1, entries 128, maptype 0
-    (15011, 173),  // 126: dim 1, entries 18, maptype 0
-    (15033, 280),  // 127: dim 1, entries 50, maptype 0
-    (15068, 588),  // 128: dim 1, entries 128, maptype 0
-    (15142, 173),  // 129: dim 1, entries 18, maptype 0
-    (15164, 280),  // 130: dim 1, entries 50, maptype 0
-    (15199, 588),  // 131: dim 1, entries 128, maptype 0
-    (15273, 570),  // 132: dim 2, entries 100, maptype 0
-    (15345, 7111), // 133: dim 8, entries 6561, maptype 1
-    (16234, 1184), // 134: dim 4, entries 625, maptype 1
-    (16382, 904),  // 135: dim 4, entries 625, maptype 1
-    (16495, 381),  // 136: dim 2, entries 81, maptype 1
-    (16543, 561),  // 137: dim 2, entries 81, maptype 1
-    (16614, 1598), // 138: dim 2, entries 289, maptype 1
-    (16814, 550),  // 139: dim 4, entries 81, maptype 1
-    (16883, 788),  // 140: dim 2, entries 121, maptype 1
-    (16982, 1075), // 141: dim 2, entries 169, maptype 1
-    (17117, 279),  // 142: dim 2, entries 25, maptype 1
-    (17152, 1036), // 143: dim 2, entries 169, maptype 1
-    (17282, 1324), // 144: dim 2, entries 225, maptype 1
-    (17448, 2449), // 145: dim 2, entries 441, maptype 1
-    (17755, 570),  // 146: dim 2, entries 100, maptype 0
-    (17827, 110),  // 147: dim 1, entries 8, maptype 0
-    (17841, 390),  // 148: dim 1, entries 64, maptype 0
-    (17890, 390),  // 149: dim 1, entries 64, maptype 0
-    (17939, 710),  // 150: dim 1, entries 128, maptype 0
-    (18028, 230),  // 151: dim 1, entries 32, maptype 0
-    (18057, 678),  // 152: dim 1, entries 128, maptype 0
-    (18142, 173),  // 153: dim 1, entries 18, maptype 0
-    (18164, 280),  // 154: dim 1, entries 50, maptype 0
-    (18199, 588),  // 155: dim 1, entries 128, maptype 0
-    (18273, 173),  // 156: dim 1, entries 18, maptype 0
-    (18295, 280),  // 157: dim 1, entries 50, maptype 0
-    (18330, 588),  // 158: dim 1, entries 128, maptype 0
-    (18404, 570),  // 159: dim 2, entries 100, maptype 0
-    (18476, 7111), // 160: dim 8, entries 6561, maptype 1
-    (19365, 1184), // 161: dim 4, entries 625, maptype 1
-    (19513, 904),  // 162: dim 4, entries 625, maptype 1
-    (19626, 381),  // 163: dim 2, entries 81, maptype 1
-    (19674, 561),  // 164: dim 2, entries 81, maptype 1
-    (19745, 1598), // 165: dim 2, entries 289, maptype 1
-    (19945, 550),  // 166: dim 4, entries 81, maptype 1
-    (20014, 788),  // 167: dim 2, entries 121, maptype 1
-    (20113, 1075), // 168: dim 2, entries 169, maptype 1
-    (20248, 279),  // 169: dim 2, entries 25, maptype 1
-    (20283, 1324), // 170: dim 2, entries 225, maptype 1
-    (20449, 1669), // 171: dim 2, entries 289, maptype 1
-    (20658, 2449), // 172: dim 2, entries 441, maptype 1
-    (20965, 570),  // 173: dim 2, entries 100, maptype 0
-    (21037, 570),  // 174: dim 2, entries 100, maptype 0
-    (21109, 471),  // 175: dim 4, entries 81, maptype 1
-    (21168, 2584), // 176: dim 4, entries 625, maptype 1
-    (21491, 511),  // 177: dim 2, entries 81, maptype 1
-    (21555, 1178), // 178: dim 2, entries 289, maptype 1
-    (21703, 550),  // 179: dim 4, entries 81, maptype 1
-    (21772, 788),  // 180: dim 2, entries 121, maptype 1
-    (21871, 795),  // 181: dim 2, entries 169, maptype 1
-    (21971, 279),  // 182: dim 2, entries 25, maptype 1
-    (22006, 1036), // 183: dim 2, entries 169, maptype 1
-    (22136, 788),  // 184: dim 2, entries 121, maptype 1
-    (22235, 1324), // 185: dim 2, entries 225, maptype 1
-    (22401, 2449), // 186: dim 2, entries 441, maptype 1
-    (22708, 1036), // 187: dim 2, entries 169, maptype 1
-    (22838, 1036), // 188: dim 2, entries 169, maptype 1
-    (22968, 678),  // 189: dim 1, entries 49, maptype 1
-    (23053, 570),  // 190: dim 2, entries 100, maptype 0
-    (23125, 570),  // 191: dim 2, entries 100, maptype 0
-    (23197, 471),  // 192: dim 4, entries 81, maptype 1
-    (23256, 2584), // 193: dim 4, entries 625, maptype 1
-    (23579, 511),  // 194: dim 2, entries 81, maptype 1
-    (23643, 1178), // 195: dim 2, entries 289, maptype 1
-    (23791, 550),  // 196: dim 4, entries 81, maptype 1
-    (23860, 788),  // 197: dim 2, entries 121, maptype 1
-    (23959, 795),  // 198: dim 2, entries 169, maptype 1
-    (24059, 279),  // 199: dim 2, entries 25, maptype 1
-    (24094, 1036), // 200: dim 2, entries 169, maptype 1
-    (24224, 788),  // 201: dim 2, entries 121, maptype 1
-    (24323, 1324), // 202: dim 2, entries 225, maptype 1
-    (24489, 2449), // 203: dim 2, entries 441, maptype 1
-    (24796, 1036), // 204: dim 2, entries 169, maptype 1
-    (24926, 1036), // 205: dim 2, entries 169, maptype 1
-    (25056, 678),  // 206: dim 1, entries 49, maptype 1
-    (25141, 570),  // 207: dim 2, entries 100, maptype 0
-    (25213, 570),  // 208: dim 2, entries 100, maptype 0
-    (25285, 471),  // 209: dim 4, entries 81, maptype 1
-    (25344, 2584), // 210: dim 4, entries 625, maptype 1
-    (25667, 511),  // 211: dim 2, entries 81, maptype 1
-    (25731, 1178), // 212: dim 2, entries 289, maptype 1
-    (25879, 550),  // 213: dim 4, entries 81, maptype 1
-    (25948, 788),  // 214: dim 2, entries 121, maptype 1
-    (26047, 795),  // 215: dim 2, entries 169, maptype 1
-    (26147, 279),  // 216: dim 2, entries 25, maptype 1
-    (26182, 1036), // 217: dim 2, entries 169, maptype 1
-    (26312, 788),  // 218: dim 2, entries 121, maptype 1
-    (26411, 1324), // 219: dim 2, entries 225, maptype 1
-    (26577, 2449), // 220: dim 2, entries 441, maptype 1
-    (26884, 1669), // 221: dim 2, entries 289, maptype 1
-    (27093, 2039), // 222: dim 2, entries 361, maptype 1
-    (27348, 472),  // 223: dim 1, entries 49, maptype 1
-    (27407, 570),  // 224: dim 2, entries 100, maptype 0
-    (27479, 570),  // 225: dim 2, entries 100, maptype 0
-    (27551, 471),  // 226: dim 4, entries 81, maptype 1
-    (27610, 2584), // 227: dim 4, entries 625, maptype 1
-    (27933, 511),  // 228: dim 2, entries 81, maptype 1
-    (27997, 1178), // 229: dim 2, entries 289, maptype 1
-    (28145, 550),  // 230: dim 4, entries 81, maptype 1
-    (28214, 788),  // 231: dim 2, entries 121, maptype 1
-    (28313, 795),  // 232: dim 2, entries 169, maptype 1
-    (28413, 279),  // 233: dim 2, entries 25, maptype 1
-    (28448, 1036), // 234: dim 2, entries 169, maptype 1
-    (28578, 788),  // 235: dim 2, entries 121, maptype 1
-    (28677, 1324), // 236: dim 2, entries 225, maptype 1
-    (28843, 2449), // 237: dim 2, entries 441, maptype 1
-    (29150, 2039), // 238: dim 2, entries 361, maptype 1
-    (29405, 2039), // 239: dim 2, entries 361, maptype 1
-    (29660, 472),  // 240: dim 1, entries 49, maptype 1
-    (29719, 570),  // 241: dim 2, entries 100, maptype 0
-    (29791, 390),  // 242: dim 2, entries 64, maptype 0
-    (29840, 550),  // 243: dim 4, entries 81, maptype 1
-    (29909, 550),  // 244: dim 4, entries 81, maptype 1
-    (29978, 3814), // 245: dim 4, entries 625, maptype 1
-    (30455, 3889), // 246: dim 4, entries 625, maptype 1
-    (30942, 580),  // 247: dim 2, entries 81, maptype 1
-    (31015, 1170), // 248: dim 2, entries 169, maptype 1
-    (31162, 279),  // 249: dim 2, entries 25, maptype 1
-    (31197, 3279), // 250: dim 4, entries 625, maptype 1
-    (31607, 1036), // 251: dim 2, entries 169, maptype 1
-    (31737, 1036), // 252: dim 2, entries 169, maptype 1
-    (31867, 390),  // 253: dim 2, entries 64, maptype 0
-    (31916, 390),  // 254: dim 2, entries 64, maptype 0
-    (31965, 550),  // 255: dim 4, entries 81, maptype 1
-    (32034, 550),  // 256: dim 4, entries 81, maptype 1
-    (32103, 3809), // 257: dim 4, entries 625, maptype 1
-    (32580, 3884), // 258: dim 4, entries 625, maptype 1
-    (33066, 580),  // 259: dim 2, entries 81, maptype 1
-    (33139, 1190), // 260: dim 2, entries 169, maptype 1
-    (33288, 279),  // 261: dim 2, entries 25, maptype 1
-    (33323, 3279), // 262: dim 4, entries 625, maptype 1
-    (33733, 1036), // 263: dim 2, entries 169, maptype 1
-    (33863, 1036), // 264: dim 2, entries 169, maptype 1
-    (33993, 390),  // 265: dim 2, entries 64, maptype 0
-    (34042, 390),  // 266: dim 2, entries 64, maptype 0
-    (34091, 550),  // 267: dim 4, entries 81, maptype 1
-    (34160, 550),  // 268: dim 4, entries 81, maptype 1
-    (34229, 3809), // 269: dim 4, entries 625, maptype 1
-    (34706, 3884), // 270: dim 4, entries 625, maptype 1
-    (35192, 580),  // 271: dim 2, entries 81, maptype 1
-    (35265, 1190), // 272: dim 2, entries 169, maptype 1
-    (35414, 279),  // 273: dim 2, entries 25, maptype 1
-    (35449, 405),  // 274: dim 2, entries 49, maptype 1
-    (35500, 1036), // 275: dim 2, entries 169, maptype 1
-    (35630, 1036), // 276: dim 2, entries 169, maptype 1
-    (35760, 390),  // 277: dim 2, entries 64, maptype 0
-    (35809, 390),  // 278: dim 2, entries 64, maptype 0
-    (35858, 550),  // 279: dim 4, entries 81, maptype 1
-    (35927, 550),  // 280: dim 4, entries 81, maptype 1
-    (35996, 3794), // 281: dim 4, entries 625, maptype 1
-    (36471, 3279), // 282: dim 4, entries 625, maptype 1
-    (36881, 580),  // 283: dim 2, entries 81, maptype 1
-    (36954, 1185), // 284: dim 2, entries 169, maptype 1
-    (37103, 279),  // 285: dim 2, entries 25, maptype 1
-    (37138, 580),  // 286: dim 2, entries 81, maptype 1
-    (37211, 1036), // 287: dim 2, entries 169, maptype 1
-    (37341, 1036), // 288: dim 2, entries 169, maptype 1
-    (37471, 390),  // 289: dim 2, entries 64, maptype 0
-    (37520, 390),  // 290: dim 2, entries 64, maptype 0
-    (37569, 550),  // 291: dim 4, entries 81, maptype 1
-    (37638, 550),  // 292: dim 4, entries 81, maptype 1
-    (37707, 3749), // 293: dim 4, entries 625, maptype 1
-    (38176, 3279), // 294: dim 4, entries 625, maptype 1
-    (38586, 580),  // 295: dim 2, entries 81, maptype 1
-    (38659, 1200), // 296: dim 2, entries 169, maptype 1
-    (38809, 279),  // 297: dim 2, entries 25, maptype 1
-    (38844, 580),  // 298: dim 2, entries 81, maptype 1
-    (38917, 1324), // 299: dim 2, entries 225, maptype 1
-    (39083, 1669), // 300: dim 2, entries 289, maptype 1
-    (39292, 390),  // 301: dim 2, entries 64, maptype 0
-    (39341, 390),  // 302: dim 2, entries 64, maptype 0
-    (39390, 550),  // 303: dim 4, entries 81, maptype 1
-    (39459, 550),  // 304: dim 4, entries 81, maptype 1
-    (39528, 3779), // 305: dim 4, entries 625, maptype 1
-    (40001, 3279), // 306: dim 4, entries 625, maptype 1
-    (40411, 580),  // 307: dim 2, entries 81, maptype 1
-    (40484, 1200), // 308: dim 2, entries 169, maptype 1
-    (40634, 279),  // 309: dim 2, entries 25, maptype 1
-    (40669, 1036), // 310: dim 2, entries 169, maptype 1
-    (40799, 1324), // 311: dim 2, entries 225, maptype 1
-    (40965, 1669), // 312: dim 2, entries 289, maptype 1
-    (41174, 390),  // 313: dim 2, entries 64, maptype 0
-    (41223, 570),  // 314: dim 2, entries 100, maptype 0
-    (41295, 550),  // 315: dim 4, entries 81, maptype 1
-    (41364, 550),  // 316: dim 4, entries 81, maptype 1
-    (41433, 3779), // 317: dim 4, entries 625, maptype 1
-    (41906, 3279), // 318: dim 4, entries 625, maptype 1
-    (42316, 580),  // 319: dim 2, entries 81, maptype 1
-    (42389, 580),  // 320: dim 2, entries 81, maptype 1
-    (42462, 550),  // 321: dim 4, entries 81, maptype 1
-    (42531, 788),  // 322: dim 2, entries 121, maptype 1
-    (42630, 788),  // 323: dim 2, entries 121, maptype 1
-    (42729, 788),  // 324: dim 2, entries 121, maptype 1
-    (42828, 1036), // 325: dim 2, entries 169, maptype 1
-    (42958, 1324), // 326: dim 2, entries 225, maptype 1
-    (43124, 1669), // 327: dim 2, entries 289, maptype 1
-    (43333, 570),  // 328: dim 2, entries 100, maptype 0
-    (43405, 570),  // 329: dim 2, entries 100, maptype 0
-    (43477, 550),  // 330: dim 4, entries 81, maptype 1
-    (43546, 550),  // 331: dim 4, entries 81, maptype 1
-    (43615, 3714), // 332: dim 4, entries 625, maptype 1
-    (44080, 3279), // 333: dim 4, entries 625, maptype 1
-    (44490, 580),  // 334: dim 2, entries 81, maptype 1
-    (44563, 580),  // 335: dim 2, entries 81, maptype 1
-    (44636, 550),  // 336: dim 4, entries 81, maptype 1
-    (44705, 788),  // 337: dim 2, entries 121, maptype 1
-    (44804, 788),  // 338: dim 2, entries 121, maptype 1
-    (44903, 788),  // 339: dim 2, entries 121, maptype 1
-    (45002, 1324), // 340: dim 2, entries 225, maptype 1
-    (45168, 1324), // 341: dim 2, entries 225, maptype 1
-    (45334, 1669), // 342: dim 2, entries 289, maptype 1
-    (45543, 570),  // 343: dim 2, entries 100, maptype 0
-    (45615, 570),  // 344: dim 2, entries 100, maptype 0
-    (45687, 550),  // 345: dim 4, entries 81, maptype 1
-    (45756, 550),  // 346: dim 4, entries 81, maptype 1
-    (45825, 3719), // 347: dim 4, entries 625, maptype 1
-    (46290, 3279), // 348: dim 4, entries 625, maptype 1
-    (46700, 580),  // 349: dim 2, entries 81, maptype 1
-    (46773, 580),  // 350: dim 2, entries 81, maptype 1
-    (46846, 550),  // 351: dim 4, entries 81, maptype 1
-    (46915, 788),  // 352: dim 2, entries 121, maptype 1
-    (47014, 788),  // 353: dim 2, entries 121, maptype 1
-    (47113, 788),  // 354: dim 2, entries 121, maptype 1
-    (47212, 788),  // 355: dim 2, entries 121, maptype 1
-    (47311, 1036), // 356: dim 2, entries 169, maptype 1
-    (47441, 475),  // 357: dim 1, entries 49, maptype 1
-    (47501, 570),  // 358: dim 2, entries 100, maptype 0
-    (47573, 570),  // 359: dim 2, entries 100, maptype 0
-    (47645, 550),  // 360: dim 4, entries 81, maptype 1
-    (47714, 3279), // 361: dim 4, entries 625, maptype 1
-    (48124, 580),  // 362: dim 2, entries 81, maptype 1
-    (48197, 1669), // 363: dim 2, entries 289, maptype 1
-    (48406, 550),  // 364: dim 4, entries 81, maptype 1
-    (48475, 788),  // 365: dim 2, entries 121, maptype 1
-    (48574, 1036), // 366: dim 2, entries 169, maptype 1
-    (48704, 279),  // 367: dim 2, entries 25, maptype 1
-    (48739, 1036), // 368: dim 2, entries 169, maptype 1
-    (48869, 788),  // 369: dim 2, entries 121, maptype 1
-    (48968, 1324), // 370: dim 2, entries 225, maptype 1
-    (49134, 2449), // 371: dim 2, entries 441, maptype 1
-    (49441, 580),  // 372: dim 2, entries 81, maptype 1
-    (49514, 2039), // 373: dim 2, entries 361, maptype 1
-    (49769, 472),  // 374: dim 1, entries 49, maptype 1
-    (49828, 570),  // 375: dim 2, entries 100, maptype 0
-    (49900, 570),  // 376: dim 2, entries 100, maptype 0
-    (49972, 550),  // 377: dim 4, entries 81, maptype 1
-    (50041, 3279), // 378: dim 4, entries 625, maptype 1
-    (50451, 580),  // 379: dim 2, entries 81, maptype 1
-    (50524, 1669), // 380: dim 2, entries 289, maptype 1
-    (50733, 550),  // 381: dim 4, entries 81, maptype 1
-    (50802, 788),  // 382: dim 2, entries 121, maptype 1
-    (50901, 1036), // 383: dim 2, entries 169, maptype 1
-    (51031, 279),  // 384: dim 2, entries 25, maptype 1
-    (51066, 1036), // 385: dim 2, entries 169, maptype 1
-    (51196, 788),  // 386: dim 2, entries 121, maptype 1
-    (51295, 1324), // 387: dim 2, entries 225, maptype 1
-    (51461, 2449), // 388: dim 2, entries 441, maptype 1
-    (51768, 1324), // 389: dim 2, entries 225, maptype 1
-    (51934, 2039), // 390: dim 2, entries 361, maptype 1
-    (52189, 678),  // 391: dim 1, entries 49, maptype 1
-    (52274, 570),  // 392: dim 2, entries 100, maptype 0
-    (52346, 110),  // 393: dim 1, entries 8, maptype 0
-    (52360, 390),  // 394: dim 1, entries 64, maptype 0
-    (52409, 390),  // 395: dim 1, entries 64, maptype 0
-    (52458, 710),  // 396: dim 1, entries 128, maptype 0
-    (52547, 230),  // 397: dim 1, entries 32, maptype 0
-    (52576, 678),  // 398: dim 1, entries 128, maptype 0
-    (52661, 173),  // 399: dim 1, entries 18, maptype 0
-    (52683, 280),  // 400: dim 1, entries 50, maptype 0
-    (52718, 588),  // 401: dim 1, entries 128, maptype 0
-    (52792, 173),  // 402: dim 1, entries 18, maptype 0
-    (52814, 280),  // 403: dim 1, entries 50, maptype 0
-    (52849, 588),  // 404: dim 1, entries 128, maptype 0
-    (52923, 570),  // 405: dim 2, entries 100, maptype 0
-    (52995, 7111), // 406: dim 8, entries 6561, maptype 1
-    (53884, 904),  // 407: dim 4, entries 625, maptype 1
-    (53997, 351),  // 408: dim 2, entries 81, maptype 1
-    (54041, 531),  // 409: dim 2, entries 81, maptype 1
-    (54108, 1568), // 410: dim 2, entries 289, maptype 1
-    (54304, 550),  // 411: dim 4, entries 81, maptype 1
-    (54373, 788),  // 412: dim 2, entries 121, maptype 1
-    (54472, 1060), // 413: dim 2, entries 169, maptype 1
-    (54605, 279),  // 414: dim 2, entries 25, maptype 1
-    (54640, 550),  // 415: dim 4, entries 81, maptype 1
-    (54709, 1324), // 416: dim 2, entries 225, maptype 1
-    (54875, 2449), // 417: dim 2, entries 441, maptype 1
-    (55182, 390),  // 418: dim 1, entries 64, maptype 0
-    (55231, 1350), // 419: dim 1, entries 256, maptype 0
-    (55400, 119),  // 420: dim 1, entries 9, maptype 0
-    (55415, 175),  // 421: dim 1, entries 25, maptype 0
-    (55437, 329),  // 422: dim 1, entries 64, maptype 0
-    (55479, 119),  // 423: dim 1, entries 9, maptype 0
-    (55494, 175),  // 424: dim 1, entries 25, maptype 0
-    (55516, 329),  // 425: dim 1, entries 64, maptype 0
-    (55558, 570),  // 426: dim 2, entries 100, maptype 0
-    (55630, 7111), // 427: dim 8, entries 6561, maptype 1
-    (56519, 904),  // 428: dim 4, entries 625, maptype 1
-    (56632, 351),  // 429: dim 2, entries 81, maptype 1
-    (56676, 531),  // 430: dim 2, entries 81, maptype 1
-    (56743, 1568), // 431: dim 2, entries 289, maptype 1
-    (56939, 550),  // 432: dim 4, entries 81, maptype 1
-    (57008, 788),  // 433: dim 2, entries 121, maptype 1
-    (57107, 1075), // 434: dim 2, entries 169, maptype 1
-    (57242, 279),  // 435: dim 2, entries 25, maptype 1
-    (57277, 1036), // 436: dim 2, entries 169, maptype 1
-    (57407, 1324), // 437: dim 2, entries 225, maptype 1
-    (57573, 2449), // 438: dim 2, entries 441, maptype 1
-    (57880, 570),  // 439: dim 2, entries 100, maptype 0
-    (57952, 570),  // 440: dim 2, entries 100, maptype 0
-    (58024, 271),  // 441: dim 4, entries 81, maptype 1
-    (58058, 1624), // 442: dim 4, entries 625, maptype 1
-    (58261, 481),  // 443: dim 2, entries 81, maptype 1
-    (58322, 1148), // 444: dim 2, entries 289, maptype 1
-    (58466, 550),  // 445: dim 4, entries 81, maptype 1
-    (58535, 788),  // 446: dim 2, entries 121, maptype 1
-    (58634, 795),  // 447: dim 2, entries 169, maptype 1
-    (58734, 279),  // 448: dim 2, entries 25, maptype 1
-    (58769, 1036), // 449: dim 2, entries 169, maptype 1
-    (58899, 788),  // 450: dim 2, entries 121, maptype 1
-    (58998, 1324), // 451: dim 2, entries 225, maptype 1
-    (59164, 2449), // 452: dim 2, entries 441, maptype 1
-    (59471, 1669), // 453: dim 2, entries 289, maptype 1
-    (59680, 2039), // 454: dim 2, entries 361, maptype 1
-    (59935, 473),  // 455: dim 1, entries 49, maptype 1
-    (59995, 570),  // 456: dim 2, entries 100, maptype 0
-    (60067, 390),  // 457: dim 2, entries 64, maptype 0
-    (60116, 550),  // 458: dim 4, entries 81, maptype 1
-    (60185, 550),  // 459: dim 4, entries 81, maptype 1
-    (60254, 3844), // 460: dim 4, entries 625, maptype 1
-    (60735, 3884), // 461: dim 4, entries 625, maptype 1
-    (61221, 580),  // 462: dim 2, entries 81, maptype 1
-    (61294, 1050), // 463: dim 2, entries 169, maptype 1
-    (61426, 279),  // 464: dim 2, entries 25, maptype 1
-    (61461, 550),  // 465: dim 4, entries 81, maptype 1
-    (61530, 1324), // 466: dim 2, entries 225, maptype 1
-    (61696, 2449), // 467: dim 2, entries 441, maptype 1
-    (62003, 570),  // 468: dim 2, entries 100, maptype 0
-    (62075, 550),  // 469: dim 4, entries 81, maptype 1
-    (62144, 550),  // 470: dim 4, entries 81, maptype 1
-    (62213, 3279), // 471: dim 4, entries 625, maptype 1
-    (62623, 3279), // 472: dim 4, entries 625, maptype 1
-    (63033, 580),  // 473: dim 2, entries 81, maptype 1
-    (63106, 580),  // 474: dim 2, entries 81, maptype 1
-    (63179, 550),  // 475: dim 4, entries 81, maptype 1
-    (63248, 788),  // 476: dim 2, entries 121, maptype 1
-    (63347, 788),  // 477: dim 2, entries 121, maptype 1
-    (63446, 788),  // 478: dim 2, entries 121, maptype 1
-    (63545, 1324), // 479: dim 2, entries 225, maptype 1
-    (63711, 1324), // 480: dim 2, entries 225, maptype 1
-    (63877, 1669), // 481: dim 2, entries 289, maptype 1
-    (64086, 570),  // 482: dim 2, entries 100, maptype 0
-    (64158, 570),  // 483: dim 2, entries 100, maptype 0
-    (64230, 550),  // 484: dim 4, entries 81, maptype 1
-    (64299, 3279), // 485: dim 4, entries 625, maptype 1
-    (64709, 580),  // 486: dim 2, entries 81, maptype 1
-    (64782, 1669), // 487: dim 2, entries 289, maptype 1
-    (64991, 550),  // 488: dim 4, entries 81, maptype 1
-    (65060, 788),  // 489: dim 2, entries 121, maptype 1
-    (65159, 1036), // 490: dim 2, entries 169, maptype 1
-    (65289, 178),  // 491: dim 2, entries 25, maptype 1
-    (65312, 1036), // 492: dim 2, entries 169, maptype 1
-    (65442, 788),  // 493: dim 2, entries 121, maptype 1
-    (65541, 1324), // 494: dim 2, entries 225, maptype 1
-    (65707, 2449), // 495: dim 2, entries 441, maptype 1
-    (66014, 1324), // 496: dim 2, entries 225, maptype 1
-    (66180, 2039), // 497: dim 2, entries 361, maptype 1
-    (66435, 678),  // 498: dim 1, entries 49, maptype 1
-    (66520, 570),  // 499: dim 2, entries 100, maptype 0
-    (66592, 1350), // 500: dim 1, entries 256, maptype 0
-    (66761, 90),   // 501: dim 1, entries 4, maptype 0
-    (66773, 110),  // 502: dim 1, entries 10, maptype 0
-    (66787, 170),  // 503: dim 1, entries 25, maptype 0
-    (66809, 329),  // 504: dim 1, entries 64, maptype 0
-    (66851, 570),  // 505: dim 2, entries 100, maptype 0
-    (66923, 7111), // 506: dim 8, entries 6561, maptype 1
-    (67812, 904),  // 507: dim 4, entries 625, maptype 1
-    (67925, 351),  // 508: dim 2, entries 81, maptype 1
-    (67969, 531),  // 509: dim 2, entries 81, maptype 1
-    (68036, 1568), // 510: dim 2, entries 289, maptype 1
-    (68232, 550),  // 511: dim 4, entries 81, maptype 1
-    (68301, 788),  // 512: dim 2, entries 121, maptype 1
-    (68400, 1040), // 513: dim 2, entries 169, maptype 1
-    (68530, 279),  // 514: dim 2, entries 25, maptype 1
-    (68565, 550),  // 515: dim 4, entries 81, maptype 1
-    (68634, 1324), // 516: dim 2, entries 225, maptype 1
-    (68800, 2449), // 517: dim 2, entries 441, maptype 1
-    (69107, 570),  // 518: dim 2, entries 100, maptype 0
-    (69179, 7111), // 519: dim 8, entries 6561, maptype 1
-    (70068, 904),  // 520: dim 4, entries 625, maptype 1
-    (70181, 351),  // 521: dim 2, entries 81, maptype 1
-    (70225, 531),  // 522: dim 2, entries 81, maptype 1
-    (70292, 1568), // 523: dim 2, entries 289, maptype 1
-    (70488, 550),  // 524: dim 4, entries 81, maptype 1
-    (70557, 788),  // 525: dim 2, entries 121, maptype 1
-    (70656, 1075), // 526: dim 2, entries 169, maptype 1
-    (70791, 279),  // 527: dim 2, entries 25, maptype 1
-    (70826, 1036), // 528: dim 2, entries 169, maptype 1
-    (70956, 1324), // 529: dim 2, entries 225, maptype 1
-    (71122, 2449), // 530: dim 2, entries 441, maptype 1
-    (71429, 390),  // 531: dim 2, entries 64, maptype 0
-    (71478, 550),  // 532: dim 4, entries 81, maptype 1
-    (71547, 550),  // 533: dim 4, entries 81, maptype 1
-    (71616, 3864), // 534: dim 4, entries 625, maptype 1
-    (72099, 3279), // 535: dim 4, entries 625, maptype 1
-    (72509, 580),  // 536: dim 2, entries 81, maptype 1
-    (72582, 1090), // 537: dim 2, entries 169, maptype 1
-    (72719, 279),  // 538: dim 2, entries 25, maptype 1
-    (72754, 550),  // 539: dim 4, entries 81, maptype 1
-    (72823, 1324), // 540: dim 2, entries 225, maptype 1
-    (72989, 2449), // 541: dim 2, entries 441, maptype 1
-    (73296, 570),  // 542: dim 2, entries 100, maptype 0
-    (73368, 550),  // 543: dim 4, entries 81, maptype 1
-    (73437, 550),  // 544: dim 4, entries 81, maptype 1
-    (73506, 3864), // 545: dim 4, entries 625, maptype 1
-    (73989, 3279), // 546: dim 4, entries 625, maptype 1
-    (74399, 580),  // 547: dim 2, entries 81, maptype 1
-    (74472, 580),  // 548: dim 2, entries 81, maptype 1
-    (74545, 550),  // 549: dim 4, entries 81, maptype 1
-    (74614, 788),  // 550: dim 2, entries 121, maptype 1
-    (74713, 788),  // 551: dim 2, entries 121, maptype 1
-    (74812, 788),  // 552: dim 2, entries 121, maptype 1
-    (74911, 1324), // 553: dim 2, entries 225, maptype 1
-    (75077, 1324), // 554: dim 2, entries 225, maptype 1
-    (75243, 1669), // 555: dim 2, entries 289, maptype 1
-    (75452, 475),  // 556: dim 2, entries 81, maptype 0
-    (75512, 7111), // 557: dim 8, entries 6561, maptype 1
-    (76401, 904),  // 558: dim 4, entries 625, maptype 1
-    (76514, 381),  // 559: dim 2, entries 81, maptype 1
-    (76562, 561),  // 560: dim 2, entries 81, maptype 1
-    (76633, 1598), // 561: dim 2, entries 289, maptype 1
-    (76833, 550),  // 562: dim 4, entries 81, maptype 1
-    (76902, 788),  // 563: dim 2, entries 121, maptype 1
-    (77001, 1075), // 564: dim 2, entries 169, maptype 1
-    (77136, 279),  // 565: dim 2, entries 25, maptype 1
-    (77171, 580),  // 566: dim 2, entries 81, maptype 1
-    (77244, 1036), // 567: dim 2, entries 169, maptype 1
-    (77374, 1669), // 568: dim 2, entries 289, maptype 1
-    (77583, 475),  // 569: dim 2, entries 81, maptype 0
-    (77643, 475),  // 570: dim 2, entries 81, maptype 0
-    (77703, 7111), // 571: dim 8, entries 6561, maptype 1
-    (78592, 904),  // 572: dim 4, entries 625, maptype 1
-    (78705, 381),  // 573: dim 2, entries 81, maptype 1
-    (78753, 561),  // 574: dim 2, entries 81, maptype 1
-    (78824, 1598), // 575: dim 2, entries 289, maptype 1
-    (79024, 550),  // 576: dim 4, entries 81, maptype 1
-    (79093, 788),  // 577: dim 2, entries 121, maptype 1
-    (79192, 1075), // 578: dim 2, entries 169, maptype 1
-    (79327, 279),  // 579: dim 2, entries 25, maptype 1
-    (79362, 580),  // 580: dim 2, entries 81, maptype 1
-    (79435, 1036), // 581: dim 2, entries 169, maptype 1
-    (79565, 1669), // 582: dim 2, entries 289, maptype 1
-    (79774, 475),  // 583: dim 2, entries 81, maptype 0
-    (79834, 475),  // 584: dim 2, entries 81, maptype 0
-    (79894, 7111), // 585: dim 8, entries 6561, maptype 1
-    (80783, 904),  // 586: dim 4, entries 625, maptype 1
-    (80896, 381),  // 587: dim 2, entries 81, maptype 1
-    (80944, 561),  // 588: dim 2, entries 81, maptype 1
-    (81015, 1598), // 589: dim 2, entries 289, maptype 1
-    (81215, 550),  // 590: dim 4, entries 81, maptype 1
-    (81284, 788),  // 591: dim 2, entries 121, maptype 1
-    (81383, 1075), // 592: dim 2, entries 169, maptype 1
-    (81518, 279),  // 593: dim 2, entries 25, maptype 1
-    (81553, 1036), // 594: dim 2, entries 169, maptype 1
-    (81683, 1036), // 595: dim 2, entries 169, maptype 1
-    (81813, 1669), // 596: dim 2, entries 289, maptype 1
-    (82022, 475),  // 597: dim 2, entries 81, maptype 0
+pub(crate) static BOOKS: [(u32, u32); 800] = [
+    (0, 1350),       // 0: dim 1, entries 256, maptype 0
+    (169, 77),       // 1: dim 1, entries 4, maptype 0
+    (179, 110),      // 2: dim 1, entries 10, maptype 0
+    (193, 170),      // 3: dim 1, entries 25, maptype 0
+    (215, 329),      // 4: dim 1, entries 64, maptype 0
+    (257, 150),      // 5: dim 1, entries 16, maptype 0
+    (276, 110),      // 6: dim 1, entries 8, maptype 0
+    (290, 1350),     // 7: dim 1, entries 256, maptype 0
+    (459, 390),      // 8: dim 1, entries 64, maptype 0
+    (508, 710),      // 9: dim 1, entries 128, maptype 0
+    (597, 230),      // 10: dim 1, entries 32, maptype 0
+    (626, 678),      // 11: dim 1, entries 128, maptype 0
+    (711, 230),      // 12: dim 1, entries 32, maptype 0
+    (740, 678),      // 13: dim 1, entries 128, maptype 0
+    (825, 173),      // 14: dim 1, entries 18, maptype 0
+    (847, 280),      // 15: dim 1, entries 50, maptype 0
+    (882, 588),      // 16: dim 1, entries 128, maptype 0
+    (956, 173),      // 17: dim 1, entries 18, maptype 0
+    (978, 280),      // 18: dim 1, entries 50, maptype 0
+    (1013, 588),     // 19: dim 1, entries 128, maptype 0
+    (1087, 475),     // 20: dim 2, entries 81, maptype 0
+    (1147, 7111),    // 21: dim 8, entries 6561, maptype 1
+    (2036, 904),     // 22: dim 4, entries 625, maptype 1
+    (2149, 351),     // 23: dim 2, entries 81, maptype 1
+    (2193, 531),     // 24: dim 2, entries 81, maptype 1
+    (2260, 1568),    // 25: dim 2, entries 289, maptype 1
+    (2456, 550),     // 26: dim 4, entries 81, maptype 1
+    (2525, 788),     // 27: dim 2, entries 121, maptype 1
+    (2624, 1075),    // 28: dim 2, entries 169, maptype 1
+    (2759, 279),     // 29: dim 2, entries 25, maptype 1
+    (2794, 3279),    // 30: dim 4, entries 625, maptype 1
+    (3204, 1036),    // 31: dim 2, entries 169, maptype 1
+    (3334, 1669),    // 32: dim 2, entries 289, maptype 1
+    (3543, 475),     // 33: dim 2, entries 81, maptype 0
+    (3603, 1350),    // 34: dim 1, entries 256, maptype 0
+    (3772, 77),      // 35: dim 1, entries 4, maptype 0
+    (3782, 110),     // 36: dim 1, entries 10, maptype 0
+    (3796, 170),     // 37: dim 1, entries 25, maptype 0
+    (3818, 329),     // 38: dim 1, entries 64, maptype 0
+    (3860, 150),     // 39: dim 1, entries 16, maptype 0
+    (3879, 110),     // 40: dim 1, entries 8, maptype 0
+    (3893, 1350),    // 41: dim 1, entries 256, maptype 0
+    (4062, 390),     // 42: dim 1, entries 64, maptype 0
+    (4111, 710),     // 43: dim 1, entries 128, maptype 0
+    (4200, 230),     // 44: dim 1, entries 32, maptype 0
+    (4229, 678),     // 45: dim 1, entries 128, maptype 0
+    (4314, 230),     // 46: dim 1, entries 32, maptype 0
+    (4343, 678),     // 47: dim 1, entries 128, maptype 0
+    (4428, 173),     // 48: dim 1, entries 18, maptype 0
+    (4450, 280),     // 49: dim 1, entries 50, maptype 0
+    (4485, 588),     // 50: dim 1, entries 128, maptype 0
+    (4559, 173),     // 51: dim 1, entries 18, maptype 0
+    (4581, 280),     // 52: dim 1, entries 50, maptype 0
+    (4616, 588),     // 53: dim 1, entries 128, maptype 0
+    (4690, 475),     // 54: dim 2, entries 81, maptype 0
+    (4750, 7111),    // 55: dim 8, entries 6561, maptype 1
+    (5639, 904),     // 56: dim 4, entries 625, maptype 1
+    (5752, 351),     // 57: dim 2, entries 81, maptype 1
+    (5796, 531),     // 58: dim 2, entries 81, maptype 1
+    (5863, 1568),    // 59: dim 2, entries 289, maptype 1
+    (6059, 550),     // 60: dim 4, entries 81, maptype 1
+    (6128, 788),     // 61: dim 2, entries 121, maptype 1
+    (6227, 1075),    // 62: dim 2, entries 169, maptype 1
+    (6362, 279),     // 63: dim 2, entries 25, maptype 1
+    (6397, 3279),    // 64: dim 4, entries 625, maptype 1
+    (6807, 1036),    // 65: dim 2, entries 169, maptype 1
+    (6937, 1669),    // 66: dim 2, entries 289, maptype 1
+    (7146, 475),     // 67: dim 2, entries 81, maptype 0
+    (7206, 475),     // 68: dim 2, entries 81, maptype 0
+    (7266, 7111),    // 69: dim 8, entries 6561, maptype 1
+    (8155, 904),     // 70: dim 4, entries 625, maptype 1
+    (8268, 366),     // 71: dim 2, entries 81, maptype 1
+    (8314, 531),     // 72: dim 2, entries 81, maptype 1
+    (8381, 1568),    // 73: dim 2, entries 289, maptype 1
+    (8577, 550),     // 74: dim 4, entries 81, maptype 1
+    (8646, 788),     // 75: dim 2, entries 121, maptype 1
+    (8745, 1075),    // 76: dim 2, entries 169, maptype 1
+    (8880, 279),     // 77: dim 2, entries 25, maptype 1
+    (8915, 1036),    // 78: dim 2, entries 169, maptype 1
+    (9045, 1036),    // 79: dim 2, entries 169, maptype 1
+    (9175, 1669),    // 80: dim 2, entries 289, maptype 1
+    (9384, 475),     // 81: dim 2, entries 81, maptype 0
+    (9444, 390),     // 82: dim 1, entries 64, maptype 0
+    (9493, 1350),    // 83: dim 1, entries 256, maptype 0
+    (9662, 119),     // 84: dim 1, entries 9, maptype 0
+    (9677, 175),     // 85: dim 1, entries 25, maptype 0
+    (9699, 329),     // 86: dim 1, entries 64, maptype 0
+    (9741, 119),     // 87: dim 1, entries 9, maptype 0
+    (9756, 175),     // 88: dim 1, entries 25, maptype 0
+    (9778, 329),     // 89: dim 1, entries 64, maptype 0
+    (9820, 570),     // 90: dim 2, entries 100, maptype 0
+    (9892, 7111),    // 91: dim 8, entries 6561, maptype 1
+    (10781, 1184),   // 92: dim 4, entries 625, maptype 1
+    (10929, 904),    // 93: dim 4, entries 625, maptype 1
+    (11042, 381),    // 94: dim 2, entries 81, maptype 1
+    (11090, 561),    // 95: dim 2, entries 81, maptype 1
+    (11161, 1598),   // 96: dim 2, entries 289, maptype 1
+    (11361, 550),    // 97: dim 4, entries 81, maptype 1
+    (11430, 788),    // 98: dim 2, entries 121, maptype 1
+    (11529, 1075),   // 99: dim 2, entries 169, maptype 1
+    (11664, 279),    // 100: dim 2, entries 25, maptype 1
+    (11699, 1036),   // 101: dim 2, entries 169, maptype 1
+    (11829, 1036),   // 102: dim 2, entries 169, maptype 1
+    (11959, 1669),   // 103: dim 2, entries 289, maptype 1
+    (12168, 570),    // 104: dim 2, entries 100, maptype 0
+    (12240, 570),    // 105: dim 2, entries 100, maptype 0
+    (12312, 7111),   // 106: dim 8, entries 6561, maptype 1
+    (13201, 1184),   // 107: dim 4, entries 625, maptype 1
+    (13349, 904),    // 108: dim 4, entries 625, maptype 1
+    (13462, 381),    // 109: dim 2, entries 81, maptype 1
+    (13510, 561),    // 110: dim 2, entries 81, maptype 1
+    (13581, 1598),   // 111: dim 2, entries 289, maptype 1
+    (13781, 550),    // 112: dim 4, entries 81, maptype 1
+    (13850, 788),    // 113: dim 2, entries 121, maptype 1
+    (13949, 1075),   // 114: dim 2, entries 169, maptype 1
+    (14084, 279),    // 115: dim 2, entries 25, maptype 1
+    (14119, 1036),   // 116: dim 2, entries 169, maptype 1
+    (14249, 1324),   // 117: dim 2, entries 225, maptype 1
+    (14415, 1669),   // 118: dim 2, entries 289, maptype 1
+    (14624, 570),    // 119: dim 2, entries 100, maptype 0
+    (14696, 110),    // 120: dim 1, entries 8, maptype 0
+    (14710, 390),    // 121: dim 1, entries 64, maptype 0
+    (14759, 390),    // 122: dim 1, entries 64, maptype 0
+    (14808, 710),    // 123: dim 1, entries 128, maptype 0
+    (14897, 230),    // 124: dim 1, entries 32, maptype 0
+    (14926, 678),    // 125: dim 1, entries 128, maptype 0
+    (15011, 173),    // 126: dim 1, entries 18, maptype 0
+    (15033, 280),    // 127: dim 1, entries 50, maptype 0
+    (15068, 588),    // 128: dim 1, entries 128, maptype 0
+    (15142, 173),    // 129: dim 1, entries 18, maptype 0
+    (15164, 280),    // 130: dim 1, entries 50, maptype 0
+    (15199, 588),    // 131: dim 1, entries 128, maptype 0
+    (15273, 570),    // 132: dim 2, entries 100, maptype 0
+    (15345, 7111),   // 133: dim 8, entries 6561, maptype 1
+    (16234, 1184),   // 134: dim 4, entries 625, maptype 1
+    (16382, 904),    // 135: dim 4, entries 625, maptype 1
+    (16495, 381),    // 136: dim 2, entries 81, maptype 1
+    (16543, 561),    // 137: dim 2, entries 81, maptype 1
+    (16614, 1598),   // 138: dim 2, entries 289, maptype 1
+    (16814, 550),    // 139: dim 4, entries 81, maptype 1
+    (16883, 788),    // 140: dim 2, entries 121, maptype 1
+    (16982, 1075),   // 141: dim 2, entries 169, maptype 1
+    (17117, 279),    // 142: dim 2, entries 25, maptype 1
+    (17152, 1036),   // 143: dim 2, entries 169, maptype 1
+    (17282, 1324),   // 144: dim 2, entries 225, maptype 1
+    (17448, 2449),   // 145: dim 2, entries 441, maptype 1
+    (17755, 570),    // 146: dim 2, entries 100, maptype 0
+    (17827, 110),    // 147: dim 1, entries 8, maptype 0
+    (17841, 390),    // 148: dim 1, entries 64, maptype 0
+    (17890, 390),    // 149: dim 1, entries 64, maptype 0
+    (17939, 710),    // 150: dim 1, entries 128, maptype 0
+    (18028, 230),    // 151: dim 1, entries 32, maptype 0
+    (18057, 678),    // 152: dim 1, entries 128, maptype 0
+    (18142, 173),    // 153: dim 1, entries 18, maptype 0
+    (18164, 280),    // 154: dim 1, entries 50, maptype 0
+    (18199, 588),    // 155: dim 1, entries 128, maptype 0
+    (18273, 173),    // 156: dim 1, entries 18, maptype 0
+    (18295, 280),    // 157: dim 1, entries 50, maptype 0
+    (18330, 588),    // 158: dim 1, entries 128, maptype 0
+    (18404, 570),    // 159: dim 2, entries 100, maptype 0
+    (18476, 7111),   // 160: dim 8, entries 6561, maptype 1
+    (19365, 1184),   // 161: dim 4, entries 625, maptype 1
+    (19513, 904),    // 162: dim 4, entries 625, maptype 1
+    (19626, 381),    // 163: dim 2, entries 81, maptype 1
+    (19674, 561),    // 164: dim 2, entries 81, maptype 1
+    (19745, 1598),   // 165: dim 2, entries 289, maptype 1
+    (19945, 550),    // 166: dim 4, entries 81, maptype 1
+    (20014, 788),    // 167: dim 2, entries 121, maptype 1
+    (20113, 1075),   // 168: dim 2, entries 169, maptype 1
+    (20248, 279),    // 169: dim 2, entries 25, maptype 1
+    (20283, 1324),   // 170: dim 2, entries 225, maptype 1
+    (20449, 1669),   // 171: dim 2, entries 289, maptype 1
+    (20658, 2449),   // 172: dim 2, entries 441, maptype 1
+    (20965, 570),    // 173: dim 2, entries 100, maptype 0
+    (21037, 570),    // 174: dim 2, entries 100, maptype 0
+    (21109, 471),    // 175: dim 4, entries 81, maptype 1
+    (21168, 2584),   // 176: dim 4, entries 625, maptype 1
+    (21491, 511),    // 177: dim 2, entries 81, maptype 1
+    (21555, 1178),   // 178: dim 2, entries 289, maptype 1
+    (21703, 550),    // 179: dim 4, entries 81, maptype 1
+    (21772, 788),    // 180: dim 2, entries 121, maptype 1
+    (21871, 795),    // 181: dim 2, entries 169, maptype 1
+    (21971, 279),    // 182: dim 2, entries 25, maptype 1
+    (22006, 1036),   // 183: dim 2, entries 169, maptype 1
+    (22136, 788),    // 184: dim 2, entries 121, maptype 1
+    (22235, 1324),   // 185: dim 2, entries 225, maptype 1
+    (22401, 2449),   // 186: dim 2, entries 441, maptype 1
+    (22708, 1036),   // 187: dim 2, entries 169, maptype 1
+    (22838, 1036),   // 188: dim 2, entries 169, maptype 1
+    (22968, 678),    // 189: dim 1, entries 49, maptype 1
+    (23053, 570),    // 190: dim 2, entries 100, maptype 0
+    (23125, 570),    // 191: dim 2, entries 100, maptype 0
+    (23197, 471),    // 192: dim 4, entries 81, maptype 1
+    (23256, 2584),   // 193: dim 4, entries 625, maptype 1
+    (23579, 511),    // 194: dim 2, entries 81, maptype 1
+    (23643, 1178),   // 195: dim 2, entries 289, maptype 1
+    (23791, 550),    // 196: dim 4, entries 81, maptype 1
+    (23860, 788),    // 197: dim 2, entries 121, maptype 1
+    (23959, 795),    // 198: dim 2, entries 169, maptype 1
+    (24059, 279),    // 199: dim 2, entries 25, maptype 1
+    (24094, 1036),   // 200: dim 2, entries 169, maptype 1
+    (24224, 788),    // 201: dim 2, entries 121, maptype 1
+    (24323, 1324),   // 202: dim 2, entries 225, maptype 1
+    (24489, 2449),   // 203: dim 2, entries 441, maptype 1
+    (24796, 1036),   // 204: dim 2, entries 169, maptype 1
+    (24926, 1036),   // 205: dim 2, entries 169, maptype 1
+    (25056, 678),    // 206: dim 1, entries 49, maptype 1
+    (25141, 570),    // 207: dim 2, entries 100, maptype 0
+    (25213, 570),    // 208: dim 2, entries 100, maptype 0
+    (25285, 471),    // 209: dim 4, entries 81, maptype 1
+    (25344, 2584),   // 210: dim 4, entries 625, maptype 1
+    (25667, 511),    // 211: dim 2, entries 81, maptype 1
+    (25731, 1178),   // 212: dim 2, entries 289, maptype 1
+    (25879, 550),    // 213: dim 4, entries 81, maptype 1
+    (25948, 788),    // 214: dim 2, entries 121, maptype 1
+    (26047, 795),    // 215: dim 2, entries 169, maptype 1
+    (26147, 279),    // 216: dim 2, entries 25, maptype 1
+    (26182, 1036),   // 217: dim 2, entries 169, maptype 1
+    (26312, 788),    // 218: dim 2, entries 121, maptype 1
+    (26411, 1324),   // 219: dim 2, entries 225, maptype 1
+    (26577, 2449),   // 220: dim 2, entries 441, maptype 1
+    (26884, 1669),   // 221: dim 2, entries 289, maptype 1
+    (27093, 2039),   // 222: dim 2, entries 361, maptype 1
+    (27348, 472),    // 223: dim 1, entries 49, maptype 1
+    (27407, 570),    // 224: dim 2, entries 100, maptype 0
+    (27479, 570),    // 225: dim 2, entries 100, maptype 0
+    (27551, 471),    // 226: dim 4, entries 81, maptype 1
+    (27610, 2584),   // 227: dim 4, entries 625, maptype 1
+    (27933, 511),    // 228: dim 2, entries 81, maptype 1
+    (27997, 1178),   // 229: dim 2, entries 289, maptype 1
+    (28145, 550),    // 230: dim 4, entries 81, maptype 1
+    (28214, 788),    // 231: dim 2, entries 121, maptype 1
+    (28313, 795),    // 232: dim 2, entries 169, maptype 1
+    (28413, 279),    // 233: dim 2, entries 25, maptype 1
+    (28448, 1036),   // 234: dim 2, entries 169, maptype 1
+    (28578, 788),    // 235: dim 2, entries 121, maptype 1
+    (28677, 1324),   // 236: dim 2, entries 225, maptype 1
+    (28843, 2449),   // 237: dim 2, entries 441, maptype 1
+    (29150, 2039),   // 238: dim 2, entries 361, maptype 1
+    (29405, 2039),   // 239: dim 2, entries 361, maptype 1
+    (29660, 472),    // 240: dim 1, entries 49, maptype 1
+    (29719, 570),    // 241: dim 2, entries 100, maptype 0
+    (29791, 390),    // 242: dim 2, entries 64, maptype 0
+    (29840, 550),    // 243: dim 4, entries 81, maptype 1
+    (29909, 550),    // 244: dim 4, entries 81, maptype 1
+    (29978, 3814),   // 245: dim 4, entries 625, maptype 1
+    (30455, 3889),   // 246: dim 4, entries 625, maptype 1
+    (30942, 580),    // 247: dim 2, entries 81, maptype 1
+    (31015, 1170),   // 248: dim 2, entries 169, maptype 1
+    (31162, 279),    // 249: dim 2, entries 25, maptype 1
+    (31197, 3279),   // 250: dim 4, entries 625, maptype 1
+    (31607, 1036),   // 251: dim 2, entries 169, maptype 1
+    (31737, 1036),   // 252: dim 2, entries 169, maptype 1
+    (31867, 390),    // 253: dim 2, entries 64, maptype 0
+    (31916, 390),    // 254: dim 2, entries 64, maptype 0
+    (31965, 550),    // 255: dim 4, entries 81, maptype 1
+    (32034, 550),    // 256: dim 4, entries 81, maptype 1
+    (32103, 3809),   // 257: dim 4, entries 625, maptype 1
+    (32580, 3884),   // 258: dim 4, entries 625, maptype 1
+    (33066, 580),    // 259: dim 2, entries 81, maptype 1
+    (33139, 1190),   // 260: dim 2, entries 169, maptype 1
+    (33288, 279),    // 261: dim 2, entries 25, maptype 1
+    (33323, 3279),   // 262: dim 4, entries 625, maptype 1
+    (33733, 1036),   // 263: dim 2, entries 169, maptype 1
+    (33863, 1036),   // 264: dim 2, entries 169, maptype 1
+    (33993, 390),    // 265: dim 2, entries 64, maptype 0
+    (34042, 390),    // 266: dim 2, entries 64, maptype 0
+    (34091, 550),    // 267: dim 4, entries 81, maptype 1
+    (34160, 550),    // 268: dim 4, entries 81, maptype 1
+    (34229, 3809),   // 269: dim 4, entries 625, maptype 1
+    (34706, 3884),   // 270: dim 4, entries 625, maptype 1
+    (35192, 580),    // 271: dim 2, entries 81, maptype 1
+    (35265, 1190),   // 272: dim 2, entries 169, maptype 1
+    (35414, 279),    // 273: dim 2, entries 25, maptype 1
+    (35449, 405),    // 274: dim 2, entries 49, maptype 1
+    (35500, 1036),   // 275: dim 2, entries 169, maptype 1
+    (35630, 1036),   // 276: dim 2, entries 169, maptype 1
+    (35760, 390),    // 277: dim 2, entries 64, maptype 0
+    (35809, 390),    // 278: dim 2, entries 64, maptype 0
+    (35858, 550),    // 279: dim 4, entries 81, maptype 1
+    (35927, 550),    // 280: dim 4, entries 81, maptype 1
+    (35996, 3794),   // 281: dim 4, entries 625, maptype 1
+    (36471, 3279),   // 282: dim 4, entries 625, maptype 1
+    (36881, 580),    // 283: dim 2, entries 81, maptype 1
+    (36954, 1185),   // 284: dim 2, entries 169, maptype 1
+    (37103, 279),    // 285: dim 2, entries 25, maptype 1
+    (37138, 580),    // 286: dim 2, entries 81, maptype 1
+    (37211, 1036),   // 287: dim 2, entries 169, maptype 1
+    (37341, 1036),   // 288: dim 2, entries 169, maptype 1
+    (37471, 390),    // 289: dim 2, entries 64, maptype 0
+    (37520, 390),    // 290: dim 2, entries 64, maptype 0
+    (37569, 550),    // 291: dim 4, entries 81, maptype 1
+    (37638, 550),    // 292: dim 4, entries 81, maptype 1
+    (37707, 3749),   // 293: dim 4, entries 625, maptype 1
+    (38176, 3279),   // 294: dim 4, entries 625, maptype 1
+    (38586, 580),    // 295: dim 2, entries 81, maptype 1
+    (38659, 1200),   // 296: dim 2, entries 169, maptype 1
+    (38809, 279),    // 297: dim 2, entries 25, maptype 1
+    (38844, 580),    // 298: dim 2, entries 81, maptype 1
+    (38917, 1324),   // 299: dim 2, entries 225, maptype 1
+    (39083, 1669),   // 300: dim 2, entries 289, maptype 1
+    (39292, 390),    // 301: dim 2, entries 64, maptype 0
+    (39341, 390),    // 302: dim 2, entries 64, maptype 0
+    (39390, 550),    // 303: dim 4, entries 81, maptype 1
+    (39459, 550),    // 304: dim 4, entries 81, maptype 1
+    (39528, 3779),   // 305: dim 4, entries 625, maptype 1
+    (40001, 3279),   // 306: dim 4, entries 625, maptype 1
+    (40411, 580),    // 307: dim 2, entries 81, maptype 1
+    (40484, 1200),   // 308: dim 2, entries 169, maptype 1
+    (40634, 279),    // 309: dim 2, entries 25, maptype 1
+    (40669, 1036),   // 310: dim 2, entries 169, maptype 1
+    (40799, 1324),   // 311: dim 2, entries 225, maptype 1
+    (40965, 1669),   // 312: dim 2, entries 289, maptype 1
+    (41174, 390),    // 313: dim 2, entries 64, maptype 0
+    (41223, 570),    // 314: dim 2, entries 100, maptype 0
+    (41295, 550),    // 315: dim 4, entries 81, maptype 1
+    (41364, 550),    // 316: dim 4, entries 81, maptype 1
+    (41433, 3779),   // 317: dim 4, entries 625, maptype 1
+    (41906, 3279),   // 318: dim 4, entries 625, maptype 1
+    (42316, 580),    // 319: dim 2, entries 81, maptype 1
+    (42389, 580),    // 320: dim 2, entries 81, maptype 1
+    (42462, 550),    // 321: dim 4, entries 81, maptype 1
+    (42531, 788),    // 322: dim 2, entries 121, maptype 1
+    (42630, 788),    // 323: dim 2, entries 121, maptype 1
+    (42729, 788),    // 324: dim 2, entries 121, maptype 1
+    (42828, 1036),   // 325: dim 2, entries 169, maptype 1
+    (42958, 1324),   // 326: dim 2, entries 225, maptype 1
+    (43124, 1669),   // 327: dim 2, entries 289, maptype 1
+    (43333, 570),    // 328: dim 2, entries 100, maptype 0
+    (43405, 570),    // 329: dim 2, entries 100, maptype 0
+    (43477, 550),    // 330: dim 4, entries 81, maptype 1
+    (43546, 550),    // 331: dim 4, entries 81, maptype 1
+    (43615, 3714),   // 332: dim 4, entries 625, maptype 1
+    (44080, 3279),   // 333: dim 4, entries 625, maptype 1
+    (44490, 580),    // 334: dim 2, entries 81, maptype 1
+    (44563, 580),    // 335: dim 2, entries 81, maptype 1
+    (44636, 550),    // 336: dim 4, entries 81, maptype 1
+    (44705, 788),    // 337: dim 2, entries 121, maptype 1
+    (44804, 788),    // 338: dim 2, entries 121, maptype 1
+    (44903, 788),    // 339: dim 2, entries 121, maptype 1
+    (45002, 1324),   // 340: dim 2, entries 225, maptype 1
+    (45168, 1324),   // 341: dim 2, entries 225, maptype 1
+    (45334, 1669),   // 342: dim 2, entries 289, maptype 1
+    (45543, 570),    // 343: dim 2, entries 100, maptype 0
+    (45615, 570),    // 344: dim 2, entries 100, maptype 0
+    (45687, 550),    // 345: dim 4, entries 81, maptype 1
+    (45756, 550),    // 346: dim 4, entries 81, maptype 1
+    (45825, 3719),   // 347: dim 4, entries 625, maptype 1
+    (46290, 3279),   // 348: dim 4, entries 625, maptype 1
+    (46700, 580),    // 349: dim 2, entries 81, maptype 1
+    (46773, 580),    // 350: dim 2, entries 81, maptype 1
+    (46846, 550),    // 351: dim 4, entries 81, maptype 1
+    (46915, 788),    // 352: dim 2, entries 121, maptype 1
+    (47014, 788),    // 353: dim 2, entries 121, maptype 1
+    (47113, 788),    // 354: dim 2, entries 121, maptype 1
+    (47212, 788),    // 355: dim 2, entries 121, maptype 1
+    (47311, 1036),   // 356: dim 2, entries 169, maptype 1
+    (47441, 475),    // 357: dim 1, entries 49, maptype 1
+    (47501, 570),    // 358: dim 2, entries 100, maptype 0
+    (47573, 570),    // 359: dim 2, entries 100, maptype 0
+    (47645, 550),    // 360: dim 4, entries 81, maptype 1
+    (47714, 3279),   // 361: dim 4, entries 625, maptype 1
+    (48124, 580),    // 362: dim 2, entries 81, maptype 1
+    (48197, 1669),   // 363: dim 2, entries 289, maptype 1
+    (48406, 550),    // 364: dim 4, entries 81, maptype 1
+    (48475, 788),    // 365: dim 2, entries 121, maptype 1
+    (48574, 1036),   // 366: dim 2, entries 169, maptype 1
+    (48704, 279),    // 367: dim 2, entries 25, maptype 1
+    (48739, 1036),   // 368: dim 2, entries 169, maptype 1
+    (48869, 788),    // 369: dim 2, entries 121, maptype 1
+    (48968, 1324),   // 370: dim 2, entries 225, maptype 1
+    (49134, 2449),   // 371: dim 2, entries 441, maptype 1
+    (49441, 580),    // 372: dim 2, entries 81, maptype 1
+    (49514, 2039),   // 373: dim 2, entries 361, maptype 1
+    (49769, 472),    // 374: dim 1, entries 49, maptype 1
+    (49828, 570),    // 375: dim 2, entries 100, maptype 0
+    (49900, 570),    // 376: dim 2, entries 100, maptype 0
+    (49972, 550),    // 377: dim 4, entries 81, maptype 1
+    (50041, 3279),   // 378: dim 4, entries 625, maptype 1
+    (50451, 580),    // 379: dim 2, entries 81, maptype 1
+    (50524, 1669),   // 380: dim 2, entries 289, maptype 1
+    (50733, 550),    // 381: dim 4, entries 81, maptype 1
+    (50802, 788),    // 382: dim 2, entries 121, maptype 1
+    (50901, 1036),   // 383: dim 2, entries 169, maptype 1
+    (51031, 279),    // 384: dim 2, entries 25, maptype 1
+    (51066, 1036),   // 385: dim 2, entries 169, maptype 1
+    (51196, 788),    // 386: dim 2, entries 121, maptype 1
+    (51295, 1324),   // 387: dim 2, entries 225, maptype 1
+    (51461, 2449),   // 388: dim 2, entries 441, maptype 1
+    (51768, 1324),   // 389: dim 2, entries 225, maptype 1
+    (51934, 2039),   // 390: dim 2, entries 361, maptype 1
+    (52189, 678),    // 391: dim 1, entries 49, maptype 1
+    (52274, 570),    // 392: dim 2, entries 100, maptype 0
+    (52346, 110),    // 393: dim 1, entries 8, maptype 0
+    (52360, 390),    // 394: dim 1, entries 64, maptype 0
+    (52409, 390),    // 395: dim 1, entries 64, maptype 0
+    (52458, 710),    // 396: dim 1, entries 128, maptype 0
+    (52547, 230),    // 397: dim 1, entries 32, maptype 0
+    (52576, 678),    // 398: dim 1, entries 128, maptype 0
+    (52661, 173),    // 399: dim 1, entries 18, maptype 0
+    (52683, 280),    // 400: dim 1, entries 50, maptype 0
+    (52718, 588),    // 401: dim 1, entries 128, maptype 0
+    (52792, 173),    // 402: dim 1, entries 18, maptype 0
+    (52814, 280),    // 403: dim 1, entries 50, maptype 0
+    (52849, 588),    // 404: dim 1, entries 128, maptype 0
+    (52923, 570),    // 405: dim 2, entries 100, maptype 0
+    (52995, 7111),   // 406: dim 8, entries 6561, maptype 1
+    (53884, 904),    // 407: dim 4, entries 625, maptype 1
+    (53997, 351),    // 408: dim 2, entries 81, maptype 1
+    (54041, 531),    // 409: dim 2, entries 81, maptype 1
+    (54108, 1568),   // 410: dim 2, entries 289, maptype 1
+    (54304, 550),    // 411: dim 4, entries 81, maptype 1
+    (54373, 788),    // 412: dim 2, entries 121, maptype 1
+    (54472, 1060),   // 413: dim 2, entries 169, maptype 1
+    (54605, 279),    // 414: dim 2, entries 25, maptype 1
+    (54640, 550),    // 415: dim 4, entries 81, maptype 1
+    (54709, 1324),   // 416: dim 2, entries 225, maptype 1
+    (54875, 2449),   // 417: dim 2, entries 441, maptype 1
+    (55182, 390),    // 418: dim 1, entries 64, maptype 0
+    (55231, 1350),   // 419: dim 1, entries 256, maptype 0
+    (55400, 119),    // 420: dim 1, entries 9, maptype 0
+    (55415, 175),    // 421: dim 1, entries 25, maptype 0
+    (55437, 329),    // 422: dim 1, entries 64, maptype 0
+    (55479, 119),    // 423: dim 1, entries 9, maptype 0
+    (55494, 175),    // 424: dim 1, entries 25, maptype 0
+    (55516, 329),    // 425: dim 1, entries 64, maptype 0
+    (55558, 570),    // 426: dim 2, entries 100, maptype 0
+    (55630, 7111),   // 427: dim 8, entries 6561, maptype 1
+    (56519, 904),    // 428: dim 4, entries 625, maptype 1
+    (56632, 351),    // 429: dim 2, entries 81, maptype 1
+    (56676, 531),    // 430: dim 2, entries 81, maptype 1
+    (56743, 1568),   // 431: dim 2, entries 289, maptype 1
+    (56939, 550),    // 432: dim 4, entries 81, maptype 1
+    (57008, 788),    // 433: dim 2, entries 121, maptype 1
+    (57107, 1075),   // 434: dim 2, entries 169, maptype 1
+    (57242, 279),    // 435: dim 2, entries 25, maptype 1
+    (57277, 1036),   // 436: dim 2, entries 169, maptype 1
+    (57407, 1324),   // 437: dim 2, entries 225, maptype 1
+    (57573, 2449),   // 438: dim 2, entries 441, maptype 1
+    (57880, 570),    // 439: dim 2, entries 100, maptype 0
+    (57952, 570),    // 440: dim 2, entries 100, maptype 0
+    (58024, 271),    // 441: dim 4, entries 81, maptype 1
+    (58058, 1624),   // 442: dim 4, entries 625, maptype 1
+    (58261, 481),    // 443: dim 2, entries 81, maptype 1
+    (58322, 1148),   // 444: dim 2, entries 289, maptype 1
+    (58466, 550),    // 445: dim 4, entries 81, maptype 1
+    (58535, 788),    // 446: dim 2, entries 121, maptype 1
+    (58634, 795),    // 447: dim 2, entries 169, maptype 1
+    (58734, 279),    // 448: dim 2, entries 25, maptype 1
+    (58769, 1036),   // 449: dim 2, entries 169, maptype 1
+    (58899, 788),    // 450: dim 2, entries 121, maptype 1
+    (58998, 1324),   // 451: dim 2, entries 225, maptype 1
+    (59164, 2449),   // 452: dim 2, entries 441, maptype 1
+    (59471, 1669),   // 453: dim 2, entries 289, maptype 1
+    (59680, 2039),   // 454: dim 2, entries 361, maptype 1
+    (59935, 473),    // 455: dim 1, entries 49, maptype 1
+    (59995, 570),    // 456: dim 2, entries 100, maptype 0
+    (60067, 390),    // 457: dim 2, entries 64, maptype 0
+    (60116, 550),    // 458: dim 4, entries 81, maptype 1
+    (60185, 550),    // 459: dim 4, entries 81, maptype 1
+    (60254, 3844),   // 460: dim 4, entries 625, maptype 1
+    (60735, 3884),   // 461: dim 4, entries 625, maptype 1
+    (61221, 580),    // 462: dim 2, entries 81, maptype 1
+    (61294, 1050),   // 463: dim 2, entries 169, maptype 1
+    (61426, 279),    // 464: dim 2, entries 25, maptype 1
+    (61461, 550),    // 465: dim 4, entries 81, maptype 1
+    (61530, 1324),   // 466: dim 2, entries 225, maptype 1
+    (61696, 2449),   // 467: dim 2, entries 441, maptype 1
+    (62003, 570),    // 468: dim 2, entries 100, maptype 0
+    (62075, 550),    // 469: dim 4, entries 81, maptype 1
+    (62144, 550),    // 470: dim 4, entries 81, maptype 1
+    (62213, 3279),   // 471: dim 4, entries 625, maptype 1
+    (62623, 3279),   // 472: dim 4, entries 625, maptype 1
+    (63033, 580),    // 473: dim 2, entries 81, maptype 1
+    (63106, 580),    // 474: dim 2, entries 81, maptype 1
+    (63179, 550),    // 475: dim 4, entries 81, maptype 1
+    (63248, 788),    // 476: dim 2, entries 121, maptype 1
+    (63347, 788),    // 477: dim 2, entries 121, maptype 1
+    (63446, 788),    // 478: dim 2, entries 121, maptype 1
+    (63545, 1324),   // 479: dim 2, entries 225, maptype 1
+    (63711, 1324),   // 480: dim 2, entries 225, maptype 1
+    (63877, 1669),   // 481: dim 2, entries 289, maptype 1
+    (64086, 570),    // 482: dim 2, entries 100, maptype 0
+    (64158, 570),    // 483: dim 2, entries 100, maptype 0
+    (64230, 550),    // 484: dim 4, entries 81, maptype 1
+    (64299, 3279),   // 485: dim 4, entries 625, maptype 1
+    (64709, 580),    // 486: dim 2, entries 81, maptype 1
+    (64782, 1669),   // 487: dim 2, entries 289, maptype 1
+    (64991, 550),    // 488: dim 4, entries 81, maptype 1
+    (65060, 788),    // 489: dim 2, entries 121, maptype 1
+    (65159, 1036),   // 490: dim 2, entries 169, maptype 1
+    (65289, 178),    // 491: dim 2, entries 25, maptype 1
+    (65312, 1036),   // 492: dim 2, entries 169, maptype 1
+    (65442, 788),    // 493: dim 2, entries 121, maptype 1
+    (65541, 1324),   // 494: dim 2, entries 225, maptype 1
+    (65707, 2449),   // 495: dim 2, entries 441, maptype 1
+    (66014, 1324),   // 496: dim 2, entries 225, maptype 1
+    (66180, 2039),   // 497: dim 2, entries 361, maptype 1
+    (66435, 678),    // 498: dim 1, entries 49, maptype 1
+    (66520, 570),    // 499: dim 2, entries 100, maptype 0
+    (66592, 1350),   // 500: dim 1, entries 256, maptype 0
+    (66761, 90),     // 501: dim 1, entries 4, maptype 0
+    (66773, 110),    // 502: dim 1, entries 10, maptype 0
+    (66787, 170),    // 503: dim 1, entries 25, maptype 0
+    (66809, 329),    // 504: dim 1, entries 64, maptype 0
+    (66851, 570),    // 505: dim 2, entries 100, maptype 0
+    (66923, 7111),   // 506: dim 8, entries 6561, maptype 1
+    (67812, 904),    // 507: dim 4, entries 625, maptype 1
+    (67925, 351),    // 508: dim 2, entries 81, maptype 1
+    (67969, 531),    // 509: dim 2, entries 81, maptype 1
+    (68036, 1568),   // 510: dim 2, entries 289, maptype 1
+    (68232, 550),    // 511: dim 4, entries 81, maptype 1
+    (68301, 788),    // 512: dim 2, entries 121, maptype 1
+    (68400, 1040),   // 513: dim 2, entries 169, maptype 1
+    (68530, 279),    // 514: dim 2, entries 25, maptype 1
+    (68565, 550),    // 515: dim 4, entries 81, maptype 1
+    (68634, 1324),   // 516: dim 2, entries 225, maptype 1
+    (68800, 2449),   // 517: dim 2, entries 441, maptype 1
+    (69107, 570),    // 518: dim 2, entries 100, maptype 0
+    (69179, 7111),   // 519: dim 8, entries 6561, maptype 1
+    (70068, 904),    // 520: dim 4, entries 625, maptype 1
+    (70181, 351),    // 521: dim 2, entries 81, maptype 1
+    (70225, 531),    // 522: dim 2, entries 81, maptype 1
+    (70292, 1568),   // 523: dim 2, entries 289, maptype 1
+    (70488, 550),    // 524: dim 4, entries 81, maptype 1
+    (70557, 788),    // 525: dim 2, entries 121, maptype 1
+    (70656, 1075),   // 526: dim 2, entries 169, maptype 1
+    (70791, 279),    // 527: dim 2, entries 25, maptype 1
+    (70826, 1036),   // 528: dim 2, entries 169, maptype 1
+    (70956, 1324),   // 529: dim 2, entries 225, maptype 1
+    (71122, 2449),   // 530: dim 2, entries 441, maptype 1
+    (71429, 390),    // 531: dim 2, entries 64, maptype 0
+    (71478, 550),    // 532: dim 4, entries 81, maptype 1
+    (71547, 550),    // 533: dim 4, entries 81, maptype 1
+    (71616, 3864),   // 534: dim 4, entries 625, maptype 1
+    (72099, 3279),   // 535: dim 4, entries 625, maptype 1
+    (72509, 580),    // 536: dim 2, entries 81, maptype 1
+    (72582, 1090),   // 537: dim 2, entries 169, maptype 1
+    (72719, 279),    // 538: dim 2, entries 25, maptype 1
+    (72754, 550),    // 539: dim 4, entries 81, maptype 1
+    (72823, 1324),   // 540: dim 2, entries 225, maptype 1
+    (72989, 2449),   // 541: dim 2, entries 441, maptype 1
+    (73296, 570),    // 542: dim 2, entries 100, maptype 0
+    (73368, 550),    // 543: dim 4, entries 81, maptype 1
+    (73437, 550),    // 544: dim 4, entries 81, maptype 1
+    (73506, 3864),   // 545: dim 4, entries 625, maptype 1
+    (73989, 3279),   // 546: dim 4, entries 625, maptype 1
+    (74399, 580),    // 547: dim 2, entries 81, maptype 1
+    (74472, 580),    // 548: dim 2, entries 81, maptype 1
+    (74545, 550),    // 549: dim 4, entries 81, maptype 1
+    (74614, 788),    // 550: dim 2, entries 121, maptype 1
+    (74713, 788),    // 551: dim 2, entries 121, maptype 1
+    (74812, 788),    // 552: dim 2, entries 121, maptype 1
+    (74911, 1324),   // 553: dim 2, entries 225, maptype 1
+    (75077, 1324),   // 554: dim 2, entries 225, maptype 1
+    (75243, 1669),   // 555: dim 2, entries 289, maptype 1
+    (75452, 315),    // 556: dim 2, entries 49, maptype 0
+    (75492, 403),    // 557: dim 5, entries 243, maptype 1
+    (75543, 1023),   // 558: dim 5, entries 243, maptype 1
+    (75671, 1043),   // 559: dim 5, entries 243, maptype 1
+    (75802, 1513),   // 560: dim 5, entries 243, maptype 1
+    (75992, 18869),  // 561: dim 5, entries 3125, maptype 1
+    (78351, 13124),  // 562: dim 5, entries 3125, maptype 1
+    (79992, 170),    // 563: dim 1, entries 7, maptype 1
+    (80014, 1598),   // 564: dim 5, entries 243, maptype 1
+    (80214, 1360),   // 565: dim 5, entries 243, maptype 1
+    (80384, 1360),   // 566: dim 5, entries 243, maptype 1
+    (80554, 389),    // 567: dim 1, entries 25, maptype 1
+    (80603, 389),    // 568: dim 1, entries 25, maptype 1
+    (80652, 315),    // 569: dim 2, entries 49, maptype 0
+    (80692, 90),     // 570: dim 2, entries 4, maptype 0
+    (80704, 1036),   // 571: dim 2, entries 169, maptype 1
+    (80834, 279),    // 572: dim 2, entries 25, maptype 1
+    (80869, 165),    // 573: dim 2, entries 9, maptype 1
+    (80890, 315),    // 574: dim 2, entries 49, maptype 0
+    (80930, 403),    // 575: dim 5, entries 243, maptype 1
+    (80981, 1023),   // 576: dim 5, entries 243, maptype 1
+    (81109, 1043),   // 577: dim 5, entries 243, maptype 1
+    (81240, 1513),   // 578: dim 5, entries 243, maptype 1
+    (81430, 15779),  // 579: dim 5, entries 3125, maptype 1
+    (83403, 14004),  // 580: dim 5, entries 3125, maptype 1
+    (85154, 170),    // 581: dim 1, entries 7, maptype 1
+    (85176, 1360),   // 582: dim 5, entries 243, maptype 1
+    (85346, 1360),   // 583: dim 5, entries 243, maptype 1
+    (85516, 1360),   // 584: dim 5, entries 243, maptype 1
+    (85686, 389),    // 585: dim 1, entries 25, maptype 1
+    (85735, 389),    // 586: dim 1, entries 25, maptype 1
+    (85784, 315),    // 587: dim 2, entries 49, maptype 0
+    (85824, 90),     // 588: dim 2, entries 4, maptype 0
+    (85836, 1036),   // 589: dim 2, entries 169, maptype 1
+    (85966, 279),    // 590: dim 2, entries 25, maptype 1
+    (86001, 165),    // 591: dim 2, entries 9, maptype 1
+    (86022, 315),    // 592: dim 2, entries 49, maptype 0
+    (86062, 403),    // 593: dim 5, entries 243, maptype 1
+    (86113, 1023),   // 594: dim 5, entries 243, maptype 1
+    (86241, 1043),   // 595: dim 5, entries 243, maptype 1
+    (86372, 1513),   // 596: dim 5, entries 243, maptype 1
+    (86562, 15779),  // 597: dim 5, entries 3125, maptype 1
+    (88535, 14224),  // 598: dim 5, entries 3125, maptype 1
+    (90313, 170),    // 599: dim 1, entries 7, maptype 1
+    (90335, 1360),   // 600: dim 5, entries 243, maptype 1
+    (90505, 1360),   // 601: dim 5, entries 243, maptype 1
+    (90675, 1360),   // 602: dim 5, entries 243, maptype 1
+    (90845, 389),    // 603: dim 1, entries 25, maptype 1
+    (90894, 389),    // 604: dim 1, entries 25, maptype 1
+    (90943, 315),    // 605: dim 2, entries 49, maptype 0
+    (90983, 90),     // 606: dim 2, entries 4, maptype 0
+    (90995, 1036),   // 607: dim 2, entries 169, maptype 1
+    (91125, 279),    // 608: dim 2, entries 25, maptype 1
+    (91160, 165),    // 609: dim 2, entries 9, maptype 1
+    (91181, 390),    // 610: dim 2, entries 64, maptype 0
+    (91230, 403),    // 611: dim 5, entries 243, maptype 1
+    (91281, 4494),   // 612: dim 5, entries 3125, maptype 1
+    (91843, 1188),   // 613: dim 5, entries 243, maptype 1
+    (91992, 1203),   // 614: dim 5, entries 243, maptype 1
+    (92143, 1513),   // 615: dim 5, entries 243, maptype 1
+    (92333, 15779),  // 616: dim 5, entries 3125, maptype 1
+    (94306, 14379),  // 617: dim 5, entries 3125, maptype 1
+    (96104, 170),    // 618: dim 1, entries 7, maptype 1
+    (96126, 1360),   // 619: dim 5, entries 243, maptype 1
+    (96296, 1360),   // 620: dim 5, entries 243, maptype 1
+    (96466, 221),    // 621: dim 5, entries 243, maptype 1
+    (96494, 1360),   // 622: dim 5, entries 243, maptype 1
+    (96664, 389),    // 623: dim 1, entries 25, maptype 1
+    (96713, 283),    // 624: dim 1, entries 25, maptype 1
+    (96749, 390),    // 625: dim 2, entries 64, maptype 0
+    (96798, 90),     // 626: dim 2, entries 4, maptype 0
+    (96810, 1036),   // 627: dim 2, entries 169, maptype 1
+    (96940, 279),    // 628: dim 2, entries 25, maptype 1
+    (96975, 165),    // 629: dim 2, entries 9, maptype 1
+    (96996, 390),    // 630: dim 2, entries 64, maptype 0
+    (97045, 403),    // 631: dim 5, entries 243, maptype 1
+    (97096, 4494),   // 632: dim 5, entries 3125, maptype 1
+    (97658, 1188),   // 633: dim 5, entries 243, maptype 1
+    (97807, 1203),   // 634: dim 5, entries 243, maptype 1
+    (97958, 1513),   // 635: dim 5, entries 243, maptype 1
+    (98148, 15779),  // 636: dim 5, entries 3125, maptype 1
+    (100121, 14409), // 637: dim 5, entries 3125, maptype 1
+    (101923, 170),   // 638: dim 1, entries 7, maptype 1
+    (101945, 1360),  // 639: dim 5, entries 243, maptype 1
+    (102115, 1360),  // 640: dim 5, entries 243, maptype 1
+    (102285, 221),   // 641: dim 5, entries 243, maptype 1
+    (102313, 1360),  // 642: dim 5, entries 243, maptype 1
+    (102483, 389),   // 643: dim 1, entries 25, maptype 1
+    (102532, 278),   // 644: dim 1, entries 25, maptype 1
+    (102567, 390),   // 645: dim 2, entries 64, maptype 0
+    (102616, 90),    // 646: dim 2, entries 4, maptype 0
+    (102628, 1036),  // 647: dim 2, entries 169, maptype 1
+    (102758, 279),   // 648: dim 2, entries 25, maptype 1
+    (102793, 165),   // 649: dim 2, entries 9, maptype 1
+    (102814, 390),   // 650: dim 2, entries 64, maptype 0
+    (102863, 403),   // 651: dim 5, entries 243, maptype 1
+    (102914, 4494),  // 652: dim 5, entries 3125, maptype 1
+    (103476, 1188),  // 653: dim 5, entries 243, maptype 1
+    (103625, 1203),  // 654: dim 5, entries 243, maptype 1
+    (103776, 1513),  // 655: dim 5, entries 243, maptype 1
+    (103966, 15779), // 656: dim 5, entries 3125, maptype 1
+    (105939, 14319), // 657: dim 5, entries 3125, maptype 1
+    (107729, 170),   // 658: dim 1, entries 7, maptype 1
+    (107751, 1360),  // 659: dim 5, entries 243, maptype 1
+    (107921, 1360),  // 660: dim 5, entries 243, maptype 1
+    (108091, 221),   // 661: dim 5, entries 243, maptype 1
+    (108119, 1360),  // 662: dim 5, entries 243, maptype 1
+    (108289, 389),   // 663: dim 1, entries 25, maptype 1
+    (108338, 278),   // 664: dim 1, entries 25, maptype 1
+    (108373, 390),   // 665: dim 2, entries 64, maptype 0
+    (108422, 90),    // 666: dim 2, entries 4, maptype 0
+    (108434, 1036),  // 667: dim 2, entries 169, maptype 1
+    (108564, 279),   // 668: dim 2, entries 25, maptype 1
+    (108599, 165),   // 669: dim 2, entries 9, maptype 1
+    (108620, 390),   // 670: dim 2, entries 64, maptype 0
+    (108669, 1360),  // 671: dim 5, entries 243, maptype 1
+    (108839, 15779), // 672: dim 5, entries 3125, maptype 1
+    (110812, 1360),  // 673: dim 5, entries 243, maptype 1
+    (110982, 1360),  // 674: dim 5, entries 243, maptype 1
+    (111152, 1360),  // 675: dim 5, entries 243, maptype 1
+    (111322, 15779), // 676: dim 5, entries 3125, maptype 1
+    (113295, 18779), // 677: dim 5, entries 3125, maptype 1
+    (115643, 170),   // 678: dim 1, entries 7, maptype 1
+    (115665, 1360),  // 679: dim 5, entries 243, maptype 1
+    (115835, 1360),  // 680: dim 5, entries 243, maptype 1
+    (116005, 221),   // 681: dim 5, entries 243, maptype 1
+    (116033, 1360),  // 682: dim 5, entries 243, maptype 1
+    (116203, 330),   // 683: dim 1, entries 25, maptype 1
+    (116245, 278),   // 684: dim 1, entries 25, maptype 1
+    (116280, 390),   // 685: dim 2, entries 64, maptype 0
+    (116329, 90),    // 686: dim 2, entries 4, maptype 0
+    (116341, 1036),  // 687: dim 2, entries 169, maptype 1
+    (116471, 279),   // 688: dim 2, entries 25, maptype 1
+    (116506, 165),   // 689: dim 2, entries 9, maptype 1
+    (116527, 390),   // 690: dim 2, entries 64, maptype 0
+    (116576, 1360),  // 691: dim 5, entries 243, maptype 1
+    (116746, 15779), // 692: dim 5, entries 3125, maptype 1
+    (118719, 1360),  // 693: dim 5, entries 243, maptype 1
+    (118889, 1360),  // 694: dim 5, entries 243, maptype 1
+    (119059, 1360),  // 695: dim 5, entries 243, maptype 1
+    (119229, 15779), // 696: dim 5, entries 3125, maptype 1
+    (121202, 15779), // 697: dim 5, entries 3125, maptype 1
+    (123175, 170),   // 698: dim 1, entries 7, maptype 1
+    (123197, 1360),  // 699: dim 5, entries 243, maptype 1
+    (123367, 1360),  // 700: dim 5, entries 243, maptype 1
+    (123537, 221),   // 701: dim 5, entries 243, maptype 1
+    (123565, 1360),  // 702: dim 5, entries 243, maptype 1
+    (123735, 335),   // 703: dim 1, entries 25, maptype 1
+    (123777, 278),   // 704: dim 1, entries 25, maptype 1
+    (123812, 390),   // 705: dim 2, entries 64, maptype 0
+    (123861, 90),    // 706: dim 2, entries 4, maptype 0
+    (123873, 1036),  // 707: dim 2, entries 169, maptype 1
+    (124003, 279),   // 708: dim 2, entries 25, maptype 1
+    (124038, 190),   // 709: dim 2, entries 9, maptype 1
+    (124062, 390),   // 710: dim 2, entries 64, maptype 0
+    (124111, 1360),  // 711: dim 5, entries 243, maptype 1
+    (124281, 15779), // 712: dim 5, entries 3125, maptype 1
+    (126254, 1360),  // 713: dim 5, entries 243, maptype 1
+    (126424, 1360),  // 714: dim 5, entries 243, maptype 1
+    (126594, 1360),  // 715: dim 5, entries 243, maptype 1
+    (126764, 15779), // 716: dim 5, entries 3125, maptype 1
+    (128737, 15779), // 717: dim 5, entries 3125, maptype 1
+    (130710, 170),   // 718: dim 1, entries 7, maptype 1
+    (130732, 1360),  // 719: dim 5, entries 243, maptype 1
+    (130902, 1360),  // 720: dim 5, entries 243, maptype 1
+    (131072, 221),   // 721: dim 5, entries 243, maptype 1
+    (131100, 1360),  // 722: dim 5, entries 243, maptype 1
+    (131270, 389),   // 723: dim 1, entries 25, maptype 1
+    (131319, 278),   // 724: dim 1, entries 25, maptype 1
+    (131354, 390),   // 725: dim 2, entries 64, maptype 0
+    (131403, 390),   // 726: dim 2, entries 64, maptype 0
+    (131452, 1360),  // 727: dim 5, entries 243, maptype 1
+    (131622, 15779), // 728: dim 5, entries 3125, maptype 1
+    (133595, 1360),  // 729: dim 5, entries 243, maptype 1
+    (133765, 1360),  // 730: dim 5, entries 243, maptype 1
+    (133935, 1360),  // 731: dim 5, entries 243, maptype 1
+    (134105, 15779), // 732: dim 5, entries 3125, maptype 1
+    (136078, 15779), // 733: dim 5, entries 3125, maptype 1
+    (138051, 170),   // 734: dim 1, entries 7, maptype 1
+    (138073, 1360),  // 735: dim 5, entries 243, maptype 1
+    (138243, 1360),  // 736: dim 5, entries 243, maptype 1
+    (138413, 221),   // 737: dim 5, entries 243, maptype 1
+    (138441, 15779), // 738: dim 5, entries 3125, maptype 1
+    (140414, 389),   // 739: dim 1, entries 25, maptype 1
+    (140463, 278),   // 740: dim 1, entries 25, maptype 1
+    (140498, 390),   // 741: dim 2, entries 64, maptype 0
+    (140547, 78),    // 742: dim 1, entries 8, maptype 0
+    (140557, 1360),  // 743: dim 5, entries 243, maptype 1
+    (140727, 15779), // 744: dim 5, entries 3125, maptype 1
+    (142700, 1360),  // 745: dim 5, entries 243, maptype 1
+    (142870, 1360),  // 746: dim 5, entries 243, maptype 1
+    (143040, 1360),  // 747: dim 5, entries 243, maptype 1
+    (143210, 15779), // 748: dim 5, entries 3125, maptype 1
+    (145183, 15779), // 749: dim 5, entries 3125, maptype 1
+    (147156, 170),   // 750: dim 1, entries 7, maptype 1
+    (147178, 1360),  // 751: dim 5, entries 243, maptype 1
+    (147348, 1360),  // 752: dim 5, entries 243, maptype 1
+    (147518, 314),   // 753: dim 5, entries 3125, maptype 1
+    (147558, 15779), // 754: dim 5, entries 3125, maptype 1
+    (149531, 389),   // 755: dim 1, entries 25, maptype 1
+    (149580, 278),   // 756: dim 1, entries 25, maptype 1
+    (149615, 78),    // 757: dim 1, entries 8, maptype 0
+    (149625, 475),   // 758: dim 2, entries 81, maptype 0
+    (149685, 7111),  // 759: dim 8, entries 6561, maptype 1
+    (150574, 904),   // 760: dim 4, entries 625, maptype 1
+    (150687, 381),   // 761: dim 2, entries 81, maptype 1
+    (150735, 561),   // 762: dim 2, entries 81, maptype 1
+    (150806, 1598),  // 763: dim 2, entries 289, maptype 1
+    (151006, 550),   // 764: dim 4, entries 81, maptype 1
+    (151075, 788),   // 765: dim 2, entries 121, maptype 1
+    (151174, 1075),  // 766: dim 2, entries 169, maptype 1
+    (151309, 279),   // 767: dim 2, entries 25, maptype 1
+    (151344, 580),   // 768: dim 2, entries 81, maptype 1
+    (151417, 1036),  // 769: dim 2, entries 169, maptype 1
+    (151547, 1669),  // 770: dim 2, entries 289, maptype 1
+    (151756, 475),   // 771: dim 2, entries 81, maptype 0
+    (151816, 475),   // 772: dim 2, entries 81, maptype 0
+    (151876, 7111),  // 773: dim 8, entries 6561, maptype 1
+    (152765, 904),   // 774: dim 4, entries 625, maptype 1
+    (152878, 381),   // 775: dim 2, entries 81, maptype 1
+    (152926, 561),   // 776: dim 2, entries 81, maptype 1
+    (152997, 1598),  // 777: dim 2, entries 289, maptype 1
+    (153197, 550),   // 778: dim 4, entries 81, maptype 1
+    (153266, 788),   // 779: dim 2, entries 121, maptype 1
+    (153365, 1075),  // 780: dim 2, entries 169, maptype 1
+    (153500, 279),   // 781: dim 2, entries 25, maptype 1
+    (153535, 580),   // 782: dim 2, entries 81, maptype 1
+    (153608, 1036),  // 783: dim 2, entries 169, maptype 1
+    (153738, 1669),  // 784: dim 2, entries 289, maptype 1
+    (153947, 475),   // 785: dim 2, entries 81, maptype 0
+    (154007, 475),   // 786: dim 2, entries 81, maptype 0
+    (154067, 7111),  // 787: dim 8, entries 6561, maptype 1
+    (154956, 904),   // 788: dim 4, entries 625, maptype 1
+    (155069, 381),   // 789: dim 2, entries 81, maptype 1
+    (155117, 561),   // 790: dim 2, entries 81, maptype 1
+    (155188, 1598),  // 791: dim 2, entries 289, maptype 1
+    (155388, 550),   // 792: dim 4, entries 81, maptype 1
+    (155457, 788),   // 793: dim 2, entries 121, maptype 1
+    (155556, 1075),  // 794: dim 2, entries 169, maptype 1
+    (155691, 279),   // 795: dim 2, entries 25, maptype 1
+    (155726, 1036),  // 796: dim 2, entries 169, maptype 1
+    (155856, 1036),  // 797: dim 2, entries 169, maptype 1
+    (155986, 1669),  // 798: dim 2, entries 289, maptype 1
+    (156195, 475),   // 799: dim 2, entries 81, maptype 0
 ];
 
 /// `_floor[]` from modes/floor_all.h (all entries, reachable or not).
@@ -808,7 +1010,7 @@ pub(crate) static FLOORS: [Floor1Template; 11] = [
 ];
 
 /// `_floor_books[fi][0..=maxbook]` as book ids; empty for floors no
-/// 1-2 channel template reaches.
+/// template reaches.
 pub(crate) static FLOOR_BOOKS: [&[u16]; 11] = [
     &[34, 35, 36, 37, 38],
     &[0, 1, 2, 3, 4],
@@ -824,7 +1026,7 @@ pub(crate) static FLOOR_BOOKS: [&[u16]; 11] = [
 ];
 
 /// `vorbis_info_residue0` bases (e.g. `_residue_44_mid`).
-pub(crate) static RESIDUE0_BASES: [Residue0Template; 6] = [
+pub(crate) static RESIDUE0_BASES: [Residue0Template; 10] = [
     Residue0Template {
         begin: 0,
         end: -1,
@@ -885,10 +1087,50 @@ pub(crate) static RESIDUE0_BASES: [Residue0Template; 6] = [
         classmetric1: &[0, 1, 2, 4, 8, 16, 32, 71, 157],
         classmetric2: &[-1, -1, -1, -1, -1, -1, -1, -1, -1],
     },
+    Residue0Template {
+        begin: 0,
+        end: -1,
+        grouping: -1,
+        partitions: 7,
+        partvals: -1,
+        groupbook: -1,
+        classmetric1: &[0, 1, 2, 7, 17, 31],
+        classmetric2: &[0, 0, 99, 7, 17, 31],
+    },
+    Residue0Template {
+        begin: 0,
+        end: -1,
+        grouping: -1,
+        partitions: 2,
+        partvals: -1,
+        groupbook: -1,
+        classmetric1: &[32],
+        classmetric2: &[-1],
+    },
+    Residue0Template {
+        begin: 0,
+        end: -1,
+        grouping: -1,
+        partitions: 8,
+        partvals: -1,
+        groupbook: -1,
+        classmetric1: &[0, 1, 1, 2, 7, 17, 31],
+        classmetric2: &[0, 0, 99, 99, 7, 17, 31],
+    },
+    Residue0Template {
+        begin: 0,
+        end: -1,
+        grouping: -1,
+        partitions: 8,
+        partvals: -1,
+        groupbook: -1,
+        classmetric1: &[0, 1, 2, 4, 7, 17, 31],
+        classmetric2: &[0, 1, 2, 4, 7, 17, 31],
+    },
 ];
 
 /// `static_bookblock` contents as book ids (`NB` = NULL).
-pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 35] = [
+pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 54] = [
     [
         [NB, NB, NB, NB],
         [NB, NB, 21, NB],
@@ -1339,42 +1581,308 @@ pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 35] = [
     ],
     [
         [NB, NB, NB, NB],
-        [NB, NB, 557, NB],
-        [NB, NB, 558, NB],
-        [NB, NB, 559, NB],
-        [NB, NB, 560, NB],
-        [NB, NB, 561, NB],
+        [NB, 557, NB, NB],
+        [558, 559, NB, NB],
+        [560, 561, NB, NB],
         [562, 563, NB, NB],
-        [564, 565, NB, NB],
+        [564, 565, 563, NB],
         [566, 567, 568, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [571, 572, NB, NB],
+        [573, 567, 568, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
     ],
     [
         [NB, NB, NB, NB],
-        [NB, NB, 571, NB],
-        [NB, NB, 572, NB],
-        [NB, NB, 573, NB],
-        [NB, NB, 574, NB],
-        [NB, NB, 575, NB],
+        [NB, 575, NB, NB],
         [576, 577, NB, NB],
         [578, 579, NB, NB],
-        [580, 581, 582, NB],
+        [580, 581, NB, NB],
+        [582, 583, 581, NB],
+        [584, 585, 586, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [589, 590, NB, NB],
+        [591, 585, 586, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
     ],
     [
         [NB, NB, NB, NB],
-        [NB, NB, 585, NB],
-        [NB, NB, 586, NB],
-        [NB, NB, 587, NB],
-        [NB, NB, 588, NB],
-        [NB, NB, 589, NB],
-        [590, 591, NB, NB],
-        [592, 593, NB, NB],
-        [594, 595, 596, NB],
+        [NB, 593, NB, NB],
+        [594, 595, NB, NB],
+        [596, 597, NB, NB],
+        [598, 599, NB, NB],
+        [600, 601, 599, NB],
+        [602, 603, 604, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [607, 608, NB, NB],
+        [609, 603, 604, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 611, NB],
+        [NB, 612, NB, NB],
+        [613, 614, NB, NB],
+        [615, 616, NB, NB],
+        [617, 618, NB, NB],
+        [619, 620, 618, NB],
+        [621, 622, 623, 624],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [627, 628, NB, NB],
+        [629, 623, 624, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 631, NB],
+        [NB, 632, NB, NB],
+        [633, 634, NB, NB],
+        [635, 636, NB, NB],
+        [637, 638, NB, NB],
+        [639, 640, 638, NB],
+        [641, 642, 643, 644],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [647, 648, NB, NB],
+        [649, 643, 644, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 651, NB],
+        [NB, 652, NB, NB],
+        [653, 654, NB, NB],
+        [655, 656, NB, NB],
+        [657, 658, NB, NB],
+        [659, 660, 658, NB],
+        [661, 662, 663, 664],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [667, 668, NB, NB],
+        [669, 663, 664, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 671, NB],
+        [NB, 672, NB, NB],
+        [673, 674, NB, NB],
+        [675, 676, NB, NB],
+        [677, 678, NB, NB],
+        [679, 680, 678, NB],
+        [681, 682, 683, 684],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [687, 688, NB, NB],
+        [689, 683, 684, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 691, NB],
+        [NB, 692, NB, NB],
+        [693, 694, NB, NB],
+        [695, 696, NB, NB],
+        [697, 698, NB, NB],
+        [699, 700, 698, NB],
+        [701, 702, 703, 704],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [707, 708, NB, NB],
+        [709, 703, 704, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 711, NB],
+        [NB, 712, NB, NB],
+        [713, 714, NB, NB],
+        [715, 716, NB, NB],
+        [717, 718, NB, NB],
+        [719, 720, 718, NB],
+        [721, 722, 723, 724],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 727, NB],
+        [NB, 728, NB, NB],
+        [729, 730, NB, NB],
+        [731, 732, NB, NB],
+        [733, 734, NB, NB],
+        [735, 736, 734, NB],
+        [737, 738, 739, 740],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 743, NB],
+        [NB, 744, NB, NB],
+        [745, 746, NB, NB],
+        [747, 748, NB, NB],
+        [749, 750, NB, NB],
+        [751, 752, 750, NB],
+        [753, 754, 755, 756],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 759, NB],
+        [NB, NB, 760, NB],
+        [NB, NB, 761, NB],
+        [NB, NB, 762, NB],
+        [NB, NB, 763, NB],
+        [764, 765, NB, NB],
+        [766, 767, NB, NB],
+        [768, 769, 770, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 773, NB],
+        [NB, NB, 774, NB],
+        [NB, NB, 775, NB],
+        [NB, NB, 776, NB],
+        [NB, NB, 777, NB],
+        [778, 779, NB, NB],
+        [780, 781, NB, NB],
+        [782, 783, 784, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 787, NB],
+        [NB, NB, 788, NB],
+        [NB, NB, 789, NB],
+        [NB, NB, 790, NB],
+        [NB, NB, 791, NB],
+        [792, 793, NB, NB],
+        [794, 795, NB, NB],
+        [796, 797, 798, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
@@ -1384,7 +1892,7 @@ pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 35] = [
 /// `vorbis_residue_template` arrays (e.g. `_res_44s_5`); indices into
 /// RESIDUE0_BASES / BOOKS / BOOKBLOCKS. The `_managed` books replace
 /// `book_aux` / `books_base` in bitrate-managed setups.
-pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
+pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 43] = [
     &[
         ResidueTemplate {
             res_type: 2,
@@ -1393,8 +1901,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 20,
             books_base: 0,
-            book_aux_managed: 556,
-            books_base_managed: 32,
+            book_aux_managed: 758,
+            books_base_managed: 51,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1403,8 +1911,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 33,
             books_base: 0,
-            book_aux_managed: 569,
-            books_base_managed: 32,
+            book_aux_managed: 771,
+            books_base_managed: 51,
         },
     ],
     &[
@@ -1415,8 +1923,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 54,
             books_base: 1,
-            book_aux_managed: 570,
-            books_base_managed: 33,
+            book_aux_managed: 772,
+            books_base_managed: 52,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1425,8 +1933,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 67,
             books_base: 1,
-            book_aux_managed: 583,
-            books_base_managed: 33,
+            book_aux_managed: 785,
+            books_base_managed: 52,
         },
     ],
     &[
@@ -1437,8 +1945,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 68,
             books_base: 2,
-            book_aux_managed: 584,
-            books_base_managed: 34,
+            book_aux_managed: 786,
+            books_base_managed: 53,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1447,8 +1955,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 81,
             books_base: 2,
-            book_aux_managed: 597,
-            books_base_managed: 34,
+            book_aux_managed: 799,
+            books_base_managed: 53,
         },
     ],
     &[
@@ -2017,10 +2525,363 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         book_aux_managed: 542,
         books_base_managed: 31,
     }],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 6,
+            book_aux: 556,
+            books_base: 32,
+            book_aux_managed: 556,
+            books_base_managed: 32,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 6,
+            book_aux: 569,
+            books_base: 32,
+            book_aux_managed: 569,
+            books_base_managed: 32,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 570,
+            books_base: 33,
+            book_aux_managed: 570,
+            books_base_managed: 33,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 6,
+            book_aux: 574,
+            books_base: 34,
+            book_aux_managed: 574,
+            books_base_managed: 34,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 6,
+            book_aux: 587,
+            books_base: 34,
+            book_aux_managed: 587,
+            books_base_managed: 34,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 588,
+            books_base: 35,
+            book_aux_managed: 588,
+            books_base_managed: 35,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 6,
+            book_aux: 592,
+            books_base: 36,
+            book_aux_managed: 592,
+            books_base_managed: 36,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 6,
+            book_aux: 605,
+            books_base: 36,
+            book_aux_managed: 605,
+            books_base_managed: 36,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 606,
+            books_base: 37,
+            book_aux_managed: 606,
+            books_base_managed: 37,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 8,
+            book_aux: 610,
+            books_base: 38,
+            book_aux_managed: 610,
+            books_base_managed: 38,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 8,
+            book_aux: 625,
+            books_base: 38,
+            book_aux_managed: 625,
+            books_base_managed: 38,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 626,
+            books_base: 39,
+            book_aux_managed: 626,
+            books_base_managed: 39,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 8,
+            book_aux: 630,
+            books_base: 40,
+            book_aux_managed: 630,
+            books_base_managed: 40,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 8,
+            book_aux: 645,
+            books_base: 40,
+            book_aux_managed: 645,
+            books_base_managed: 40,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 646,
+            books_base: 41,
+            book_aux_managed: 646,
+            books_base_managed: 41,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 8,
+            book_aux: 650,
+            books_base: 42,
+            book_aux_managed: 650,
+            books_base_managed: 42,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 8,
+            book_aux: 665,
+            books_base: 42,
+            book_aux_managed: 665,
+            books_base_managed: 42,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 666,
+            books_base: 43,
+            book_aux_managed: 666,
+            books_base_managed: 43,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 9,
+            book_aux: 670,
+            books_base: 44,
+            book_aux_managed: 670,
+            books_base_managed: 44,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 9,
+            book_aux: 685,
+            books_base: 44,
+            book_aux_managed: 685,
+            books_base_managed: 44,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 686,
+            books_base: 45,
+            book_aux_managed: 686,
+            books_base_managed: 45,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 9,
+            book_aux: 690,
+            books_base: 46,
+            book_aux_managed: 690,
+            books_base_managed: 46,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 9,
+            book_aux: 705,
+            books_base: 46,
+            book_aux_managed: 705,
+            books_base_managed: 46,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 706,
+            books_base: 47,
+            book_aux_managed: 706,
+            books_base_managed: 47,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 9,
+            book_aux: 710,
+            books_base: 48,
+            book_aux_managed: 710,
+            books_base_managed: 48,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 9,
+            book_aux: 725,
+            books_base: 48,
+            book_aux_managed: 725,
+            books_base_managed: 48,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 706,
+            books_base: 47,
+            book_aux_managed: 706,
+            books_base_managed: 47,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 9,
+            book_aux: 726,
+            books_base: 49,
+            book_aux_managed: 726,
+            books_base_managed: 49,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 9,
+            book_aux: 741,
+            books_base: 49,
+            book_aux_managed: 741,
+            books_base_managed: 49,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 706,
+            books_base: 47,
+            book_aux_managed: 706,
+            books_base_managed: 47,
+        },
+    ],
+    &[
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 15,
+            res: 9,
+            book_aux: 742,
+            books_base: 50,
+            book_aux_managed: 742,
+            books_base_managed: 50,
+        },
+        ResidueTemplate {
+            res_type: 2,
+            limit_type: 0,
+            grouping: 30,
+            res: 9,
+            book_aux: 757,
+            books_base: 50,
+            book_aux_managed: 757,
+            books_base_managed: 50,
+        },
+        ResidueTemplate {
+            res_type: 1,
+            limit_type: 2,
+            grouping: 6,
+            res: 7,
+            book_aux: 706,
+            books_base: 47,
+            book_aux_managed: 706,
+            books_base_managed: 47,
+        },
+    ],
 ];
 
-/// `vorbis_info_mapping0[2]` templates (`_map_nominal`, `_map_nominal_u`).
-pub(crate) static MAPPINGS: [[Mapping0Template; 2]; 2] = [
+/// `vorbis_info_mapping0[2]` templates (`_map_nominal`, `_map_nominal_u`,
+/// `_map_nominal_51`, `_map_nominal_51u`).
+pub(crate) static MAPPINGS: [[Mapping0Template; 2]; 4] = [
     [
         Mapping0Template {
             submaps: 1,
@@ -2056,6 +2917,46 @@ pub(crate) static MAPPINGS: [[Mapping0Template; 2]; 2] = [
             chmuxlist: &[],
             floorsubmap: &[1],
             residuesubmap: &[1],
+            coupling_steps: 0,
+            coupling_mag: &[],
+            coupling_ang: &[],
+        },
+    ],
+    [
+        Mapping0Template {
+            submaps: 2,
+            chmuxlist: &[0, 0, 0, 0, 0, 1],
+            floorsubmap: &[0, 2],
+            residuesubmap: &[0, 2],
+            coupling_steps: 4,
+            coupling_mag: &[0, 3],
+            coupling_ang: &[2, 4, 1, 3],
+        },
+        Mapping0Template {
+            submaps: 2,
+            chmuxlist: &[0, 0, 0, 0, 0, 1],
+            floorsubmap: &[1, 2],
+            residuesubmap: &[1, 2],
+            coupling_steps: 4,
+            coupling_mag: &[0, 3],
+            coupling_ang: &[2, 4, 1, 3],
+        },
+    ],
+    [
+        Mapping0Template {
+            submaps: 2,
+            chmuxlist: &[0, 0, 0, 0, 0, 1],
+            floorsubmap: &[0, 2],
+            residuesubmap: &[0, 2],
+            coupling_steps: 0,
+            coupling_mag: &[],
+            coupling_ang: &[],
+        },
+        Mapping0Template {
+            submaps: 2,
+            chmuxlist: &[0, 0, 0, 0, 0, 1],
+            floorsubmap: &[1, 2],
+            residuesubmap: &[1, 2],
             coupling_steps: 0,
             coupling_mag: &[],
             coupling_ang: &[],
@@ -2108,6 +3009,39 @@ pub(crate) static SETUP_44_STEREO: SetupTemplate = SetupTemplate {
         MapResTemplate { map: 0, res: 8 },
         MapResTemplate { map: 0, res: 9 },
         MapResTemplate { map: 0, res: 10 },
+    ],
+};
+
+pub(crate) static SETUP_44_51: SetupTemplate = SetupTemplate {
+    mappings: 11,
+    quality_mapping: &[-0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    coupling_restriction: 6,
+    samplerate_min_restriction: 40000,
+    samplerate_max_restriction: 70000,
+    blocksize_short: &[512, 256, 256, 256, 256, 256, 256, 256, 256, 256, 256],
+    blocksize_long: &[
+        4096, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048, 2048,
+    ],
+    psy_lowpass: &[
+        13.9, 15.1, 15.8, 16.5, 17.2, 18.9, 20.1, 48.0, 999.0, 999.0, 999.0, 999.0,
+    ],
+    floor_mapping_list: &[
+        &[1, 0, 0, 2, 2, 4, 5, 5, 5, 5, 5],
+        &[8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
+        &[10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+    ],
+    maps: &[
+        MapResTemplate { map: 2, res: 32 },
+        MapResTemplate { map: 2, res: 33 },
+        MapResTemplate { map: 2, res: 34 },
+        MapResTemplate { map: 2, res: 35 },
+        MapResTemplate { map: 2, res: 36 },
+        MapResTemplate { map: 2, res: 37 },
+        MapResTemplate { map: 3, res: 38 },
+        MapResTemplate { map: 3, res: 39 },
+        MapResTemplate { map: 3, res: 40 },
+        MapResTemplate { map: 3, res: 41 },
+        MapResTemplate { map: 3, res: 42 },
     ],
 };
 
@@ -2435,10 +3369,11 @@ pub(crate) static SETUP_XX_UNCOUPLED: SetupTemplate = SetupTemplate {
     ],
 };
 
-/// vorbisenc.c `setup_list` without `ve_setup_44_51` (6 channels), in
-/// list order: `get_setup_template` returns the first match.
-pub(crate) static SETUP_LIST: [&SetupTemplate; 16] = [
+/// vorbisenc.c `setup_list`, in list order: `get_setup_template`
+/// returns the first match.
+pub(crate) static SETUP_LIST: [&SetupTemplate; 17] = [
     &SETUP_44_STEREO,
+    &SETUP_44_51,
     &SETUP_44_UNCOUPLED,
     &SETUP_32_STEREO,
     &SETUP_32_UNCOUPLED,

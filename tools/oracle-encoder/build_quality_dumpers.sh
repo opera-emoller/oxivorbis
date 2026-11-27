@@ -21,3 +21,4 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 COMMON=("${LW_SHIM_SRCS[@]}" "${LW_VORBIS_SRCS[@]}" "${LW_OGG_SRCS[@]}")
 lw_cc "$ORACLE_DIR/dump_quality_tables" "$ORACLE_DIR/dump_quality_tables.c" "${COMMON[@]}"
 lw_cc "$ORACLE_DIR/dump_params" "$ORACLE_DIR/dump_params.c" "$VEND/vorbisenc.c" "${COMMON[@]}"
+lw_cc "$ORACLE_DIR/probe_channels" "$ORACLE_DIR/probe_channels.c" "${COMMON[@]}"
