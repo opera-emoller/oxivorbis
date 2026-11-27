@@ -19,12 +19,14 @@ use std::fmt::Write as _;
 
 const DEFAULT_DIR: &str = "/tmp/oxivorbis-dsp-tables";
 
-/// MDCT sizes: 128 (envelope), 256/2048 (q0..q10 blocks), 512/4096 (q-1).
-const MDCT_SIZES: [usize; 5] = [2048, 256, 128, 512, 4096];
+/// MDCT sizes: 128 (envelope) and every block size a template uses:
+/// 256/2048 (26-200 kHz q0..q10), 512/4096 (q-1), 512/1024 and 1024
+/// (15-26 kHz), 512 (below 15 kHz).
+const MDCT_SIZES: [usize; 6] = [2048, 256, 128, 512, 4096, 1024];
 /// psy FFT sizes (= blocksizes).
-const DRFT_SIZES: [usize; 4] = [2048, 256, 512, 4096];
+const DRFT_SIZES: [usize; 5] = [2048, 256, 512, 4096, 1024];
 /// Window half-tables (vwin for blocksize bs holds bs/2 floats).
-const WIN_SIZES: [usize; 4] = [256, 2048, 512, 4096];
+const WIN_SIZES: [usize; 5] = [256, 2048, 512, 4096, 1024];
 
 /// Format an f32 as a Rust literal that round-trips exactly.
 fn fmt_f32(v: f32) -> String {

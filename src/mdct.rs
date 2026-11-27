@@ -1,6 +1,8 @@
 //! Forward MDCT, port of libvorbis 1.3.7 lib/mdct.c.
 //!
-//! Sizes: 128 (envelope), 256/2048 (q0..q10 blocks), 512/4096 (q-1 blocks).
+//! Sizes: 128 (envelope) and every block size: 256/2048 (q0..q10 at
+//! 26-200 kHz), 512/4096 (q-1), 512/1024 and 1024 (15-26 kHz), 512
+//! (below 15 kHz).
 //! Tables come from src/tables/trig.rs (dumped from libvorbis `mdct_init`).
 //! No runtime transcendentals.
 
@@ -11,8 +13,9 @@
 #![allow(clippy::approx_constant)]
 
 use crate::tables::trig::{
-    BITREV_128, BITREV_256, BITREV_512, BITREV_2048, BITREV_4096, SCALE_128, SCALE_256, SCALE_512,
-    SCALE_2048, SCALE_4096, TRIG_128, TRIG_256, TRIG_512, TRIG_2048, TRIG_4096,
+    BITREV_128, BITREV_256, BITREV_512, BITREV_1024, BITREV_2048, BITREV_4096, SCALE_128, SCALE_256,
+    SCALE_512, SCALE_1024, SCALE_2048, SCALE_4096, TRIG_128, TRIG_256, TRIG_512, TRIG_1024, TRIG_2048,
+    TRIG_4096,
 };
 
 // Constants from mdct.h (float mode)
@@ -57,6 +60,13 @@ pub(crate) static MDCT_512: MdctTables = MdctTables {
     bitrev: &BITREV_512,
     scale: SCALE_512,
 };
+pub(crate) static MDCT_1024: MdctTables = MdctTables {
+    n: 1024,
+    log2n: 10,
+    trig: &TRIG_1024,
+    bitrev: &BITREV_1024,
+    scale: SCALE_1024,
+};
 pub(crate) static MDCT_2048: MdctTables = MdctTables {
     n: 2048,
     log2n: 11,
@@ -72,12 +82,14 @@ pub(crate) static MDCT_4096: MdctTables = MdctTables {
     scale: SCALE_4096,
 };
 
-/// Tables for MDCT size `n`. Panics unless `n` is 128, 256, 512, 2048 or 4096.
+/// Tables for MDCT size `n`. Panics unless `n` is 128, 256, 512, 1024, 2048
+/// or 4096.
 pub(crate) fn mdct_tables(n: usize) -> &'static MdctTables {
     match n {
         128 => &MDCT_128,
         256 => &MDCT_256,
         512 => &MDCT_512,
+        1024 => &MDCT_1024,
         2048 => &MDCT_2048,
         4096 => &MDCT_4096,
         _ => panic!("mdct: unsupported size {n}"),
@@ -401,13 +413,15 @@ pub(crate) fn mdct_forward_with(t: &MdctTables, input: &[f32], output: &mut [f32
         128 => mdct_forward_core(input, output, &MDCT_128, &mut [0f32; 128]),
         256 => mdct_forward_core(input, output, &MDCT_256, &mut [0f32; 256]),
         512 => mdct_forward_core(input, output, &MDCT_512, &mut [0f32; 512]),
+        1024 => mdct_forward_core(input, output, &MDCT_1024, &mut [0f32; 1024]),
         2048 => mdct_forward_core(input, output, &MDCT_2048, &mut [0f32; 2048]),
         4096 => mdct_forward_core(input, output, &MDCT_4096, &mut [0f32; MDCT_MAX_N]),
         _ => panic!("mdct: unsupported size {n}"),
     }
 }
 
-/// [`mdct_forward_with`] for `n = input.len()` (128, 256, 512, 2048 or 4096).
+/// [`mdct_forward_with`] for `n = input.len()` (128, 256, 512, 1024, 2048
+/// or 4096).
 pub(crate) fn mdct_forward_n(input: &[f32], output: &mut [f32]) {
     mdct_forward_with(mdct_tables(input.len()), input, output);
 }
@@ -502,7 +516,7 @@ mod tests {
 
     #[test]
     fn dsp_manifest_mdct_tables_match_libvorbis() {
-        for n in [128, 256, 512, 2048, 4096] {
+        for n in [128, 256, 512, 1024, 2048, 4096] {
             let t = mdct_tables(n);
             assert_eq!(t.n, n);
             assert_eq!(1usize << t.log2n, n);
@@ -522,7 +536,7 @@ mod tests {
 
     #[test]
     fn dsp_manifest_mdct_forward_matches_libvorbis() {
-        for n in [128usize, 256, 512, 2048, 4096] {
+        for n in [128usize, 256, 512, 1024, 2048, 4096] {
             for seed in 1u32..=3 {
                 let input = lcg_input(n, seed * 7919 + n as u32);
                 let mut out = vec![0.0f32; n / 2];

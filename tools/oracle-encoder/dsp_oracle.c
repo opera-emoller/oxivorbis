@@ -90,9 +90,9 @@ static int ilog(unsigned v) {
 /* vwin index libvorbis uses for blocksize bs (block.c: ov_ilog(bs)-7). */
 static int winno_for(long bs) { return ilog((unsigned)bs) - 7; }
 
-static const int MDCT_SIZES[] = {128, 256, 512, 2048, 4096};
-static const int DRFT_SIZES[] = {256, 512, 2048, 4096};
-static const int WIN_SIZES[] = {256, 512, 2048, 4096};
+static const int MDCT_SIZES[] = {128, 256, 512, 1024, 2048, 4096};
+static const int DRFT_SIZES[] = {256, 512, 1024, 2048, 4096};
+static const int WIN_SIZES[] = {256, 512, 1024, 2048, 4096};
 #define COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 /* ---------- modes ---------- */
@@ -196,9 +196,10 @@ static void do_manifest(void) {
         drft_clear(&l);
     }
 
-    /* _vorbis_apply_window for both blocksize pairs, every lW/W/nW combo */
-    static const long PAIRS[][2] = {{256, 2048}, {512, 4096}};
-    for (int p = 0; p < 2; p++) {
+    /* _vorbis_apply_window for every blocksize pair a template uses, every
+     * lW/W/nW combo (equal pairs: the single-block 8/11/16 kHz modes) */
+    static const long PAIRS[][2] = {{256, 2048}, {512, 4096}, {512, 1024}, {512, 512}, {1024, 1024}};
+    for (int p = 0; p < (int)(sizeof(PAIRS) / sizeof(PAIRS[0])); p++) {
         long bs[2] = {PAIRS[p][0], PAIRS[p][1]};
         int winno[2] = {winno_for(bs[0]), winno_for(bs[1])};
         float *d = malloc(sizeof(float) * bs[1]);

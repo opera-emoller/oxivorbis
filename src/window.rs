@@ -3,9 +3,10 @@
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::explicit_counter_loop)]
 //!
-//! Port of libvorbis `lib/window.c` `_vorbis_apply_window` supporting both
-//! blocksize pairs the 44.1/48 kHz templates use — 256/2048 (q0..q10) and
-//! 512/4096 (q-1, `blocksize_short_44[0]`/`blocksize_long_44[0]`) — and all
+//! Port of libvorbis `lib/window.c` `_vorbis_apply_window` supporting every
+//! blocksize pair the mono/stereo templates use — 256/2048 (26-200 kHz,
+//! q0..q10), 512/4096 (q-1, `blocksize_short_44[0]`/`blocksize_long_44[0]`),
+//! 512/1024 and 1024/1024 (15-26 kHz) and 512/512 (below 15 kHz) — and all
 //! long/short transitions.
 //!
 //! Window transition logic:
@@ -22,19 +23,23 @@
 //!
 //! `winno[i] = ov_ilog(blocksizes[i]) - 7` (block.c:207), and `vwin[k]` is
 //! the half-window for blocksize `2^(k+7)` holding `bs/2` floats: vwin256
-//! (128 floats, `WIN_HALF_256`), vwin512 (`WIN_HALF_512`), vwin2048
-//! (`WIN_HALF_2048`), vwin4096 (`WIN_HALF_4096`). See [`window_half`].
+//! (128 floats, `WIN_HALF_256`), vwin512 (`WIN_HALF_512`), vwin1024
+//! (`WIN_HALF_1024`), vwin2048 (`WIN_HALF_2048`), vwin4096
+//! (`WIN_HALF_4096`). See [`window_half`].
 
-use crate::tables::window::{WIN_HALF_256, WIN_HALF_512, WIN_HALF_2048, WIN_HALF_4096};
+use crate::tables::window::{
+    WIN_HALF_256, WIN_HALF_512, WIN_HALF_1024, WIN_HALF_2048, WIN_HALF_4096,
+};
 
 /// Largest long block over all supported blocksize pairs (q-1: 4096).
 pub(crate) const MAX_LONG_BLOCK: usize = 4096;
 /// Largest long half-block (q-1: 2048). Also the largest psy `n`.
 pub(crate) const MAX_LONG_HALF: usize = MAX_LONG_BLOCK / 2;
-/// Largest short block over all supported blocksize pairs (q-1: 512).
+/// Largest short block over all supported blocksize pairs (16 kHz q-1:
+/// 1024/1024).
 #[cfg(test)]
-pub(crate) const MAX_SHORT_BLOCK: usize = 512;
-/// Largest short half-block (q-1: 256).
+pub(crate) const MAX_SHORT_BLOCK: usize = 1024;
+/// Largest short half-block.
 #[cfg(test)]
 pub(crate) const MAX_SHORT_HALF: usize = MAX_SHORT_BLOCK / 2;
 
@@ -92,11 +97,12 @@ impl BlockSizes {
 }
 
 /// libvorbis `vwin[ov_ilog(bs) - 7]`: the rising half-window (`bs/2` floats)
-/// for blocksize `bs`. Panics unless `bs` is 256, 512, 2048 or 4096.
+/// for blocksize `bs`. Panics unless `bs` is 256, 512, 1024, 2048 or 4096.
 pub(crate) fn window_half(bs: usize) -> &'static [f32] {
     match bs {
         256 => &WIN_HALF_256,
         512 => &WIN_HALF_512,
+        1024 => &WIN_HALF_1024,
         2048 => &WIN_HALF_2048,
         4096 => &WIN_HALF_4096,
         _ => panic!("window: unsupported blocksize {bs}"),
@@ -347,7 +353,7 @@ mod tests {
 
     #[test]
     fn dsp_manifest_window_tables_match_libvorbis() {
-        for bs in [256, 512, 2048, 4096] {
+        for bs in [256, 512, 1024, 2048, 4096] {
             let w = window_half(bs);
             assert_eq!(w.len(), bs / 2);
             assert_manifest(&format!("table.vwin.{bs}"), bs / 2, hash_f32(w));
@@ -356,7 +362,15 @@ mod tests {
 
     #[test]
     fn dsp_manifest_apply_window_matches_libvorbis() {
-        for bs in [BlockSizes::BS_256_2048, BlockSizes::BS_512_4096] {
+        let pairs = [
+            (256, 2048),
+            (512, 4096),
+            (512, 1024),
+            (512, 512),
+            (1024, 1024),
+        ];
+        for (short, long) in pairs {
+            let bs = BlockSizes { short, long };
             for w in [false, true] {
                 for lw in [false, true] {
                     for nw in [false, true] {

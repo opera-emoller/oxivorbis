@@ -2,7 +2,7 @@
 // Variable names, loop structure, and indexing match the C source exactly.
 // Only the forward transform is needed; no backward path.
 //
-// Supported sizes are the Vorbis blocksizes 256/2048 and 512/4096 (libvorbis
+// Supported sizes are the Vorbis blocksizes 256, 512, 1024, 2048 and 4096 (libvorbis
 // inits one drft per blocksize, block.c `drft_init(&b->fft_look[i],
 // ci->blocksizes[i])`). All are powers of two whose factorizations only
 // produce radix-2 and radix-4 factors, so dradfg (generic radix) is never
@@ -13,8 +13,8 @@
 #![allow(non_snake_case)]
 
 use crate::tables::drft::{
-    DRFT_SPLIT_256, DRFT_SPLIT_512, DRFT_SPLIT_2048, DRFT_SPLIT_4096, DRFT_WA_256, DRFT_WA_512,
-    DRFT_WA_2048, DRFT_WA_4096,
+    DRFT_SPLIT_256, DRFT_SPLIT_512, DRFT_SPLIT_1024, DRFT_SPLIT_2048, DRFT_SPLIT_4096, DRFT_WA_256,
+    DRFT_WA_512, DRFT_WA_1024, DRFT_WA_2048, DRFT_WA_4096,
 };
 
 // ---------------------------------------------------------------------------
@@ -488,6 +488,11 @@ pub(crate) static DRFT_512: DrftTables = DrftTables {
     wa: &DRFT_WA_512,
     split: &DRFT_SPLIT_512,
 };
+pub(crate) static DRFT_1024: DrftTables = DrftTables {
+    n: 1024,
+    wa: &DRFT_WA_1024,
+    split: &DRFT_SPLIT_1024,
+};
 pub(crate) static DRFT_2048: DrftTables = DrftTables {
     n: 2048,
     wa: &DRFT_WA_2048,
@@ -502,11 +507,13 @@ pub(crate) static DRFT_4096: DrftTables = DrftTables {
 /// Largest supported FFT size (the q-1 long block).
 pub(crate) const DRFT_MAX_N: usize = 4096;
 
-/// Tables for FFT size `n`. Panics unless `n` is 256, 512, 2048 or 4096.
+/// Tables for FFT size `n`. Panics unless `n` is 256, 512, 1024, 2048 or
+/// 4096.
 pub(crate) fn drft_tables(n: usize) -> &'static DrftTables {
     match n {
         256 => &DRFT_256,
         512 => &DRFT_512,
+        1024 => &DRFT_1024,
         2048 => &DRFT_2048,
         4096 => &DRFT_4096,
         _ => panic!("drft: unsupported FFT size {n}"),
@@ -533,7 +540,8 @@ pub(crate) fn drft_forward_with(t: &DrftTables, data: &mut [f32]) {
     }
 }
 
-/// [`drft_forward_with`] for `n = data.len()` (256, 512, 2048 or 4096).
+/// [`drft_forward_with`] for `n = data.len()` (256, 512, 1024, 2048 or
+/// 4096).
 pub(crate) fn drft_forward_n(data: &mut [f32]) {
     drft_forward_with(drft_tables(data.len()), data);
 }
@@ -545,7 +553,7 @@ mod tests {
 
     #[test]
     fn dsp_manifest_drft_tables_match_libvorbis() {
-        for n in [256, 512, 2048, 4096] {
+        for n in [256, 512, 1024, 2048, 4096] {
             let t = drft_tables(n);
             assert_eq!(t.n, n);
             // The C manifest hashes all 2n floats of `trigcache + n`; we
@@ -560,7 +568,7 @@ mod tests {
 
     #[test]
     fn dsp_manifest_drft_forward_matches_libvorbis() {
-        for n in [256usize, 512, 2048, 4096] {
+        for n in [256usize, 512, 1024, 2048, 4096] {
             for seed in 1u32..=3 {
                 let mut d = lcg_input(n, seed * 104729 + n as u32);
                 drft_forward_n(&mut d);
