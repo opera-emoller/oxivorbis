@@ -79,7 +79,26 @@ fn to_bark(n: i64) -> f64 {
     let a = (0.00074_f32 * nf) as f64;
     let b = ((n * n) as f32 * 1.85e-8_f32) as f64;
     let c = (1e-4_f32 * nf) as f64;
-    13.1_f32 as f64 * a.atan() + 2.24_f32 as f64 * b.atan() + c
+    13.1_f32 as f64 * libm(a.atan()) + 2.24_f32 as f64 * libm(b.atan()) + c
+}
+
+/// Every platform-libm result the psy setup uses passes through here. In
+/// test builds [`tests::with_libm_ulps`] can shift each result by a few
+/// ulps, to check that no decision depends on the last bit of the
+/// platform's `atan`/`log`/`exp`; otherwise this is the identity.
+#[inline(always)]
+fn libm(x: f64) -> f64 {
+    #[cfg(test)]
+    {
+        let k = tests::LIBM_ULPS.with(|c| c.get());
+        if k != 0 && x.is_finite() && x != 0.0 {
+            // Step |x| by k ulps away from (k > 0) or toward zero.
+            let b = x.abs().to_bits() as i64 + k;
+            let m = f64::from_bits(b as u64);
+            return if x < 0.0 { -m } else { m };
+        }
+    }
+    x
 }
 
 /// toOC (scales.h): `log(n)*1.442695f-5.965784f`. `log` is double, so the
@@ -89,13 +108,13 @@ fn to_bark(n: i64) -> f64 {
 /// for float arguments) and round the double result only where C assigns
 /// it to a float/int.
 fn to_oc(n: f64) -> f64 {
-    n.ln() * 1.442695_f32 as f64 - 5.965784_f32 as f64
+    libm(n.ln()) * 1.442695_f32 as f64 - 5.965784_f32 as f64
 }
 
 /// fromOC (scales.h): `exp(((o)+5.965784f)*.693147f)`; double result, see
 /// [`to_oc`].
 fn from_oc(o: f64) -> f64 {
-    ((o + 5.965784_f32 as f64) * 0.693147_f32 as f64).exp()
+    libm(((o + 5.965784_f32 as f64) * 0.693147_f32 as f64).exp())
 }
 
 /// todB: bit-manipulation fast dB (scales.h, VORBIS_IEEE_FLOAT32 path).
@@ -2116,6 +2135,124 @@ fn pair_mut<T>(v: &mut [T], a: usize, b: usize) -> (&mut T, &mut T) {
 
 #[cfg(test)]
 mod tests {
+    thread_local! {
+        /// Ulps added to every libm result (see [`super::libm`]).
+        pub(super) static LIBM_ULPS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Run `f` with every psy libm result shifted by `k` ulps.
+    pub(super) fn with_libm_ulps<R>(k: i64, f: impl FnOnce() -> R) -> R {
+        LIBM_ULPS.with(|c| c.set(k));
+        let r = f();
+        LIBM_ULPS.with(|c| c.set(0));
+        r
+    }
+
+    /// Everything `PsyGeom::new` derives from libm that reaches the
+    /// encoder, as exact bits, plus the bark-window edges `vp_psy_init`
+    /// computes from it for each of `guards` (`noisewindowlomin`,
+    /// `noisewindowhimin`).
+    fn geom_fingerprint(n: usize, rate: i64, guards: &[(i32, i32)]) -> Vec<u64> {
+        let g = super::PsyGeom::new(n, rate, 8);
+        let mut v: Vec<u64> = vec![g.shiftoc as u64, g.firstoc as u64, g.total_octave_lines as u64];
+        v.extend(g.ath.iter().map(|x| x.to_bits() as u64));
+        v.extend(g.octave.iter().map(|&x| x as u64));
+        v.extend(g.halfoc.iter().map(|x| x.to_bits() as u64));
+        v.extend(g.tone.slot.iter().flatten().map(|&x| x as u64));
+        v.extend(g.tone.ops.iter().map(|&(a, b, c)| ((a as u64) << 16) | ((b as u64) << 8) | c as u64));
+        v.extend(g.tone.op_start.iter().map(|&x| x as u64));
+        let wlo = crate::tables::quality::PSY_INFO_TEMPLATE_NOISEWINDOWLO;
+        let whi = crate::tables::quality::PSY_INFO_TEMPLATE_NOISEWINDOWHI;
+        for &(lomin, himin) in guards {
+            // The bark loop of vp_psy_init_reusing.
+            let mut lo: i64 = super::BARK_LO0;
+            let mut hi: i64 = 1;
+            for i in 0..n {
+                let bark = g.bark_at(i as i64) as f32;
+                while lo + (lomin as i64) < i as i64 && g.bark_at(lo) < (bark - wlo) as f64 {
+                    lo += 1;
+                }
+                while hi <= n as i64
+                    && (hi < i as i64 + himin as i64 || g.bark_at(hi) < (bark + whi) as f64)
+                {
+                    hi += 1;
+                }
+                v.push((((lo - 1) << 16) + (hi - 1)) as u64);
+            }
+        }
+        v
+    }
+
+    /// The psy setup's libm-dependent outputs at `rate` (every block size
+    /// any quality uses there) are unchanged when each libm result moves
+    /// by +-`ulps`. Returns the failing (rate, n, ulps).
+    fn libm_robust_at(rate: u32, ulps: i64) -> Vec<(u32, usize, i64)> {
+        let mut bad = Vec::new();
+        let mut ns: Vec<usize> = Vec::new();
+        let mut guards: Vec<(i32, i32)> = Vec::new();
+        for ch in [1, 2] {
+            for q in [-0.1f32, 0.0, 0.5, 1.0] {
+                let c = crate::quality::quality_config(q, rate, ch);
+                ns.extend(c.blocksizes.iter().map(|b| b / 2));
+                let tpl = crate::tables::quality::SETUP_LIST[c.template];
+                guards.extend(tpl.psy_noiseguards.iter().map(|g| (g[0], g[1])));
+            }
+        }
+        ns.sort_unstable();
+        ns.dedup();
+        guards.sort_unstable();
+        guards.dedup();
+        for &n in &ns {
+            let want = geom_fingerprint(n, rate as i64, &guards);
+            for k in [-ulps, ulps] {
+                if with_libm_ulps(k, || geom_fingerprint(n, rate as i64, &guards)) != want {
+                    bad.push((rate, n, k));
+                }
+            }
+        }
+        bad
+    }
+
+    fn libm_robust_over(rates: impl Iterator<Item = u32> + Send, ulps: i64) {
+        let rates: Vec<u32> = rates.collect();
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let chunk = rates.len().div_ceil(threads).max(1);
+        let bad: Vec<(u32, usize, i64)> = std::thread::scope(|sc| {
+            let hs: Vec<_> = rates
+                .chunks(chunk)
+                .map(|c| sc.spawn(move || c.iter().flat_map(|&r| libm_robust_at(r, ulps)).collect::<Vec<_>>()))
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        assert!(bad.is_empty(), "{} (rate, n, ulps) depend on libm's last bits: {:?}", bad.len(), &bad[..bad.len().min(20)]);
+    }
+
+    /// The README's claim that output doesn't depend on the platform libm,
+    /// at a spread of rates (every family, range edges, odd rates).
+    #[test]
+    fn psy_setup_robust_to_libm_ulps() {
+        let mut rates: Vec<u32> = vec![
+            1, 2, 3, 7, 100, 1000, 4000, 7999, 8000, 8001, 8999, 9000, 11025, 12000, 14999, 15000,
+            16000, 18999, 19000, 22050, 24000, 25999, 26000, 32000, 37800, 39999, 40000, 44056,
+            44100, 48000, 50000, 50001, 64000, 88200, 96000, 176400, 192000, 199999, 200000,
+        ];
+        rates.extend((1..200).map(|i| i * 997));
+        libm_robust_over(rates.into_iter(), 2);
+        // The hook does reach the decisions: a gross error changes them.
+        let g = [(2, 1)];
+        assert_ne!(
+            with_libm_ulps(1 << 40, || geom_fingerprint(1024, 44100, &g)),
+            geom_fingerprint(1024, 44100, &g)
+        );
+    }
+
+    /// Exhaustive version: every rate 1..=200000 (minutes in release; run
+    /// with `--run-ignored only`).
+    #[test]
+    #[ignore]
+    fn psy_setup_robust_to_libm_ulps_every_rate() {
+        libm_robust_over(1..=200_000, 1);
+    }
     use super::rint;
 
     fn check(x: f64) {
