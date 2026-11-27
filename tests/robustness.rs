@@ -197,6 +197,10 @@ fn encoder_is_send_sync() {
     const fn send_sync<T: Send + Sync>() {}
     const _: () = send_sync::<Encoder>();
     const _: () = send_sync::<Options>();
+    // Runtime calls too, so older rustc (1.85) doesn't flag the helper as
+    // dead code under -D warnings.
+    send_sync::<Encoder>();
+    send_sync::<Options>();
     // And shareable by reference across threads.
     let enc = Encoder::new(SampleRate::Hz44100, Channels::Mono, &Options::default());
     std::thread::scope(|s| {

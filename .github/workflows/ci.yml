@@ -87,7 +87,11 @@ jobs:
         # (or a macro arm going missing) can't drop tests unnoticed.
         # Raise the minimums when adding tests.
         run: |
-          cargo nextest list --features oracle --message-format oneline > "$RUNNER_TEMP/tests.txt"
+          # JSON is nextest's stable machine format (the oneline text
+          # format changed between releases); flatten to "<binary> <test>".
+          cargo nextest list --features oracle --message-format json \
+            | jq -r '."rust-suites" | to_entries[] | .key as $b | .value.testcases | keys[] | "\($b) \(.)"' \
+            > "$RUNNER_TEMP/tests.txt"
           fail=0
           while IFS='|' read -r pat min; do
             n=$(grep -cF -- "$pat" "$RUNNER_TEMP/tests.txt" || true)
