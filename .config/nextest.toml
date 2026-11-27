@@ -48,3 +48,10 @@ ffi-c = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'package(oxivorbis-ffi) & binary(c_api)'
 test-group = 'ffi-c'
+
+# tests/bitrate.rs: edge-case sweeps over rates x channels x every mode,
+# each encoding all 15 packetblobs. ~12 s each in a debug build on an M4,
+# 60 s+ on a 4-vCPU CI runner (edges_do_not_panic timed out there).
+[[profile.default.overrides]]
+filter = 'binary(bitrate)'
+slow-timeout = { period = "60s", terminate-after = 4 }
