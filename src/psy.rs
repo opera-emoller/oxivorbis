@@ -247,91 +247,60 @@ fn setup_tone_curves(
     center_decay_rate: f32,
 ) -> ToneCurves {
     let mut workc = [[[0.0_f32; EHMER_MAX]; P_LEVELS]; P_BANDS];
-    let mut athc = [[0.0_f32; EHMER_MAX]; P_LEVELS];
-    let mut ath = [0.0_f32; EHMER_MAX];
+    let athc0 = ath_curves();
 
     // build return buffer
     let mut ret = Box::new([[[0.0_f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]);
 
+    // The centered curve boost/decay depends only on k.
+    let mut adj = [0.0_f32; EHMER_MAX];
+    for (k, a) in adj.iter_mut().enumerate() {
+        let offset_k = EHMER_OFFSET as i32 - k as i32;
+        *a = center_boost + offset_k.unsigned_abs() as f32 * center_decay_rate;
+        if *a < 0.0 && center_boost > 0.0 {
+            *a = 0.0;
+        }
+        if *a > 0.0 && center_boost < 0.0 {
+            *a = 0.0;
+        }
+    }
+
     for i in 0..P_BANDS {
-        // build ATH slice for this band
-        let ath_offset = i * 4;
-        for j in 0..EHMER_MAX {
-            let mut min = 999.0_f32;
-            for k in 0..4 {
-                let idx = j + k + ath_offset;
-                if idx < MAX_ATH {
-                    if min > ATH[idx] {
-                        min = ATH[idx];
-                    }
-                } else {
-                    if min > ATH[MAX_ATH - 1] {
-                        min = ATH[MAX_ATH - 1];
-                    }
-                }
-            }
-            ath[j] = min;
-        }
-
-        // copy curves (6 levels from tonemasks; replicate 0→0,1; 5→6,7)
-        for j in 0..6 {
-            workc[i][j + 2].copy_from_slice(&TONEMASKS[i][j]);
-        }
-        workc[i][0].copy_from_slice(&TONEMASKS[i][0]);
-        workc[i][1].copy_from_slice(&TONEMASKS[i][0]);
-
-        // apply centered curve boost/decay
+        let mut athc = athc0[i];
         for j in 0..P_LEVELS {
-            for k in 0..EHMER_MAX {
-                let offset_k = EHMER_OFFSET as i32 - k as i32;
-                let mut adj = center_boost + offset_k.unsigned_abs() as f32 * center_decay_rate;
-                if adj < 0.0 && center_boost > 0.0 {
-                    adj = 0.0;
-                }
-                if adj > 0.0 && center_boost < 0.0 {
-                    adj = 0.0;
-                }
-                workc[i][j][k] += adj;
-            }
-        }
-
-        // normalize curves; overlay ATH
-        for j in 0..P_LEVELS {
+            // copy curves (6 levels from tonemasks; replicate 0→0,1; 5→6,7)
+            let mask = &TONEMASKS[i][j.max(2) - 2];
             // C: `curveatt_dB[i]+100.-(j<2?2:j)*10.-P_LEVEL_0` — the `100.`
             // literal (and P_LEVEL_0 = `30.`) make the whole sum double; it
             // is rounded to float once, when passed to attenuate_curve.
             let att = (curveatt_db[i] as f64 + 100.0
                 - (if j < 2 { 2 } else { j }) as f64 * 10.0
                 - P_LEVEL_0 as f64) as f32;
+            let w = &mut workc[i][j];
+            let a = &mut athc[j];
             for k in 0..EHMER_MAX {
-                workc[i][j][k] += att;
-            }
-            athc[j].copy_from_slice(&ath);
-            // C: `+100.-j*10.f-P_LEVEL_0`, double as well (integral, so exact).
-            let att2 = (100.0 - (j as f32 * 10.0) as f64 - P_LEVEL_0 as f64) as f32;
-            for k in 0..EHMER_MAX {
-                athc[j][k] += att2;
-            }
-            // max_curve(athc[j], workc[i][j])
-            for k in 0..EHMER_MAX {
-                if athc[j][k] < workc[i][j][k] {
-                    athc[j][k] = workc[i][j][k];
+                // apply centered curve boost/decay, then normalize
+                w[k] = (mask[k] + adj[k]) + att;
+                // overlay ATH: max_curve(athc[j], workc[i][j])
+                if a[k] < w[k] {
+                    a[k] = w[k];
                 }
             }
         }
 
         // limit louder curves
         for j in 1..P_LEVELS {
-            // min_curve(athc[j], athc[j-1])
+            let (prev, cur) = athc.split_at_mut(j);
+            let (prev, a) = (&prev[j - 1], &mut cur[0]);
+            let w = &mut workc[i][j];
             for k in 0..EHMER_MAX {
-                if athc[j][k] > athc[j - 1][k] {
-                    athc[j][k] = athc[j - 1][k];
+                // min_curve(athc[j], athc[j-1])
+                if a[k] > prev[k] {
+                    a[k] = prev[k];
                 }
-            }
-            // min_curve(workc[i][j], athc[j])
-            for k in 0..EHMER_MAX {
-                if workc[i][j][k] > athc[j][k] {
-                    workc[i][j][k] = athc[j][k];
+                // min_curve(workc[i][j], athc[j])
+                if w[k] > a[k] {
+                    w[k] = a[k];
                 }
             }
         }
@@ -408,6 +377,47 @@ fn setup_tone_curves(
     }
 
     ret
+}
+
+/// setup_tone_curves' ATH overlay before the curves are folded in:
+/// `athc[i][j][k] = min(ATH[i*4+k..][..4]) + (100.-j*10.f-P_LEVEL_0)`,
+/// clamped to the last ATH entry. Plain f32 arithmetic on static tables,
+/// so it is the same for every quality.
+fn ath_curves() -> &'static [[[f32; EHMER_MAX]; P_LEVELS]; P_BANDS] {
+    static ATHC: std::sync::OnceLock<Box<[[[f32; EHMER_MAX]; P_LEVELS]; P_BANDS]>> =
+        std::sync::OnceLock::new();
+    ATHC.get_or_init(|| {
+        let mut athc = Box::new([[[0.0_f32; EHMER_MAX]; P_LEVELS]; P_BANDS]);
+        for (i, band) in athc.iter_mut().enumerate() {
+            // build ATH slice for this band
+            let ath_offset = i * 4;
+            let mut ath = [0.0_f32; EHMER_MAX];
+            for j in 0..EHMER_MAX {
+                let mut min = 999.0_f32;
+                for k in 0..4 {
+                    let idx = j + k + ath_offset;
+                    if idx < MAX_ATH {
+                        if min > ATH[idx] {
+                            min = ATH[idx];
+                        }
+                    } else {
+                        if min > ATH[MAX_ATH - 1] {
+                            min = ATH[MAX_ATH - 1];
+                        }
+                    }
+                }
+                ath[j] = min;
+            }
+            for (j, level) in band.iter_mut().enumerate() {
+                // C: `+100.-j*10.f-P_LEVEL_0`, double as well (integral, so exact).
+                let att2 = (100.0 - (j as f32 * 10.0) as f64 - P_LEVEL_0 as f64) as f32;
+                for k in 0..EHMER_MAX {
+                    level[k] = ath[k] + att2;
+                }
+            }
+        }
+        athc
+    })
 }
 
 /// `if (b > w) b = w` for every tone-curve level.
@@ -706,10 +716,31 @@ pub(crate) fn vp_psy_init_reusing(
     earlier: &[VorbisLookPsy],
 ) -> VorbisLookPsy {
     let geom = psy_geom(n, rate, gi.eighth_octave_lines);
+    // tone curves
+    let bits = |v: &VorbisInfoPsy| {
+        (
+            v.toneatt.map(f32::to_bits),
+            v.tone_centerboost.to_bits(),
+            v.tone_decay.to_bits(),
+        )
+    };
+    let same = earlier
+        .iter()
+        .find(|e| e.n == n && e.rate == rate && bits(&e.vi) == bits(&vi));
+    let tonecurves = match same {
+        Some(e) => e.tonecurves.clone(),
+        None => setup_tone_curves(
+            &vi.toneatt,
+            &geom.tone,
+            n,
+            vi.tone_centerboost,
+            vi.tone_decay,
+        ),
+    };
     let mut p = VorbisLookPsy {
         n,
         vi: vi.clone(),
-        tonecurves: Box::new([[[0.0; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]),
+        tonecurves,
         noiseoffset: vec![vec![0.0; n]; P_NOISECURVES],
         // ATH setup (quality-independent; see PsyGeom::new)
         ath: geom.ath.clone(),
@@ -775,34 +806,6 @@ pub(crate) fn vp_psy_init_reusing(
         }
     }
 
-    // tone curves
-    if crate::debug_dump::dump_enabled() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static FIRED: AtomicBool = AtomicBool::new(false);
-        if !FIRED.swap(true, Ordering::Relaxed) {
-            // We dump after setup_tone_curves. Mark for later.
-        }
-    }
-    let bits = |v: &VorbisInfoPsy| {
-        (
-            v.toneatt.map(f32::to_bits),
-            v.tone_centerboost.to_bits(),
-            v.tone_decay.to_bits(),
-        )
-    };
-    let same = earlier
-        .iter()
-        .find(|e| e.n == n && e.rate == rate && bits(&e.vi) == bits(&vi));
-    p.tonecurves = match same {
-        Some(e) => e.tonecurves.clone(),
-        None => setup_tone_curves(
-            &vi.toneatt,
-            &geom.tone,
-            n,
-            vi.tone_centerboost,
-            vi.tone_decay,
-        ),
-    };
     if crate::debug_dump::dump_enabled() {
         use std::sync::atomic::{AtomicBool, Ordering};
         static FIRED: AtomicBool = AtomicBool::new(false);
