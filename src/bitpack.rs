@@ -13,10 +13,11 @@ pub(crate) fn ov_ilog(mut v: u32) -> u32 {
 
 #[derive(Default)]
 pub struct BitWriter {
+    /// Completed 32-bit words, little-endian.
     bytes: Vec<u8>,
-    /// Number of bits already written into the *last* byte of `bytes`. In
-    /// `1..=8`. When `bytes` is empty, no bits have been written yet.
-    bits_in_last: u8,
+    /// The `pending` (< 32) bits written after `bytes`, LSB first.
+    acc: u64,
+    pending: u32,
 }
 
 impl BitWriter {
@@ -25,14 +26,12 @@ impl BitWriter {
     }
 
     pub fn bit_len(&self) -> usize {
-        if self.bytes.is_empty() {
-            0
-        } else {
-            (self.bytes.len() - 1) * 8 + self.bits_in_last as usize
-        }
+        self.bytes.len() * 8 + self.pending as usize
     }
 
-    pub fn into_bytes(self) -> Vec<u8> {
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        let tail = self.pending.div_ceil(8) as usize;
+        self.bytes.extend_from_slice(&self.acc.to_le_bytes()[..tail]);
         self.bytes
     }
 
@@ -63,34 +62,17 @@ impl BitWriter {
     }
 
     /// LSB-first; `bits` must be `<= 32`.
+    #[inline]
     pub fn write(&mut self, value: u32, bits: u32) {
         debug_assert!(bits <= 32, "bits must be <= 32, got {bits}");
-        if bits == 0 {
-            return;
-        }
-        let mut value = if bits == 32 {
-            value
-        } else {
-            value & ((1u32 << bits) - 1)
-        };
-        let mut bits_remaining = bits as u8;
-
-        while bits_remaining > 0 {
-            if self.bytes.is_empty() || self.bits_in_last == 8 {
-                self.bytes.push(0);
-                self.bits_in_last = 0;
-            }
-
-            let space = 8 - self.bits_in_last;
-            let take = bits_remaining.min(space);
-
-            let chunk = (value & ((1u32 << take) - 1)) as u8;
-            let last = self.bytes.last_mut().expect("just pushed if needed");
-            *last |= chunk << self.bits_in_last;
-
-            self.bits_in_last += take;
-            bits_remaining -= take;
-            value >>= take;
+        let value = value as u64 & ((1u64 << bits) - 1);
+        self.acc |= value << self.pending;
+        self.pending += bits;
+        if self.pending >= 32 {
+            self.bytes
+                .extend_from_slice(&(self.acc as u32).to_le_bytes());
+            self.acc >>= 32;
+            self.pending -= 32;
         }
     }
 }
