@@ -56,8 +56,9 @@ pub(crate) struct Residue0Template {
     pub classmetric2: &'static [i32],
 }
 
-/// `vorbis_residue_template`, unmanaged fields; indices into the
-/// generated tables.
+/// `vorbis_residue_template`; indices into the generated tables. The
+/// `_managed` books replace `book_aux` / `books_base` when the setup is
+/// bitrate managed (`hi->managed`).
 pub(crate) struct ResidueTemplate {
     pub res_type: i32,
     pub limit_type: i32,
@@ -65,6 +66,8 @@ pub(crate) struct ResidueTemplate {
     pub res: u16,
     pub book_aux: u16,
     pub books_base: u16,
+    pub book_aux_managed: u16,
+    pub books_base_managed: u16,
 }
 
 pub(crate) struct Mapping0Template {
@@ -270,6 +273,7 @@ fn vorbis_encode_floor_setup(s: &mut Setup, fi: usize) {
     s.floors.push(f);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn vorbis_encode_residue_setup(
     s: &mut Setup,
     number: usize,
@@ -278,6 +282,7 @@ fn vorbis_encode_residue_setup(
     rate: u32,
     channels: usize,
     lowpass_khz: f64,
+    managed: bool,
 ) {
     let base = &T::RESIDUE0_BASES[rt.res as usize];
     let mut r = Residue {
@@ -298,7 +303,13 @@ fn vorbis_encode_residue_setup(
         s.residues.resize_with(number + 1, || None);
     }
 
-    let bb = &T::BOOKBLOCKS[rt.books_base as usize];
+    // `if(ci->hi.managed)`: the two branches differ only in the books.
+    let (book_aux, books_base) = if managed {
+        (rt.book_aux_managed, rt.books_base_managed)
+    } else {
+        (rt.book_aux, rt.books_base)
+    };
+    let bb = &T::BOOKBLOCKS[books_base as usize];
     for i in 0..r.partitions as usize {
         for k in 0..4 {
             if bb[i][k] != NB {
@@ -306,7 +317,7 @@ fn vorbis_encode_residue_setup(
             }
         }
     }
-    r.groupbook = book_dup_or_new(&mut s.books, rt.book_aux);
+    r.groupbook = book_dup_or_new(&mut s.books, book_aux);
     for i in 0..r.partitions as usize {
         for k in 0..4 {
             if bb[i][k] != NB {
@@ -363,7 +374,14 @@ fn vorbis_encode_residue_setup(
     s.residues[number] = Some(r);
 }
 
-fn plan(template: usize, rate: u32, channels: usize, base_setting: f64, lowpass_khz: f64) -> Setup {
+fn plan(
+    template: usize,
+    rate: u32,
+    channels: usize,
+    base_setting: f64,
+    lowpass_khz: f64,
+    managed: bool,
+) -> Setup {
     assert!((1..=2).contains(&channels), "1 or 2 channels supported");
     let t = T::SETUP_LIST[template];
     let is = base_setting as usize;
@@ -413,6 +431,7 @@ fn plan(template: usize, rate: u32, channels: usize, base_setting: f64, lowpass_
                 rate,
                 channels,
                 lowpass_khz,
+                managed,
             );
         }
     }
@@ -564,6 +583,7 @@ fn pack(s: &Setup, channels: usize) -> Vec<u8> {
 /// `quality::select_template`) at `rate`, `channels` (1 or 2), given
 /// `hi.base_setting` and `hi.lowpass_kHz`, plus the encode-only
 /// floor/residue parameters.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_setup(
     template: usize,
     rate: u32,
@@ -571,7 +591,20 @@ pub(crate) fn build_setup(
     base_setting: f64,
     lowpass_khz: f64,
 ) -> GeneratedSetup {
-    let s = plan(template, rate, channels, base_setting, lowpass_khz);
+    build_setup_managed(template, rate, channels, base_setting, lowpass_khz, false)
+}
+
+/// [`build_setup`] for a setup that is bitrate managed (`hi->managed`) or
+/// not; managed setups take the templates' `_managed` residue books.
+pub(crate) fn build_setup_managed(
+    template: usize,
+    rate: u32,
+    channels: usize,
+    base_setting: f64,
+    lowpass_khz: f64,
+    managed: bool,
+) -> GeneratedSetup {
+    let s = plan(template, rate, channels, base_setting, lowpass_khz, managed);
     let packet = pack(&s, channels);
     GeneratedSetup {
         packet,

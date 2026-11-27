@@ -204,6 +204,35 @@ static void walk(void) {
   }
 }
 
+/* The bitrate-managed residue books (book_aux_managed,
+ * books_base_managed), which vorbis_encode_residue_setup uses instead of
+ * the unmanaged ones when hi->managed is set. Registered after every
+ * unmanaged book and block, so the unmanaged ids are those walk() alone
+ * assigns. */
+static void walk_managed(void) {
+  int t, is, j, i, k, m;
+  for (t = 0; t < NTEMPLATES; t++) {
+    const ve_setup_data_template *s = templates[t];
+    for (is = 0; is < s->mappings; is++) {
+      const vorbis_mapping_template *mt = &s->maps[is];
+      int nres = 0;
+      for (m = 0; m < template_modes(s, is); m++)
+        for (j = 0; j < mt->map[m].submaps; j++)
+          if (mt->map[m].residuesubmap[j] + 1 > nres)
+            nres = mt->map[m].residuesubmap[j] + 1;
+      for (j = 0; j < nres; j++) {
+        const vorbis_residue_template *rt = &mt->res[j];
+        block_id(rt->books_base_managed);
+        book_id(rt->book_aux_managed);
+        for (i = 0; i < rt->res->partitions; i++)
+          for (k = 0; k < 4; k++)
+            if (rt->books_base_managed->books[i][k])
+              book_id(rt->books_base_managed->books[i][k]);
+      }
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* Emission helpers                                                   */
 /* ---------------------------------------------------------------- */
@@ -342,6 +371,7 @@ int main(int argc, char **argv) {
 
   check_setup_list();
   walk();
+  walk_managed();
 
   /* ---- packed books ---- */
   snprintf(path, sizeof path, "%s/setup_books.bin", argv[1]);
@@ -446,8 +476,9 @@ int main(int argc, char **argv) {
   p("];\n\n");
 
   /* ---- residue template sets ---- */
-  p("/// `vorbis_residue_template` arrays (e.g. `_res_44s_5`), unmanaged\n"
-    "/// fields only; indices into RESIDUE0_BASES / BOOKS / BOOKBLOCKS.\n");
+  p("/// `vorbis_residue_template` arrays (e.g. `_res_44s_5`); indices into\n"
+    "/// RESIDUE0_BASES / BOOKS / BOOKBLOCKS. The `_managed` books replace\n"
+    "/// `book_aux` / `books_base` in bitrate-managed setups.\n");
   p("pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; %d] = [\n", nressets);
   for (i = 0; i < nressets; i++) {
     p("    &[\n");
@@ -455,9 +486,11 @@ int main(int argc, char **argv) {
       const vorbis_residue_template *rt = &ressets[i][j];
       p("        ResidueTemplate {\n            res_type: %d,\n            limit_type: %d,\n"
         "            grouping: %d,\n            res: %d,\n            book_aux: %d,\n"
-        "            books_base: %d,\n        },\n",
+        "            books_base: %d,\n            book_aux_managed: %d,\n"
+        "            books_base_managed: %d,\n        },\n",
         rt->res_type, rt->limit_type, rt->grouping, res0_id(rt->res), book_id(rt->book_aux),
-        block_id(rt->books_base));
+        block_id(rt->books_base), book_id(rt->book_aux_managed),
+        block_id(rt->books_base_managed));
     }
     p("    ],\n");
   }

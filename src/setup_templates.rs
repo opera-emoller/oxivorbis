@@ -16,7 +16,7 @@ use crate::setup_gen::{
 pub(crate) static BOOKS_PACKED: &[u8] = include_bytes!("setup_books.bin");
 
 /// Book id -> (byte offset into BOOKS_PACKED, packed length in bits).
-pub(crate) static BOOKS: [(u32, u32); 556] = [
+pub(crate) static BOOKS: [(u32, u32); 598] = [
     (0, 1350),     // 0: dim 1, entries 256, maptype 0
     (169, 77),     // 1: dim 1, entries 4, maptype 0
     (179, 110),    // 2: dim 1, entries 10, maptype 0
@@ -573,6 +573,48 @@ pub(crate) static BOOKS: [(u32, u32); 556] = [
     (74911, 1324), // 553: dim 2, entries 225, maptype 1
     (75077, 1324), // 554: dim 2, entries 225, maptype 1
     (75243, 1669), // 555: dim 2, entries 289, maptype 1
+    (75452, 475),  // 556: dim 2, entries 81, maptype 0
+    (75512, 7111), // 557: dim 8, entries 6561, maptype 1
+    (76401, 904),  // 558: dim 4, entries 625, maptype 1
+    (76514, 381),  // 559: dim 2, entries 81, maptype 1
+    (76562, 561),  // 560: dim 2, entries 81, maptype 1
+    (76633, 1598), // 561: dim 2, entries 289, maptype 1
+    (76833, 550),  // 562: dim 4, entries 81, maptype 1
+    (76902, 788),  // 563: dim 2, entries 121, maptype 1
+    (77001, 1075), // 564: dim 2, entries 169, maptype 1
+    (77136, 279),  // 565: dim 2, entries 25, maptype 1
+    (77171, 580),  // 566: dim 2, entries 81, maptype 1
+    (77244, 1036), // 567: dim 2, entries 169, maptype 1
+    (77374, 1669), // 568: dim 2, entries 289, maptype 1
+    (77583, 475),  // 569: dim 2, entries 81, maptype 0
+    (77643, 475),  // 570: dim 2, entries 81, maptype 0
+    (77703, 7111), // 571: dim 8, entries 6561, maptype 1
+    (78592, 904),  // 572: dim 4, entries 625, maptype 1
+    (78705, 381),  // 573: dim 2, entries 81, maptype 1
+    (78753, 561),  // 574: dim 2, entries 81, maptype 1
+    (78824, 1598), // 575: dim 2, entries 289, maptype 1
+    (79024, 550),  // 576: dim 4, entries 81, maptype 1
+    (79093, 788),  // 577: dim 2, entries 121, maptype 1
+    (79192, 1075), // 578: dim 2, entries 169, maptype 1
+    (79327, 279),  // 579: dim 2, entries 25, maptype 1
+    (79362, 580),  // 580: dim 2, entries 81, maptype 1
+    (79435, 1036), // 581: dim 2, entries 169, maptype 1
+    (79565, 1669), // 582: dim 2, entries 289, maptype 1
+    (79774, 475),  // 583: dim 2, entries 81, maptype 0
+    (79834, 475),  // 584: dim 2, entries 81, maptype 0
+    (79894, 7111), // 585: dim 8, entries 6561, maptype 1
+    (80783, 904),  // 586: dim 4, entries 625, maptype 1
+    (80896, 381),  // 587: dim 2, entries 81, maptype 1
+    (80944, 561),  // 588: dim 2, entries 81, maptype 1
+    (81015, 1598), // 589: dim 2, entries 289, maptype 1
+    (81215, 550),  // 590: dim 4, entries 81, maptype 1
+    (81284, 788),  // 591: dim 2, entries 121, maptype 1
+    (81383, 1075), // 592: dim 2, entries 169, maptype 1
+    (81518, 279),  // 593: dim 2, entries 25, maptype 1
+    (81553, 1036), // 594: dim 2, entries 169, maptype 1
+    (81683, 1036), // 595: dim 2, entries 169, maptype 1
+    (81813, 1669), // 596: dim 2, entries 289, maptype 1
+    (82022, 475),  // 597: dim 2, entries 81, maptype 0
 ];
 
 /// `_floor[]` from modes/floor_all.h (all entries, reachable or not).
@@ -846,7 +888,7 @@ pub(crate) static RESIDUE0_BASES: [Residue0Template; 6] = [
 ];
 
 /// `static_bookblock` contents as book ids (`NB` = NULL).
-pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 32] = [
+pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 35] = [
     [
         [NB, NB, NB, NB],
         [NB, NB, 21, NB],
@@ -1295,10 +1337,53 @@ pub(crate) static BOOKBLOCKS: [[[u16; 4]; 12]; 32] = [
         [NB, NB, NB, NB],
         [NB, NB, NB, NB],
     ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 557, NB],
+        [NB, NB, 558, NB],
+        [NB, NB, 559, NB],
+        [NB, NB, 560, NB],
+        [NB, NB, 561, NB],
+        [562, 563, NB, NB],
+        [564, 565, NB, NB],
+        [566, 567, 568, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 571, NB],
+        [NB, NB, 572, NB],
+        [NB, NB, 573, NB],
+        [NB, NB, 574, NB],
+        [NB, NB, 575, NB],
+        [576, 577, NB, NB],
+        [578, 579, NB, NB],
+        [580, 581, 582, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
+    [
+        [NB, NB, NB, NB],
+        [NB, NB, 585, NB],
+        [NB, NB, 586, NB],
+        [NB, NB, 587, NB],
+        [NB, NB, 588, NB],
+        [NB, NB, 589, NB],
+        [590, 591, NB, NB],
+        [592, 593, NB, NB],
+        [594, 595, 596, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+        [NB, NB, NB, NB],
+    ],
 ];
 
-/// `vorbis_residue_template` arrays (e.g. `_res_44s_5`), unmanaged
-/// fields only; indices into RESIDUE0_BASES / BOOKS / BOOKBLOCKS.
+/// `vorbis_residue_template` arrays (e.g. `_res_44s_5`); indices into
+/// RESIDUE0_BASES / BOOKS / BOOKBLOCKS. The `_managed` books replace
+/// `book_aux` / `books_base` in bitrate-managed setups.
 pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
     &[
         ResidueTemplate {
@@ -1308,6 +1393,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 20,
             books_base: 0,
+            book_aux_managed: 556,
+            books_base_managed: 32,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1316,6 +1403,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 33,
             books_base: 0,
+            book_aux_managed: 569,
+            books_base_managed: 32,
         },
     ],
     &[
@@ -1326,6 +1415,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 54,
             books_base: 1,
+            book_aux_managed: 570,
+            books_base_managed: 33,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1334,6 +1425,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 67,
             books_base: 1,
+            book_aux_managed: 583,
+            books_base_managed: 33,
         },
     ],
     &[
@@ -1344,6 +1437,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 68,
             books_base: 2,
+            book_aux_managed: 584,
+            books_base_managed: 34,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1352,6 +1447,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 0,
             book_aux: 81,
             books_base: 2,
+            book_aux_managed: 597,
+            books_base_managed: 34,
         },
     ],
     &[
@@ -1362,6 +1459,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 90,
             books_base: 3,
+            book_aux_managed: 90,
+            books_base_managed: 3,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1370,6 +1469,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 104,
             books_base: 3,
+            book_aux_managed: 104,
+            books_base_managed: 3,
         },
     ],
     &[
@@ -1380,6 +1481,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 105,
             books_base: 4,
+            book_aux_managed: 105,
+            books_base_managed: 4,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1388,6 +1491,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 119,
             books_base: 4,
+            book_aux_managed: 119,
+            books_base_managed: 4,
         },
     ],
     &[
@@ -1398,6 +1503,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 132,
             books_base: 5,
+            book_aux_managed: 132,
+            books_base_managed: 5,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1406,6 +1513,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 146,
             books_base: 5,
+            book_aux_managed: 146,
+            books_base_managed: 5,
         },
     ],
     &[
@@ -1416,6 +1525,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 159,
             books_base: 6,
+            book_aux_managed: 159,
+            books_base_managed: 6,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1424,6 +1535,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 173,
             books_base: 6,
+            book_aux_managed: 173,
+            books_base_managed: 6,
         },
     ],
     &[
@@ -1434,6 +1547,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 174,
             books_base: 7,
+            book_aux_managed: 174,
+            books_base_managed: 7,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1442,6 +1557,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 190,
             books_base: 7,
+            book_aux_managed: 190,
+            books_base_managed: 7,
         },
     ],
     &[
@@ -1452,6 +1569,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 191,
             books_base: 8,
+            book_aux_managed: 191,
+            books_base_managed: 8,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1460,6 +1579,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 207,
             books_base: 8,
+            book_aux_managed: 207,
+            books_base_managed: 8,
         },
     ],
     &[
@@ -1470,6 +1591,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 208,
             books_base: 9,
+            book_aux_managed: 208,
+            books_base_managed: 9,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1478,6 +1601,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 224,
             books_base: 9,
+            book_aux_managed: 224,
+            books_base_managed: 9,
         },
     ],
     &[
@@ -1488,6 +1613,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 225,
             books_base: 10,
+            book_aux_managed: 225,
+            books_base_managed: 10,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1496,6 +1623,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 241,
             books_base: 10,
+            book_aux_managed: 241,
+            books_base_managed: 10,
         },
     ],
     &[
@@ -1506,6 +1635,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 242,
             books_base: 11,
+            book_aux_managed: 242,
+            books_base_managed: 11,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1514,6 +1645,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 253,
             books_base: 11,
+            book_aux_managed: 253,
+            books_base_managed: 11,
         },
     ],
     &[
@@ -1524,6 +1657,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 254,
             books_base: 12,
+            book_aux_managed: 254,
+            books_base_managed: 12,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1532,6 +1667,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 265,
             books_base: 12,
+            book_aux_managed: 265,
+            books_base_managed: 12,
         },
     ],
     &[
@@ -1542,6 +1679,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 266,
             books_base: 13,
+            book_aux_managed: 266,
+            books_base_managed: 13,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1550,6 +1689,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 277,
             books_base: 13,
+            book_aux_managed: 277,
+            books_base_managed: 13,
         },
     ],
     &[
@@ -1560,6 +1701,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 278,
             books_base: 14,
+            book_aux_managed: 278,
+            books_base_managed: 14,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1568,6 +1711,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 289,
             books_base: 14,
+            book_aux_managed: 289,
+            books_base_managed: 14,
         },
     ],
     &[
@@ -1578,6 +1723,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 290,
             books_base: 15,
+            book_aux_managed: 290,
+            books_base_managed: 15,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1586,6 +1733,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 301,
             books_base: 15,
+            book_aux_managed: 301,
+            books_base_managed: 15,
         },
     ],
     &[
@@ -1596,6 +1745,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 302,
             books_base: 16,
+            book_aux_managed: 302,
+            books_base_managed: 16,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1604,6 +1755,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 3,
             book_aux: 313,
             books_base: 16,
+            book_aux_managed: 313,
+            books_base_managed: 16,
         },
     ],
     &[
@@ -1614,6 +1767,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 314,
             books_base: 17,
+            book_aux_managed: 314,
+            books_base_managed: 17,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1622,6 +1777,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 328,
             books_base: 17,
+            book_aux_managed: 328,
+            books_base_managed: 17,
         },
     ],
     &[
@@ -1632,6 +1789,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 329,
             books_base: 18,
+            book_aux_managed: 329,
+            books_base_managed: 18,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1640,6 +1799,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 343,
             books_base: 18,
+            book_aux_managed: 343,
+            books_base_managed: 18,
         },
     ],
     &[
@@ -1650,6 +1811,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 344,
             books_base: 19,
+            book_aux_managed: 344,
+            books_base_managed: 19,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1658,6 +1821,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 358,
             books_base: 19,
+            book_aux_managed: 358,
+            books_base_managed: 19,
         },
     ],
     &[
@@ -1668,6 +1833,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 359,
             books_base: 20,
+            book_aux_managed: 359,
+            books_base_managed: 20,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1676,6 +1843,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 375,
             books_base: 20,
+            book_aux_managed: 375,
+            books_base_managed: 20,
         },
     ],
     &[
@@ -1686,6 +1855,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 376,
             books_base: 21,
+            book_aux_managed: 376,
+            books_base_managed: 21,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1694,6 +1865,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 392,
             books_base: 21,
+            book_aux_managed: 392,
+            books_base_managed: 21,
         },
     ],
     &[ResidueTemplate {
@@ -1703,6 +1876,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 1,
         book_aux: 405,
         books_base: 22,
+        book_aux_managed: 405,
+        books_base_managed: 22,
     }],
     &[
         ResidueTemplate {
@@ -1712,6 +1887,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 426,
             books_base: 23,
+            book_aux_managed: 426,
+            books_base_managed: 23,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1720,6 +1897,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 1,
             book_aux: 439,
             books_base: 23,
+            book_aux_managed: 439,
+            books_base_managed: 23,
         },
     ],
     &[
@@ -1730,6 +1909,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 440,
             books_base: 24,
+            book_aux_managed: 440,
+            books_base_managed: 24,
         },
         ResidueTemplate {
             res_type: 2,
@@ -1738,6 +1919,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 2,
             book_aux: 456,
             books_base: 24,
+            book_aux_managed: 456,
+            books_base_managed: 24,
         },
     ],
     &[ResidueTemplate {
@@ -1747,6 +1930,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 3,
         book_aux: 457,
         books_base: 25,
+        book_aux_managed: 457,
+        books_base_managed: 25,
     }],
     &[
         ResidueTemplate {
@@ -1756,6 +1941,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 468,
             books_base: 26,
+            book_aux_managed: 468,
+            books_base_managed: 26,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1764,6 +1951,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 4,
             book_aux: 482,
             books_base: 26,
+            book_aux_managed: 482,
+            books_base_managed: 26,
         },
     ],
     &[
@@ -1774,6 +1963,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 483,
             books_base: 27,
+            book_aux_managed: 483,
+            books_base_managed: 27,
         },
         ResidueTemplate {
             res_type: 1,
@@ -1782,6 +1973,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
             res: 5,
             book_aux: 499,
             books_base: 27,
+            book_aux_managed: 499,
+            books_base_managed: 27,
         },
     ],
     &[ResidueTemplate {
@@ -1791,6 +1984,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 1,
         book_aux: 505,
         books_base: 28,
+        book_aux_managed: 505,
+        books_base_managed: 28,
     }],
     &[ResidueTemplate {
         res_type: 2,
@@ -1799,6 +1994,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 1,
         book_aux: 518,
         books_base: 29,
+        book_aux_managed: 518,
+        books_base_managed: 29,
     }],
     &[ResidueTemplate {
         res_type: 1,
@@ -1807,6 +2004,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 3,
         book_aux: 531,
         books_base: 30,
+        book_aux_managed: 531,
+        books_base_managed: 30,
     }],
     &[ResidueTemplate {
         res_type: 1,
@@ -1815,6 +2014,8 @@ pub(crate) static RESIDUE_SETS: [&[ResidueTemplate]; 32] = [
         res: 4,
         book_aux: 542,
         books_base: 31,
+        book_aux_managed: 542,
+        books_base_managed: 31,
     }],
 ];
 
