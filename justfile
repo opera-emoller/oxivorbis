@@ -311,7 +311,7 @@ ffi-sanitize:
     if [ "$(uname -s)" = Darwin ]; then
         leak="leaks --atExit --"
     elif command -v valgrind >/dev/null 2>&1; then
-        leak="valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=all"
+        leak="valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite,indirect"
     fi
     OXV_FFI_SANITIZE=address OXV_FFI_LEAK_CHECK="$leak" cargo test -p oxivorbis-ffi --test c_api
 

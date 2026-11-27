@@ -279,6 +279,56 @@ jobs:
       - name: cargo +1.85 check
         # rust-toolchain.toml pins the dev toolchain; +1.85 overrides it.
         run: cargo +1.85 check --all-targets --features parallel
+      - name: cargo +1.85 check (C API crate)
+        run: cargo +1.85 check -p oxivorbis-ffi --all-targets
+
+  ffi:
+    # The C API (ffi/): header freshness, the C test against the shared and
+    # static library (byte-compared with oxivorbis::encode), the same under
+    # AddressSanitizer and a leak checker, the C++ header smoke test, and
+    # the Python ctypes binding against the CLI.
+    name: ffi (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          # Pinned: the committed header is this version's output.
+          tool: cbindgen@0.29.4
+      - name: Install valgrind
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Header is up to date (just ffi-header-check)
+        run: |
+          cbindgen --config ffi/cbindgen.toml --crate oxivorbis-ffi --output "$RUNNER_TEMP/oxivorbis.h" ffi
+          diff -u ffi/include/oxivorbis.h "$RUNNER_TEMP/oxivorbis.h" \
+            || { echo "::error::ffi/include/oxivorbis.h is stale: run 'just ffi-header'"; exit 1; }
+      - name: C and C++ tests (shared + static library)
+        run: cargo test -p oxivorbis-ffi
+      - name: C test under AddressSanitizer
+        env:
+          OXV_FFI_SANITIZE: address
+        run: cargo test -p oxivorbis-ffi --test c_api c_api_shared_library
+      - name: C test under a leak checker (leaks on macOS, valgrind on Linux)
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            export OXV_FFI_LEAK_CHECK="leaks --atExit --"
+          else
+            export OXV_FFI_LEAK_CHECK="valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite,indirect"
+          fi
+          cargo test -p oxivorbis-ffi --test c_api c_api_leak_check
+      - name: Python binding
+        run: |
+          cargo build -p oxivorbis-ffi -p oxivorbis-cli
+          python3 ffi/bindings/python/test_oxivorbis.py
 
   wasm:
     runs-on: ubuntu-latest

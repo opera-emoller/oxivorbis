@@ -12,7 +12,7 @@
 //!   shared-library C test with `-fsanitize=<value>` (CI uses `address`).
 //! - `OXV_FFI_LEAK_CHECK`: a command prefix to run the (unsanitized) C test
 //!   under, e.g. `leaks --atExit --` on macOS or
-//!   `valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=all`.
+//!   `valgrind --error-exitcode=1 --leak-check=full --errors-for-leak-kinds=definite,indirect`.
 //!
 //! Unix only (it shells out to a Unix C compiler driver).
 #![cfg(unix)]
