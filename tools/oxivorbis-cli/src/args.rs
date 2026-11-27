@@ -2,6 +2,7 @@
 
 use crate::codec;
 use crate::pcm::SampleFormat;
+use clap::parser::ValueSource;
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser, ValueEnum};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -30,6 +31,13 @@ Input formats:
 Exit status:
   0 ok, 1 encode or I/O error (any input), 2 usage error.
   A closed stdout (e.g. `| head`) stops quietly with status 0.
+
+Bitrate modes (as oggenc; 8 to 50 kHz input only):
+  -b 128                   VBR with the setup for about 128 kb/s
+  --managed -b 128         average bitrate 128 kb/s (bit reservoir)
+  --managed -b 128 -m 128 -M 128   hard limits too (\"CBR\")
+  -m 96 / -M 160           hard limits only (imply --managed)
+  -q 6 -M 192              quality 6, at most 192 kb/s
 
 Examples:
   oxivorbis song.wav                      # writes song.ogg at q3
@@ -75,6 +83,36 @@ pub struct Cli {
         help_heading = "Encoding"
     )]
     pub quality: f32,
+
+    /// Nominal bitrate in kb/s, as oggenc -b: VBR with the setup libvorbis
+    /// picks for this average, or average bitrate management with
+    /// --managed. Ignored when -q is given (as in oggenc).
+    #[arg(short = 'b', long, value_name = "KBPS", value_parser = parse_kbps, help_heading = "Encoding")]
+    pub bitrate: Option<u32>,
+
+    /// Hard minimum bitrate in kb/s (implies --managed).
+    #[arg(short = 'm', long, value_name = "KBPS", value_parser = parse_kbps, help_heading = "Encoding")]
+    pub min_bitrate: Option<u32>,
+
+    /// Hard maximum bitrate in kb/s (implies --managed).
+    #[arg(short = 'M', long, value_name = "KBPS", value_parser = parse_kbps, help_heading = "Encoding")]
+    pub max_bitrate: Option<u32>,
+
+    /// Enable libvorbis's bitrate management engine (bit reservoir).
+    #[arg(long, help_heading = "Encoding")]
+    pub managed: bool,
+
+    /// Tune the bit reservoir, as oggenc: bit_reservoir_bits=N,
+    /// bit_reservoir_bias=0..1 or bitrate_average_damping=SECS
+    /// (repeatable; needs a bitrate mode).
+    #[arg(
+        long = "advanced-encode-option",
+        value_name = "KEY=VALUE",
+        action = ArgAction::Append,
+        value_parser = parse_advanced,
+        help_heading = "Encoding"
+    )]
+    pub advanced: Vec<Advanced>,
 
     /// Ogg stream serial, decimal or 0x hex; the n-th input gets SERIAL+n.
     /// Default: oxivorbis's fixed serial, so output is deterministic.
@@ -204,6 +242,60 @@ fn parse_quality(s: &str) -> Result<f32, String> {
         .ok_or_else(|| "want a number from -1 to 10".into())
 }
 
+fn parse_kbps(s: &str) -> Result<u32, String> {
+    s.parse::<u32>()
+        .ok()
+        .filter(|&k| (1..=2_147_483).contains(&k))
+        .ok_or_else(|| "want a bitrate in kb/s, 1 to 2147483".into())
+}
+
+/// One `--advanced-encode-option`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Advanced {
+    ReservoirBits(u32),
+    ReservoirBias(f64),
+    AverageDamping(f64),
+}
+
+fn parse_advanced(s: &str) -> Result<Advanced, String> {
+    let (k, v) = s.split_once('=').ok_or("want KEY=VALUE")?;
+    let num = || v.parse::<f64>().ok().filter(|x| x.is_finite());
+    match k {
+        "bit_reservoir_bits" => v
+            .parse()
+            .map(Advanced::ReservoirBits)
+            .map_err(|_| "bit_reservoir_bits wants a number of bits".into()),
+        "bit_reservoir_bias" => num()
+            .filter(|b| (0.0..=1.0).contains(b))
+            .map(Advanced::ReservoirBias)
+            .ok_or_else(|| "bit_reservoir_bias wants 0.0 to 1.0".into()),
+        "bitrate_average_damping" => num()
+            .filter(|&d| d > 0.0)
+            .map(Advanced::AverageDamping)
+            .ok_or_else(|| "bitrate_average_damping wants a positive number of seconds".into()),
+        _ => Err(format!(
+            "unsupported option {k:?} (bit_reservoir_bits, bit_reservoir_bias, bitrate_average_damping)"
+        )),
+    }
+}
+
+/// oggenc's bitrate options, before they are mapped onto a mode
+/// (`codec::Settings`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RateArgs {
+    /// `-b`
+    pub bitrate: Option<u32>,
+    /// `-m`
+    pub min: Option<u32>,
+    /// `-M`
+    pub max: Option<u32>,
+    /// `--managed` (or implied by -m / -M)
+    pub managed: bool,
+    /// `-q` given explicitly
+    pub quality_set: bool,
+    pub advanced: Vec<Advanced>,
+}
+
 fn parse_serial(s: &str) -> Result<u32, String> {
     match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         Some(hex) => u32::from_str_radix(hex, 16).ok(),
@@ -250,6 +342,7 @@ pub struct Config {
     /// `-o`; `-` is stdout.
     pub output: Option<PathBuf>,
     pub quality: f32,
+    pub rate_args: RateArgs,
     pub serial: Option<u32>,
     /// `-c` comments, applied to every file.
     pub comments: Vec<(String, String)>,
@@ -310,6 +403,7 @@ fn legacy(args: &[OsString]) -> Option<Config> {
         inputs: vec!["-".into()],
         output: Some("-".into()),
         quality,
+        rate_args: RateArgs::default(),
         serial: None,
         comments: Vec::new(),
         tags: Vec::new(),
@@ -343,6 +437,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, clap::Error> {
         .long_version(long_version)
         .try_get_matches_from(std::iter::once(OsString::from("oxivorbis")).chain(args))?;
     let cli = Cli::from_arg_matches(&matches)?;
+    let quality_set = matches.value_source("quality") == Some(ValueSource::CommandLine);
     if let Some(g) = cli.generate {
         return Ok(Command::Generate(g));
     }
@@ -370,10 +465,24 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, clap::Error> {
     .into_iter()
     .filter(|(_, v)| !v.is_empty())
     .collect();
+    let rate_args = RateArgs {
+        bitrate: cli.bitrate,
+        min: cli.min_bitrate,
+        max: cli.max_bitrate,
+        managed: cli.managed || cli.min_bitrate.is_some() || cli.max_bitrate.is_some(),
+        quality_set,
+        advanced: cli.advanced,
+    };
+    if !rate_args.advanced.is_empty() && crate::codec::mode(&rate_args).is_none() {
+        return Err(conflict(
+            "--advanced-encode-option needs a bitrate mode (-b, -m or -M)",
+        ));
+    }
     Ok(Command::Encode(Config {
         inputs: cli.inputs,
         output: cli.output,
         quality: cli.quality,
+        rate_args,
         serial: cli.serial,
         comments: cli.comments,
         tags,
@@ -493,6 +602,67 @@ mod tests {
             })
         );
         assert_eq!(cfg(&["48000", "1"]).quality, 5.0);
+    }
+
+    #[test]
+    fn bitrate_flags_map_like_oggenc() {
+        use oxivorbis::BitrateMode as B;
+        let mode = |a: &[&str]| crate::codec::mode(&cfg(a).rate_args).map(|(m, _)| m);
+        assert_eq!(mode(&["x"]), None);
+        assert_eq!(mode(&["-b", "128", "x"]), Some(B::Nominal { kbps: 128 }));
+        assert_eq!(
+            mode(&["--managed", "-b", "128", "x"]),
+            Some(B::average(128))
+        );
+        assert_eq!(
+            mode(&["-b", "128", "-M", "160", "x"]),
+            Some(B::Average {
+                kbps: 128,
+                min_kbps: None,
+                max_kbps: Some(160)
+            })
+        );
+        assert_eq!(
+            mode(&["-m", "64", "x"]),
+            Some(B::Limits {
+                min_kbps: Some(64),
+                max_kbps: None
+            })
+        );
+        assert_eq!(
+            mode(&["-q", "6", "-M", "192", "x"]),
+            Some(B::QualityLimits {
+                min_kbps: None,
+                max_kbps: Some(192)
+            })
+        );
+        // -q wins over -b, and --managed alone is plain VBR (oggenc).
+        assert_eq!(mode(&["-q", "6", "-b", "128", "x"]), None);
+        assert_eq!(mode(&["--managed", "x"]), None);
+        let c = cfg(&[
+            "--managed",
+            "-b",
+            "96",
+            "--advanced-encode-option",
+            "bit_reservoir_bias=0.5",
+            "x",
+        ]);
+        let (_, t) = crate::codec::mode(&c.rate_args).unwrap();
+        assert_eq!(t.reservoir_bias, Some(0.5));
+        for bad in [
+            &["--advanced-encode-option", "bit_reservoir_bias=0.5", "x"][..],
+            &[
+                "--advanced-encode-option",
+                "lowpass_frequency=10",
+                "-b",
+                "96",
+                "x",
+            ],
+            &["-b", "0", "x"],
+            &["-M", "-1", "x"],
+        ] {
+            assert!(p(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

@@ -818,3 +818,57 @@ fn broken_pipe_is_quiet() {
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(stderr(&o), "", "no message on a closed pipe");
 }
+
+#[test]
+fn bitrate_flags_match_the_library() {
+    use oxivorbis::BitrateMode as B;
+    let (data, vals) = quantize(Fmt::S16, &signal(60_000, 2));
+    let pcm = vals.unwrap();
+    let r = oxivorbis::SampleRate::HZ_44100;
+    let c = oxivorbis::Channels::Stereo;
+    for (args, mode, q) in [
+        (&["-b", "128"][..], B::Nominal { kbps: 128 }, 3.0),
+        (
+            &["--managed", "-b", "112", "-M", "128"],
+            B::Average {
+                kbps: 112,
+                min_kbps: None,
+                max_kbps: Some(128),
+            },
+            3.0,
+        ),
+        (
+            &["-m", "96"],
+            B::Limits {
+                min_kbps: Some(96),
+                max_kbps: None,
+            },
+            3.0,
+        ),
+        (
+            &["-q", "7", "-M", "160"],
+            B::QualityLimits {
+                min_kbps: None,
+                max_kbps: Some(160),
+            },
+            7.0,
+        ),
+    ] {
+        let o = opts(q).with_bitrate(r, c, mode).unwrap();
+        let want = lib_i16(&pcm, 44_100, 2, &o);
+        cmd()
+            .args(["-Q", "-r", "-R", "44100", "-C", "2"])
+            .args(args)
+            .arg("-")
+            .write_stdin(data.clone())
+            .assert()
+            .success()
+            .stdout(want);
+    }
+    // Out of libvorbis's range: a clear error, exit 1.
+    let o = run(
+        &["-r", "-R", "44100", "-C", "2", "-b", "900", "-"],
+        Some(&data),
+    );
+    fails(&o, 1, "no libvorbis setup for 900000 b/s");
+}

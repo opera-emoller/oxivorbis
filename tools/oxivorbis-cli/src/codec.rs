@@ -5,14 +5,85 @@
 //! library (rate newtype, fallible construction, writer adapters) only
 //! needs edits here.
 
-use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
+use crate::args::{Advanced, RateArgs};
+use oxivorbis::{BitrateMode, BitrateTuning, Channels, Encoder, Options, Quality, SampleRate};
 
 /// Encoder settings in CLI terms.
 pub struct Settings {
     /// oggenc `-q` scale; already validated with [`quality_ok`].
     pub quality: f32,
+    pub rate_args: RateArgs,
     pub serial: Option<u32>,
     pub comments: Vec<(String, String)>,
+}
+
+/// oggenc 1.4.3's reading of `-q`, `-b`, `-m`, `-M` and `--managed`
+/// (`oggenc/encode.c`): quality mode when `-q` is given or no bitrate is,
+/// with hard limits if `-m`/`-M` are given; otherwise `-b` alone is VBR
+/// tuned for that bitrate, `-b` with management is ABR, and limits
+/// without `-b` are limits only. `None` is plain VBR.
+pub fn mode(r: &RateArgs) -> Option<(BitrateMode, BitrateTuning)> {
+    let quality_set = r.quality_set || (r.bitrate.is_none() && r.min.is_none() && r.max.is_none());
+    let mode = if quality_set {
+        if r.min.is_none() && r.max.is_none() {
+            return None;
+        }
+        BitrateMode::QualityLimits {
+            min_kbps: r.min,
+            max_kbps: r.max,
+        }
+    } else {
+        match r.bitrate {
+            Some(kbps) if !r.managed => BitrateMode::Nominal { kbps },
+            Some(kbps) => BitrateMode::Average {
+                kbps,
+                min_kbps: r.min,
+                max_kbps: r.max,
+            },
+            None => BitrateMode::Limits {
+                min_kbps: r.min,
+                max_kbps: r.max,
+            },
+        }
+    };
+    let mut t = BitrateTuning::default();
+    for a in &r.advanced {
+        t = match *a {
+            Advanced::ReservoirBits(b) => t.with_reservoir_bits(b),
+            Advanced::ReservoirBias(b) => t.with_reservoir_bias(b),
+            Advanced::AverageDamping(d) => t.with_average_damping(d),
+        };
+    }
+    Some((mode, t))
+}
+
+/// The summary line's description of the setting, e.g. `q3` or
+/// `managed 128 kbps (min 96)`.
+pub fn describe(quality: f32, r: &RateArgs) -> String {
+    let lim = |min: Option<u32>, max: Option<u32>| match (min, max) {
+        (Some(a), Some(b)) => format!(" (min {a}, max {b})"),
+        (Some(a), None) => format!(" (min {a})"),
+        (None, Some(b)) => format!(" (max {b})"),
+        (None, None) => String::new(),
+    };
+    match mode(r) {
+        None => format!("q{quality}"),
+        Some((m, _)) => match m {
+            BitrateMode::Nominal { kbps } => format!("~{kbps} kbps VBR"),
+            BitrateMode::Average {
+                kbps,
+                min_kbps,
+                max_kbps,
+            } => format!("managed {kbps} kbps{}", lim(min_kbps, max_kbps)),
+            BitrateMode::Limits { min_kbps, max_kbps } => {
+                format!("managed{}", lim(min_kbps, max_kbps))
+            }
+            BitrateMode::QualityLimits { min_kbps, max_kbps } => {
+                format!("q{quality}{}", lim(min_kbps, max_kbps))
+            }
+            _ => "bitrate managed".into(),
+        },
+    }
 }
 
 /// Whether `q` is a quality the library accepts.
@@ -39,6 +110,11 @@ impl Enc {
         let quality = Quality::new(s.quality)
             .ok_or_else(|| format!("unsupported quality {}; want -1..10", s.quality))?;
         let mut opts = Options::default().with_quality(quality);
+        if let Some((mode, tuning)) = mode(&s.rate_args) {
+            opts = opts
+                .with_bitrate_tuning(rate, channels, mode, tuning)
+                .map_err(|e| e.to_string())?;
+        }
         if let Some(serial) = s.serial {
             opts = opts.with_serial(serial);
         }

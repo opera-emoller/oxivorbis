@@ -94,7 +94,8 @@ fn main() -> ExitCode {
         match job::run(j, &cfg) {
             Ok(summary) => {
                 if !cfg.quiet {
-                    msg::line(summary.line(j, cfg.quality));
+                    let setting = codec::describe(cfg.quality, &cfg.rate_args);
+                    msg::line(summary.line(j, &setting));
                 }
             }
             Err(e) => failed |= job::report(&e),

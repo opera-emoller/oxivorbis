@@ -11,6 +11,8 @@ oxivorbis -q 6 -a "Artist" -l "Album" *.wav
 oxivorbis -t "One" -t "Two" one.wav two.wav  # n-th -t tags the n-th file
 ffmpeg -i in.flac -f wav - | oxivorbis - > out.ogg
 oxivorbis --raw -R 48000 -C 2 -F f32le - < pcm.f32 > out.ogg
+oxivorbis --managed -b 128 song.wav       # average bitrate 128 kb/s
+oxivorbis -q 6 -M 192 song.wav            # quality 6, at most 192 kb/s
 ```
 
 ## Install
@@ -54,6 +56,17 @@ supported as well.
   x.wav` and `oggenc x.wav` give files of about the same size and
   quality. (The library's `Options::default()` is q5; pass `-q 5` to match
   it.) Fractional values such as `-q 4.5` work.
+- **Bitrate.** `-b`, `-m`, `-M`, `--managed` and
+  `--advanced-encode-option` (`bit_reservoir_bits`, `bit_reservoir_bias`,
+  `bitrate_average_damping`) mean what they mean to oggenc 1.4.3, and the
+  output matches libvorbis set up the way oggenc sets it up: `-b N` alone
+  is VBR with the setup for about N kb/s, `--managed -b N` manages the
+  average, `-m`/`-M` add hard limits (and imply `--managed`), and with
+  `-q` the limits apply to quality mode (`-b` is then ignored, as in
+  oggenc). Unlike oggenc, `-q 6 -M 128` works even though q6 averages
+  more than 128 kb/s. libvorbis has bitrate setups only for 8 to 50 kHz
+  input, each rate with its own range (e.g. 45 to 500 kb/s for 44.1 kHz
+  stereo); other requests fail with a message that gives the range.
 - **Serial and tags.** The serial defaults to the library's fixed one, so
   output is deterministic (oggenc picks a random one). `--serial N` gives
   the n-th input `N + n`. `-c TAG=VALUE` applies to every file. The

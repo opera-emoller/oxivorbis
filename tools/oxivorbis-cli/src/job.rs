@@ -236,8 +236,8 @@ fn size(bytes: u64) -> String {
 
 impl Summary {
     /// `in.wav -> in.ogg: 3:21.50, 44100 Hz stereo 16-bit, q3, 3.10 MiB,
-    /// 129.3 kbps, 280.1x realtime`
-    pub fn line(&self, job: &Job, quality: f32) -> String {
+    /// 129.3 kbps, 280.1x realtime`; `setting` is the `q3` part.
+    pub fn line(&self, job: &Job, setting: &str) -> String {
         let secs = self.frames as f64 / self.rate as f64;
         let kbps = if secs > 0.0 {
             format!("{:.1} kbps", self.bytes as f64 * 8.0 / secs / 1000.0)
@@ -252,7 +252,7 @@ impl Summary {
         };
         let ch = if self.channels == 1 { "mono" } else { "stereo" };
         format!(
-            "{} -> {}: {}, {} Hz {ch} {}, q{quality}, {}, {kbps}{speed}",
+            "{} -> {}: {}, {} Hz {ch} {}, {setting}, {}, {kbps}{speed}",
             job.input.name(),
             job.output.name(),
             clock(secs),
@@ -332,6 +332,7 @@ pub fn run(job: &Job, cfg: &Config) -> Result<Summary> {
     }
     let settings = codec::Settings {
         quality: cfg.quality,
+        rate_args: cfg.rate_args.clone(),
         serial: cfg.serial_for(job.index),
         comments: cfg.comments_for(job.index),
     };
