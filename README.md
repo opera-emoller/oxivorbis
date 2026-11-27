@@ -298,8 +298,9 @@ if (oxv_encode_i16(pcm, samples, 44100, 2, NULL, &ogg) == OXV_STATUS_OK) {
 }
 ```
 
-It has a streaming encoder, a callback writer and an options handle, and
-it reports errors as status codes. See [ffi/README.md](ffi/README.md) for
+It has a streaming encoder, a callback writer and an options handle with
+the bitrate modes, takes 1 to 255 channels in Vorbis order, and reports
+errors as status codes. See [ffi/README.md](ffi/README.md) for
 linking (pkg-config, CMake), ownership and threading rules, and a Python
 ctypes binding.
 
@@ -491,7 +492,13 @@ it up. The real-audio corpus is byte-identical at 44.1 kHz stereo with
 differential fuzzer has run more than 100,000 cases with random bitrate
 modes, limits, reservoir and encoder tuning across 8 to 50 kHz (i16 and
 f32, macOS arm64 and Linux x86_64, and against an AddressSanitizer build
-of the oracle), and CI runs 264 bitrate parity tests per platform.
+of the oracle), and CI runs 367 bitrate parity tests per platform.
+With more than two channels, the bitrate modes are byte-identical too:
+the fuzzer has run 20,000 cases of random modes on 5.1 (32 to 70 kHz) and
+on 3 to 8 uncoupled channels (8 to 50 kHz) clean, on macOS arm64 and
+Linux x86_64, and the 5.1 corpus is byte-identical for 1000 files at
+48 kHz with `--managed -b 384 -m 384 -M 384` and at 44.1 kHz with
+`-q 4 -M 320`.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
 ## Features

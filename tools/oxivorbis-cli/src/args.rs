@@ -35,7 +35,7 @@ Exit status:
   0 ok, 1 encode or I/O error (any input), 2 usage error.
   A closed stdout (e.g. `| head`) stops quietly with status 0.
 
-Bitrate modes (as oggenc; 8 to 50 kHz input only):
+Bitrate modes (as oggenc; 8 to 50 kHz input only, 5.1 up to 70 kHz):
   -b 128                   VBR with the setup for about 128 kb/s
   --managed -b 128         average bitrate 128 kb/s (bit reservoir)
   --managed -b 128 -m 128 -M 128   hard limits too (\"CBR\")

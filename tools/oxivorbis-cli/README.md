@@ -67,8 +67,10 @@ supported as well.
   `-q` the limits apply to quality mode (`-b` is then ignored, as in
   oggenc). Unlike oggenc, `-q 6 -M 128` works even though q6 averages
   more than 128 kb/s. libvorbis has bitrate setups only for 8 to 50 kHz
-  input, each rate with its own range (e.g. 45 to 500 kb/s for 44.1 kHz
-  stereo); other requests fail with a message that gives the range.
+  input (5.1: up to 70 kHz), each rate and channel count with its own
+  range (e.g. 45 to 500 kb/s for 44.1 kHz stereo, 84 to 1440 kb/s for
+  5.1 at 48 kHz); other requests fail with a message that gives the
+  range.
 - **Serial and tags.** The serial defaults to the library's fixed one, so
   output is deterministic (oggenc picks a random one). `--serial N` gives
   the n-th input `N + n`. `-c TAG=VALUE` applies to every file. The
