@@ -1129,15 +1129,30 @@ fn max_seeds(
             minV = p.vi.tone_abs_limit;
         }
         if pos < end {
-            // libvorbis steps pos to end, folding in each in-range line;
-            // the fold is a select (no data-dependent branch).
+            // libvorbis steps pos to end, folding in each in-range line:
+            //   if ((sv > NEGINF && sv < minV) || minV == NEGINF) minV = sv;
+            // Seeds are never NaN and never below NEGINF (seed_curve only
+            // raises NEGINF cells; seed_chase copies them), so NEGINF means
+            // "no value" and the fold is a strict-`<` (first wins) min over
+            // the non-NEGINF values, seeded with minV. It is computed as a
+            // min over keys with NEGINF mapped to +inf, which keeps only one
+            // compare-select on the loop-carried chain, plus an OR of
+            // "saw a value" off the chain. Comparisons happen on the same
+            // values in the same order, so ties (+-0) resolve identically.
+            // (minV < NEGINF can only come from tone_abs_limit; then no sv
+            // passes the test in either form.)
             let a = (pos + 1).max(0);
             let b = end.min(n as i64 - 1);
             if a <= b {
+                let key = |v: f32| if v == NEGINF { f32::INFINITY } else { v };
+                let mut kmin = key(minV);
+                let mut any = minV != NEGINF;
                 for &sv in &seed[a as usize..=b as usize] {
-                    let take = ((sv > NEGINF) & (sv < minV)) | (minV == NEGINF);
-                    minV = if take { sv } else { minV };
+                    let k = key(sv);
+                    kmin = if k < kmin { k } else { kmin };
+                    any |= sv != NEGINF;
                 }
+                minV = if any { kmin } else { NEGINF };
             }
             pos = end;
         }
