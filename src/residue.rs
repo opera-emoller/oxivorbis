@@ -360,6 +360,13 @@ fn _encodepart(opb: &mut BitWriter, vec: &mut [i32], n: usize, book: &Codebook) 
     let step = n / dim;
 
     let dbg = crate::debug_flag!("LW_DEBUG_BESTERR2");
+    if !dbg && !crate::debug_flag!("LW_DEBUG_BESTERR") {
+        match dim {
+            2 => return encodepart_dim::<2>(opb, &mut vec[..step * 2], book),
+            4 => return encodepart_dim::<4>(opb, &mut vec[..step * 4], book),
+            _ => {}
+        }
+    }
 
     for i in 0..step {
         let mut vec_in_copy = [0i32; 64];
@@ -402,6 +409,60 @@ fn _encodepart(opb: &mut BitWriter, vec: &mut [i32], n: usize, book: &Codebook) 
 // ---------------------------------------------------------------------------
 // vorbis_book_encode — thin wrapper matching libvorbis signature
 // ---------------------------------------------------------------------------
+
+/// `_encodepart` for a book of dimension `D` (the common 2, 4 and 8), each
+/// vector through [`besterror_dim`].
+fn encodepart_dim<const D: usize>(opb: &mut BitWriter, vec: &mut [i32], book: &Codebook) -> i32 {
+    let mut bits: i32 = 0;
+    for a in vec.chunks_exact_mut(D) {
+        let a: &mut [i32; D] = a.try_into().expect("D lines");
+        let entry = besterror_dim(book, a);
+        bits += vorbis_book_encode(book, entry, opb) as i32;
+    }
+    bits
+}
+
+/// [`local_book_besterror`] for a book of dimension `D`. The quantized
+/// entry is in the book in practice: that case is computed here with the
+/// same arithmetic, without the search; otherwise `a` is still untouched
+/// and goes to the full version.
+#[inline(always)]
+fn besterror_dim<const D: usize>(book: &Codebook, a: &mut [i32; D]) -> i32 {
+    let minval = book.minval;
+    let del = book.delta;
+    let qv = book.quantvals as i32;
+    let ze = qv >> 1;
+    let mut v = [0i32; D];
+    let mut index: i32 = 0;
+    for o in (0..D).rev() {
+        // Wrapping ops as in local_book_besterror.
+        let vo = if del != 1 {
+            a[o].wrapping_sub(minval).wrapping_add(del >> 1) / del
+        } else {
+            a[o].wrapping_sub(minval)
+        };
+        v[o] = vo;
+        let m = if vo < ze {
+            (ze.wrapping_sub(vo) << 1).wrapping_sub(1)
+        } else {
+            vo.wrapping_sub(ze) << 1
+        };
+        index = index.wrapping_mul(qv).wrapping_add(if m < 0 {
+            0
+        } else if m >= qv {
+            qv - 1
+        } else {
+            m
+        });
+    }
+    if index < 0 || index as usize >= book.entries || book.codeword_lengths[index as usize] == 0 {
+        return local_book_besterror(book, a);
+    }
+    for (ao, &vo) in a.iter_mut().zip(&v) {
+        *ao = ao.wrapping_sub(vo.wrapping_mul(del).wrapping_add(minval));
+    }
+    index
+}
 
 fn vorbis_book_encode(book: &Codebook, entry: i32, opb: &mut BitWriter) -> usize {
     if entry < 0 {
@@ -897,5 +958,58 @@ mod tests {
         assert_eq!(setup.secondstages[0], 1);
         assert_eq!(setup.secondstages[1], 0);
         assert_eq!(setup.booklist[0], 1);
+    }
+
+    /// besterror_dim (the fixed-dimension fast path) returns the same entry
+    /// and residual as local_book_besterror, including for vectors whose
+    /// quantized entry is missing from the book (the search path).
+    #[test]
+    fn besterror_dim_matches_local_book_besterror() {
+        fn check<const D: usize>(qv: usize, minval: i32, delta: i32, seed: u64) {
+            let entries = qv.pow(D as u32);
+            let mut rng = seed;
+            let mut next = move || {
+                rng = rng
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (rng >> 33) as i64
+            };
+            // Roughly a third of the entries unused.
+            let lengths: Vec<u8> = (0..entries)
+                .map(|_| {
+                    if next() % 3 == 0 {
+                        0
+                    } else {
+                        1 + (next() % 12) as u8
+                    }
+                })
+                .collect();
+            let book = Codebook {
+                entries,
+                dim: D,
+                codewords: vec![0; entries],
+                codeword_lengths: lengths,
+                maptype: 1,
+                quantvals: qv,
+                minval,
+                delta,
+            };
+            let span = (qv as i64 + 2) * delta as i64;
+            for _ in 0..4000 {
+                let mut a = [0i32; D];
+                for v in a.iter_mut() {
+                    *v = (minval as i64 - delta as i64 + next() % span) as i32;
+                }
+                let mut b = a;
+                let fast = besterror_dim(&book, &mut a);
+                let full = local_book_besterror(&book, &mut b);
+                assert_eq!((fast, a), (full, b));
+            }
+        }
+        check::<2>(9, -4, 1, 1);
+        check::<2>(15, -7 * 357, 357, 2);
+        check::<2>(13, -6 * 11, 11, 3);
+        check::<4>(3, -1, 1, 4);
+        check::<4>(5, -2 * 5, 5, 5);
     }
 }
