@@ -135,6 +135,8 @@ pub(crate) struct ResidueEncodeParams {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EncodeParams {
+    /// The static book id ([`T::BOOKS`]) of each codebook, in header order.
+    pub books: Vec<u16>,
     pub floors: Vec<FloorEncodeParams>,
     pub residues: Vec<ResidueEncodeParams>,
 }
@@ -588,6 +590,7 @@ pub(crate) fn build_setup(
         packet,
         blocksizes: [s.blocksizes[0] as u32, s.blocksizes[1] as u32],
         params: EncodeParams {
+            books: s.books.clone(),
             floors: s.floors.iter().map(|f| f.enc).collect(),
             residues: s
                 .residues

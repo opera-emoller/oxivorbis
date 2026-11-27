@@ -6,6 +6,8 @@
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::collapsible_if)]
 
+use std::sync::{Arc, OnceLock};
+
 use crate::bitpack::{BitReader, BitWriter};
 
 // ---------------------------------------------------------------------------
@@ -25,13 +27,17 @@ pub(crate) enum CodebookError {
 // ---------------------------------------------------------------------------
 
 /// Runtime representation of one Vorbis codebook, encode-side only.
+///
+/// The tables are shared (`Arc`), so cloning a book is cheap: every setup
+/// that uses a static book shares one copy (see [`static_book`]).
+#[derive(Clone)]
 pub(crate) struct Codebook {
     pub entries: usize,
     pub dim: usize,
     /// Huffman codeword for each entry (LSB-first, bit-reversed per libvorbis
     /// convention). u32::MAX means the entry is unused / has zero length.
-    pub codewords: Vec<u32>,
-    pub codeword_lengths: Vec<u8>,
+    pub codewords: Arc<[u32]>,
+    pub codeword_lengths: Arc<[u8]>,
     pub maptype: u8,
     /// Used by floor/residue encode for lattice VQ codebooks.
     pub quantvals: usize,
@@ -279,12 +285,29 @@ pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookErr
     Ok(Codebook {
         entries,
         dim,
-        codewords,
-        codeword_lengths: length_list,
+        codewords: codewords.into(),
+        codeword_lengths: length_list.into(),
         maptype,
         quantvals,
         minval,
         delta,
+    })
+}
+
+/// Static codebook `id` of [`crate::setup_templates::BOOKS`], unpacked (and
+/// its codewords built) once per process. Books are shared across
+/// qualities, channel counts and rates, so a setup at a new quality only
+/// pays for books no earlier setup used. The result is exactly what
+/// [`unpack_codebook`] returns for the same packed bits inside a setup
+/// header: the packet copies them verbatim (`setup_gen::copy_packed_book`).
+pub(crate) fn static_book(id: u16) -> &'static Codebook {
+    use crate::setup_templates as T;
+    static CACHE: OnceLock<Box<[OnceLock<Codebook>]>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| T::BOOKS.iter().map(|_| OnceLock::new()).collect());
+    cache[id as usize].get_or_init(|| {
+        let (offset, bits) = T::BOOKS[id as usize];
+        let bytes = &T::BOOKS_PACKED[offset as usize..][..bits.div_ceil(8) as usize];
+        unpack_codebook(&mut BitReader::new(bytes)).expect("static codebook failed to unpack")
     })
 }
 
@@ -360,7 +383,7 @@ mod tests {
         assert_eq!(book.entries, 4);
         assert_eq!(book.dim, 1);
         assert_eq!(book.maptype, 0);
-        assert_eq!(book.codeword_lengths, vec![1, 2, 3, 3]);
+        assert_eq!(*book.codeword_lengths, [1, 2, 3, 3]);
         // codewords should be valid (not all-max)
         assert_ne!(book.codewords[0], u32::MAX);
     }
@@ -445,8 +468,8 @@ mod tests {
         let book = Codebook {
             entries: 1,
             dim: 1,
-            codewords: vec![0],
-            codeword_lengths: vec![1],
+            codewords: vec![0].into(),
+            codeword_lengths: vec![1].into(),
             maptype: 0,
             quantvals: 0,
             minval: 0,
@@ -488,7 +511,7 @@ mod tests {
         w.write(0, 4); // maptype 0
         let bytes = w.into_bytes();
         let book = unpack_codebook(&mut BitReader::new(&bytes)).expect("valid book");
-        assert_eq!(book.codeword_lengths, vec![1, 32]);
+        assert_eq!(*book.codeword_lengths, [1, 32]);
     }
 
     /// Running out of data mid-book is EOF, in every branch.
@@ -540,7 +563,7 @@ mod tests {
             w.write(count, ov_ilog(count));
             w.write(0, 4); // maptype 0
             let bytes = w.into_bytes();
-            unpack_codebook(&mut BitReader::new(&bytes)).map(|b| b.codeword_lengths)
+            unpack_codebook(&mut BitReader::new(&bytes)).map(|b| b.codeword_lengths.to_vec())
         };
         assert_eq!(book(1, 2).unwrap(), vec![1, 1]);
         assert!(matches!(book(1, 3), Err(CodebookError::Eof)));

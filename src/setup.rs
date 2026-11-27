@@ -8,7 +8,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::bitpack::BitReader;
-use crate::codebook::{Codebook, unpack_codebook};
+use crate::codebook::{Codebook, static_book, unpack_codebook};
 use crate::floor1::{Floor1State, floor1_look, unpack_floor1};
 use crate::psy::VorbisInfoMapping0;
 use crate::residue::{ResidueLook, ResidueSetup, residue_look, unpack_residue};
@@ -105,7 +105,9 @@ impl From<crate::residue::ResidueError> for SetupError {
 
 /// Parses a setup header. `params` supplies the encode-only floor/residue
 /// fields (one entry per floor / residue, in header order), normally from
-/// [`crate::setup_gen::build_setup`].
+/// [`crate::setup_gen::build_setup`]. If `params.books` names one static
+/// book per codebook in the header, those books are taken from
+/// [`static_book`] instead of being unpacked again.
 pub(crate) fn unpack_setup(
     blob: &[u8],
     channels: usize,
@@ -119,8 +121,20 @@ pub(crate) fn unpack_setup(
     // --- Codebooks ---
     let books_count = r.read(8) as usize + 1;
     let mut books = Vec::with_capacity(books_count);
-    for _ in 0..books_count {
-        books.push(unpack_codebook(&mut r)?);
+    if params.books.len() == books_count {
+        // The packet holds these static books' packed bits verbatim: share
+        // the process-wide unpacked copies and skip over the bits.
+        for &id in &params.books {
+            books.push(static_book(id).clone());
+            r.skip(crate::setup_templates::BOOKS[id as usize].1 as usize);
+        }
+        if r.overran() {
+            return Err(SetupError::Codebook(crate::codebook::CodebookError::Eof));
+        }
+    } else {
+        for _ in 0..books_count {
+            books.push(unpack_codebook(&mut r)?);
+        }
     }
 
     // --- Time domain placeholders ---

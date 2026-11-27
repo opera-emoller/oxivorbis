@@ -106,6 +106,12 @@ impl<'a> BitReader<'a> {
         acc
     }
 
+    /// Skip `bits` bits, as if read (a skip past the end counts as an
+    /// overrun, like a read).
+    pub fn skip(&mut self, bits: usize) {
+        self.bit_pos += bits;
+    }
+
     /// A read has run past the end of the buffer: where libogg's
     /// `oggpack_read` would have returned -1. The value of such a read is
     /// meaningless (all-ones fill), so check this rather than the value; an
