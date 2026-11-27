@@ -323,53 +323,56 @@ fn mdct_butterflies_g(trig: &[f32], log2n: usize, x: &mut [f32], x_base: usize, 
 
 fn mdct_bitreverse_g(trig: &[f32], bitrev: &[u32], n: usize, w: &mut [f32]) {
     let n2 = n / 2;
-    let mut w0: usize = 0;
-    let mut w1: usize = n2;
-    let mut t: usize = n;
-    let mut bit: usize = 0;
+    let n4 = n / 4;
+    // Reads come from the upper half (x0/x1 = w + n2 + bitrev[..]); writes
+    // go to the lower half, w0 ascending through w[0..n4] and w1 descending
+    // through w[n4..n2], four floats per step.
+    let (lo, hi) = w[..n].split_at_mut(n2);
+    let (lo_a, lo_b) = lo.split_at_mut(n4);
+    // bitrev entries are even and below n2 (pair offsets into `hi`); the
+    // mask keeps that visible to the optimizer and never changes a value.
+    let mask = n2 - 2;
+    let pair = |b: u32| {
+        let x = b as usize & mask;
+        (hi[x], hi[x + 1])
+    };
+    for (((b, t), oa), ob) in bitrev[..n4]
+        .chunks_exact(4)
+        .zip(trig[n..n + n4].chunks_exact(4))
+        .zip(lo_a.chunks_exact_mut(4))
+        .zip(lo_b.rchunks_exact_mut(4))
+    {
+        let (x00, x01) = pair(b[0]);
+        let (x10, x11) = pair(b[1]);
 
-    loop {
-        let x0 = n2 + bitrev[bit] as usize;
-        let x1 = n2 + bitrev[bit + 1] as usize;
+        let r0 = x01 - x11;
+        let r1 = x00 + x10;
+        let r2 = r1 * t[0] + r0 * t[1];
+        let r3 = r1 * t[1] - r0 * t[0];
 
-        let r0 = w[x0 + 1] - w[x1 + 1];
-        let r1 = w[x0 + 0] + w[x1 + 0];
-        let r2 = r1 * trig[t + 0] + r0 * trig[t + 1];
-        let r3 = r1 * trig[t + 1] - r0 * trig[t + 0];
+        let r0 = (x01 + x11) * 0.5_f32;
+        let r1 = (x00 - x10) * 0.5_f32;
 
-        w1 -= 4;
+        oa[0] = r0 + r2;
+        ob[2] = r0 - r2;
+        oa[1] = r1 + r3;
+        ob[3] = r3 - r1;
 
-        let r0 = (w[x0 + 1] + w[x1 + 1]) * 0.5_f32;
-        let r1 = (w[x0 + 0] - w[x1 + 0]) * 0.5_f32;
+        let (x00, x01) = pair(b[2]);
+        let (x10, x11) = pair(b[3]);
 
-        w[w0 + 0] = r0 + r2;
-        w[w1 + 2] = r0 - r2;
-        w[w0 + 1] = r1 + r3;
-        w[w1 + 3] = r3 - r1;
+        let r0 = x01 - x11;
+        let r1 = x00 + x10;
+        let r2 = r1 * t[2] + r0 * t[3];
+        let r3 = r1 * t[3] - r0 * t[2];
 
-        let x0 = n2 + bitrev[bit + 2] as usize;
-        let x1 = n2 + bitrev[bit + 3] as usize;
+        let r0 = (x01 + x11) * 0.5_f32;
+        let r1 = (x00 - x10) * 0.5_f32;
 
-        let r0 = w[x0 + 1] - w[x1 + 1];
-        let r1 = w[x0 + 0] + w[x1 + 0];
-        let r2 = r1 * trig[t + 2] + r0 * trig[t + 3];
-        let r3 = r1 * trig[t + 3] - r0 * trig[t + 2];
-
-        let r0 = (w[x0 + 1] + w[x1 + 1]) * 0.5_f32;
-        let r1 = (w[x0 + 0] - w[x1 + 0]) * 0.5_f32;
-
-        w[w0 + 2] = r0 + r2;
-        w[w1 + 0] = r0 - r2;
-        w[w0 + 3] = r1 + r3;
-        w[w1 + 1] = r3 - r1;
-
-        t += 4;
-        bit += 4;
-        w0 += 4;
-
-        if w0 >= w1 {
-            break;
-        }
+        oa[2] = r0 + r2;
+        ob[0] = r0 - r2;
+        oa[3] = r1 + r3;
+        ob[1] = r3 - r1;
     }
 }
 
@@ -399,6 +402,29 @@ pub(crate) fn mdct_forward_n(input: &[f32], output: &mut [f32]) {
     mdct_forward_with(mdct_tables(input.len()), input, output);
 }
 
+/// One pre-rotation segment of `mdct_forward`: for each step, `x0` walks
+/// `x0s` downward and `x1` walks `x1s` upward four floats at a time, and the
+/// twiddle pair walks `tp` downward. `f(x0, x1)` gives C's `(r0, r1)`.
+#[inline(always)]
+fn mdct_prerot(
+    x0s: &[f32],
+    x1s: &[f32],
+    tp: &[f32],
+    ws: &mut [f32],
+    f: impl Fn(&[f32], &[f32]) -> (f32, f32),
+) {
+    for (((x0, x1), t), wo) in x0s
+        .rchunks_exact(4)
+        .zip(x1s.chunks_exact(4))
+        .zip(tp.rchunks_exact(2))
+        .zip(ws.chunks_exact_mut(2))
+    {
+        let (r0, r1) = f(x0, x1);
+        wo[0] = r1 * t[1] + r0 * t[0];
+        wo[1] = r1 * t[0] - r0 * t[1];
+    }
+}
+
 fn mdct_forward_core(input: &[f32], output: &mut [f32], tab: &MdctTables, w: &mut [f32]) {
     let n = tab.n;
     let log2n = tab.log2n;
@@ -409,66 +435,41 @@ fn mdct_forward_core(input: &[f32], output: &mut [f32], tab: &MdctTables, w: &mu
     let n4 = n / 4;
     let n8 = n / 8;
 
-    let mut x0_idx: usize = n2 + n4;
-    let mut x1_idx: usize = n2 + n4 + 1;
-    let mut t_idx: usize = n2;
-
-    let mut i = 0;
-    while i < n8 {
-        x0_idx -= 4;
-        t_idx -= 2;
-
-        let r0 = input[x0_idx + 2] + input[x1_idx];
-        let r1 = input[x0_idx + 0] + input[x1_idx + 2];
-        w[n2 + i] = r1 * trig[t_idx + 1] + r0 * trig[t_idx + 0];
-        w[n2 + i + 1] = r1 * trig[t_idx + 0] - r0 * trig[t_idx + 1];
-
-        x1_idx += 4;
-        i += 2;
-    }
-
-    x1_idx = 1;
-
-    while i < n2 - n8 {
-        x0_idx -= 4;
-        t_idx -= 2;
-
-        let r0 = input[x0_idx + 2] - input[x1_idx];
-        let r1 = input[x0_idx + 0] - input[x1_idx + 2];
-        w[n2 + i] = r1 * trig[t_idx + 1] + r0 * trig[t_idx + 0];
-        w[n2 + i + 1] = r1 * trig[t_idx + 0] - r0 * trig[t_idx + 1];
-
-        x1_idx += 4;
-        i += 2;
-    }
-
-    x0_idx = n;
-
-    while i < n2 {
-        x0_idx -= 4;
-        t_idx -= 2;
-
-        let r0 = -input[x0_idx + 2] - input[x1_idx];
-        let r1 = -input[x0_idx + 0] - input[x1_idx + 2];
-        w[n2 + i] = r1 * trig[t_idx + 1] + r0 * trig[t_idx + 0];
-        w[n2 + i + 1] = r1 * trig[t_idx + 0] - r0 * trig[t_idx + 1];
-
-        x1_idx += 4;
-        i += 2;
-    }
+    // Pre-rotation into w[n2..n]. C walks x0 down from in+n2+n4 (later
+    // from in+n) and x1 up from in+n2+n4+1 (later from in+1), reading
+    // x0[0], x0[2], x1[0], x1[2]; in quarters q0..q3 of `input` that is:
+    //   steps [0, n/16):       x0 down q2,    x1 up q3
+    //   steps [n/16, 3n/16):   x0 down q0q1,  x1 up q0q1
+    //   steps [3n/16, n/4):    x0 down q3,    x1 up q2
+    // x1 reads the odd elements of each aligned 4-float chunk.
+    let input = &input[..n];
+    let (q01, q23) = input.split_at(n2);
+    let (q2, q3) = q23.split_at(n4);
+    let (w_a, w_rest) = w[n2..n].split_at_mut(n8);
+    let (w_b, w_c) = w_rest.split_at_mut(n2 - 2 * n8);
+    mdct_prerot(q2, q3, &trig[n2 - n8..n2], w_a, |x0, x1| {
+        (x0[2] + x1[1], x0[0] + x1[3])
+    });
+    mdct_prerot(q01, q01, &trig[n8..n2 - n8], w_b, |x0, x1| {
+        (x0[2] - x1[1], x0[0] - x1[3])
+    });
+    mdct_prerot(q3, q2, &trig[..n8], w_c, |x0, x1| {
+        (-x0[2] - x1[1], -x0[0] - x1[3])
+    });
 
     mdct_butterflies_g(trig, log2n, w, n2, n2);
     mdct_bitreverse_g(trig, bitrev, n, w);
 
-    let mut t_idx: usize = n2;
-    let mut w_idx: usize = 0;
-
-    for k in 0..n4 {
-        let x0_pos = n2 - 1 - k;
-        output[k] = (w[w_idx] * trig[t_idx] + w[w_idx + 1] * trig[t_idx + 1]) * scale;
-        output[x0_pos] = (w[w_idx] * trig[t_idx + 1] - w[w_idx + 1] * trig[t_idx]) * scale;
-        w_idx += 2;
-        t_idx += 2;
+    // Post-rotation: output[k] ascending and output[n2-1-k] descending.
+    let (out_lo, out_hi) = output[..n2].split_at_mut(n4);
+    for (((wp, t), o0), o1) in w[..n2]
+        .chunks_exact(2)
+        .zip(trig[n2..n].chunks_exact(2))
+        .zip(out_lo.iter_mut())
+        .zip(out_hi.iter_mut().rev())
+    {
+        *o0 = (wp[0] * t[0] + wp[1] * t[1]) * scale;
+        *o1 = (wp[0] * t[1] - wp[1] * t[0]) * scale;
     }
 }
 
