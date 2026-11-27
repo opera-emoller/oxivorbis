@@ -27,6 +27,8 @@ corners. Details and other qualities are under [Performance](#performance).
   typed, and every input encodes.
 - An optional `parallel` feature spreads long inputs across all cores
   (7–9× `oggenc` above). Its output is byte-identical to the serial path.
+- Comes with an oggenc-style [command-line encoder](#command-line-encoder)
+  for WAV and raw PCM.
 
 Pairs naturally with [lewton](https://github.com/RustAudio/lewton), the
 pure-Rust Vorbis decoder.
@@ -159,6 +161,27 @@ dev-dependency only):
 ```sh
 cargo run --release --example transcode -- song.mp3 song.ogg 6
 ```
+
+## Command-line encoder
+
+[`tools/oxivorbis-cli`](tools/oxivorbis-cli/README.md) builds an
+`oxivorbis` binary that works much like `oggenc`:
+
+```sh
+cargo install --path tools/oxivorbis-cli   # add --features parallel for multi-core
+oxivorbis song.wav                         # writes song.ogg at q3, as oggenc does
+oxivorbis -q 6 -a "Artist" -l "Album" -t "Title" track.wav -o out.ogg
+ffmpeg -i in.flac -f wav - | oxivorbis - > out.ogg
+```
+
+It reads WAV (8-bit, 16/24/32-bit integer, 32/64-bit float, extensible,
+RF64, streamed) or raw PCM (`--raw -R <hz> -C <n> -F <fmt>`), and takes
+several inputs at once. It supports oggenc's tag flags
+(`-c TAG=VALUE -t -a -l -N -G -d`), refuses to overwrite existing files
+without `-f`, and generates its own shell completions and man page
+(`--generate`). 16-bit WAV input produces the same bytes as
+`oxivorbis::encode`. See its README for each format's conversion, the
+exit codes and the overwrite policy.
 
 ## Supported input
 
