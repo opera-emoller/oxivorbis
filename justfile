@@ -83,8 +83,11 @@ parity:
 #     just corpus "" "" 0.5 all           # 44100x2,44100x1,48000x2,48000x1
 #     just corpus "" "" 0.5 8000x1,22050x2  # any rate 1..=200000
 #     just corpus "" "" "" 48000x1,44100x1 4   # 4 worker threads
+#     just corpus "" "" "" 44100x2 "" "--managed -b 128"  # a bitrate mode
+#                                    # (oracle flags: -b -m -M --managed -q)
 # Each arg falls back to its env var when empty: CORPUS_LIMIT,
-# CORPUS_QUALITY, CORPUS_CONFIGS, CORPUS_JOBS (default: all cores).
+# CORPUS_QUALITY, CORPUS_CONFIGS, CORPUS_JOBS (default: all cores),
+# CORPUS_BITRATE.
 # Files are processed in parallel; each one shells out to ffmpeg and the
 # -O0 oracle. The test is built with an optimized profile that keeps
 # debug assertions and overflow checks, so panics behave as in `cargo test`.
@@ -92,8 +95,8 @@ parity:
 # parity-fuzz replay command) land in
 #     target/corpus-failures/<rate>x<ch>-q<q>/<relpath>/
 #
-# Corpus parity sweep (args: limit features quality-list configs jobs).
-corpus limit="" extra_features="" quality="" configs="" jobs="":
+# Corpus parity sweep (args: limit features quality-list configs jobs bitrate).
+corpus limit="" extra_features="" quality="" configs="" jobs="" bitrate="":
     #!/usr/bin/env bash
     set -euo pipefail
     FEATS="oracle"
@@ -104,6 +107,7 @@ corpus limit="" extra_features="" quality="" configs="" jobs="":
     if [ -n "{{quality}}" ]; then export CORPUS_QUALITY="{{quality}}"; fi
     if [ -n "{{configs}}" ]; then export CORPUS_CONFIGS="{{configs}}"; fi
     if [ -n "{{jobs}}" ]; then export CORPUS_JOBS="{{jobs}}"; fi
+    if [ -n "{{bitrate}}" ]; then export CORPUS_BITRATE="{{bitrate}}"; fi
     cargo nextest run --features "$FEATS" --no-tests=warn \
         --cargo-profile corpus \
         --config 'profile.corpus.inherits="release"' \

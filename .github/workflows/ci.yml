@@ -24,6 +24,11 @@ env:
   # One rate per libvorbis template family other than 44.1/48 kHz, plus
   # range edges (XX, 8, 11, 16, 22, 32, X).
   FUZZ_FAMILY_RATES: "4000,8000,11025,15000,22050,25999,32000,96000,200000"
+  # --bitrate (a random bitrate mode per case): the rates with bitrate
+  # setups, one per family plus range edges.
+  FUZZ_BITRATE_RATES: "8000,8999,11025,15000,22050,25999,32000,40000,44100,48000,50000"
+  FUZZ_BITRATE_ITERS: "300"
+  FUZZ_BITRATE_QUALITIES: "-0.1 0.5 1.0"
 
 jobs:
   test:
@@ -118,6 +123,17 @@ jobs:
           parity oracle_parity_transients_signal_uses_short_blocks|1
           parity parity_oggenc_quality_conversion|1
           parity parity_silence_|4
+          parity_bitrate bitrate_range::|72
+          parity_bitrate bitrate_limits::|168
+          parity_bitrate bitrate_tuning::|7
+          parity_bitrate bitrate_long::|9
+          parity_bitrate bitrate_rejects_like_libvorbis|1
+          bitrate chunking_invariance_managed|1
+          bitrate bitrates_hit_their_targets|1
+          bitrate errors|1
+          bitrate edges_do_not_panic|1
+          bitrate::tests::|4
+          ratecontrol::tests::|3
           dsp_manifest_|6
           parity_f32 |9
           streaming |6
@@ -173,6 +189,14 @@ jobs:
             ./target/release/parity-fuzz --f32 --rates "$FUZZ_FAMILY_RATES" --iters "$FUZZ_F32_ITERS" \
               --seed 6 --quality "$q" --minimize-per-sig 1
           done
+      - name: parity-fuzz smoke (bitrate modes)
+        run: |
+          for q in $FUZZ_BITRATE_QUALITIES; do
+            ./target/release/parity-fuzz --bitrate --rates "$FUZZ_BITRATE_RATES" \
+              --iters "$FUZZ_BITRATE_ITERS" --seed 8 --quality "$q" --max-len 20 --minimize-per-sig 1
+          done
+          ./target/release/parity-fuzz --bitrate --f32 --rates "$FUZZ_BITRATE_RATES" \
+            --iters "$FUZZ_BITRATE_ITERS" --seed 9 --minimize-per-sig 1
       - name: parity-fuzz against an AddressSanitizer oracle
         # Same pristine sources, built with -fsanitize=address: any
         # out-of-bounds access in libvorbis/libogg on these inputs makes
@@ -186,6 +210,9 @@ jobs:
             ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --iters 150 --seed 7 \
               --rates "$FUZZ_FAMILY_RATES" --quality "$q" --no-minimize
           done
+          # bitrate.c's packetblob indexing and truncation
+          ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --bitrate --iters 150 \
+            --seed 10 --rates "$FUZZ_BITRATE_RATES" --max-len 20 --no-minimize
       - name: Upload parity-fuzz failures
         if: failure()
         uses: actions/upload-artifact@v4
@@ -257,6 +284,10 @@ jobs:
           for q in $FUZZ_QUALITIES; do
             ./target/release/parity-fuzz --rates "$FUZZ_FAMILY_RATES" --iters "$FUZZ_ITERS" \
               --seed 5 --quality "$q" --minimize-per-sig 1
+          done
+          for q in $FUZZ_BITRATE_QUALITIES; do
+            ./target/release/parity-fuzz --bitrate --rates "$FUZZ_BITRATE_RATES" \
+              --iters "$FUZZ_BITRATE_ITERS" --seed 8 --quality "$q" --max-len 20 --minimize-per-sig 1
           done
       - name: Upload parity-fuzz failures
         if: failure()
