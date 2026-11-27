@@ -13,7 +13,7 @@
 
 mod common;
 
-use oxivorbis::{Channels, SampleRate};
+use oxivorbis::{BitrateMode, BitrateTuning, Channels, SampleRate};
 
 /// xorshift32.
 struct Xs(u32);
@@ -93,6 +93,8 @@ struct Case {
     quality: f32,
     /// Feed f32 (value / 8192, so up to ~±4) instead of i16.
     f32_input: bool,
+    /// A bitrate mode instead of VBR (i16 input only).
+    bitrate: Option<BitrateMode>,
     golden: &'static [u8],
 }
 
@@ -111,6 +113,7 @@ const CASES: &[Case] = &[
         channels: Channels::Mono,
         quality: -0.1,
         f32_input: false,
+        bitrate: None,
         golden: golden!("tone_noise_mono44_qm1"),
     },
     Case {
@@ -121,6 +124,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 0.5,
         f32_input: false,
+        bitrate: None,
         golden: golden!("transients_stereo44_q5"),
     },
     Case {
@@ -131,6 +135,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 1.0,
         f32_input: false,
+        bitrate: None,
         golden: golden!("tone_noise_stereo48_q10"),
     },
     Case {
@@ -141,6 +146,7 @@ const CASES: &[Case] = &[
         channels: Channels::Mono,
         quality: 0.2,
         f32_input: false,
+        bitrate: None,
         golden: golden!("transients_mono48_q2"),
     },
     Case {
@@ -151,6 +157,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: -0.1,
         f32_input: false,
+        bitrate: None,
         golden: golden!("short_stereo44_qm1"),
     },
     Case {
@@ -161,6 +168,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 0.5,
         f32_input: true,
+        bitrate: None,
         golden: golden!("f32_tone_noise_stereo48_q5"),
     },
     // Other libvorbis template families (8, 11, 16, 22, 32 kHz, X, XX).
@@ -172,6 +180,7 @@ const CASES: &[Case] = &[
         channels: Channels::Mono,
         quality: 0.5,
         f32_input: false,
+        bitrate: None,
         golden: golden!("transients_mono8_q5"),
     },
     Case {
@@ -182,6 +191,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 0.0,
         f32_input: true,
+        bitrate: None,
         golden: golden!("f32_tone_noise_stereo11_q0"),
     },
     Case {
@@ -192,6 +202,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: -0.1,
         f32_input: false,
+        bitrate: None,
         golden: golden!("tone_noise_stereo16_qm1"),
     },
     Case {
@@ -202,6 +213,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 1.0,
         f32_input: false,
+        bitrate: None,
         golden: golden!("transients_stereo22_q10"),
     },
     Case {
@@ -212,6 +224,7 @@ const CASES: &[Case] = &[
         channels: Channels::Mono,
         quality: -0.1,
         f32_input: false,
+        bitrate: None,
         golden: golden!("transients_mono32_qm1"),
     },
     Case {
@@ -222,6 +235,7 @@ const CASES: &[Case] = &[
         channels: Channels::Stereo,
         quality: 0.5,
         f32_input: false,
+        bitrate: None,
         golden: golden!("tone_noise_stereo96_q5"),
     },
     Case {
@@ -232,7 +246,53 @@ const CASES: &[Case] = &[
         channels: Channels::Mono,
         quality: 0.3,
         f32_input: false,
+        bitrate: None,
         golden: golden!("short_mono4_q3"),
+    },
+    // Bitrate management: every packetblob, the reservoir's choice, padding
+    // and truncation.
+    Case {
+        name: "br_cbr128_tone_noise_stereo44",
+        signal: Gen::ToneNoise,
+        frames: 44100 * 3,
+        rate: SampleRate::HZ_44100,
+        channels: Channels::Stereo,
+        quality: 0.5,
+        f32_input: false,
+        bitrate: Some(BitrateMode::Average {
+            kbps: 128,
+            min_kbps: Some(128),
+            max_kbps: Some(128),
+        }),
+        golden: golden!("br_cbr128_tone_noise_stereo44"),
+    },
+    Case {
+        name: "br_max32_transients_mono22",
+        signal: Gen::Transients,
+        frames: 22050 * 3,
+        rate: SampleRate::HZ_22050,
+        channels: Channels::Mono,
+        quality: 0.5,
+        f32_input: false,
+        bitrate: Some(BitrateMode::Limits {
+            min_kbps: None,
+            max_kbps: Some(32),
+        }),
+        golden: golden!("br_max32_transients_mono22"),
+    },
+    Case {
+        name: "br_q8_max160_tone_noise_stereo48",
+        signal: Gen::ToneNoise,
+        frames: 48000 * 3,
+        rate: SampleRate::HZ_48000,
+        channels: Channels::Stereo,
+        quality: 0.8,
+        f32_input: false,
+        bitrate: Some(BitrateMode::QualityLimits {
+            min_kbps: Some(64),
+            max_kbps: Some(160),
+        }),
+        golden: golden!("br_q8_max160_tone_noise_stereo48"),
     },
 ];
 
@@ -259,6 +319,19 @@ fn input(c: &Case) -> Input {
 }
 
 fn oxivorbis_encode(c: &Case) -> Vec<u8> {
+    if let (Some(mode), Input::I16(s)) = (c.bitrate, input(c)) {
+        return oxivorbis::encode_bitrate_with_meta(
+            &s,
+            c.rate,
+            c.channels,
+            c.quality,
+            mode,
+            BitrateTuning::default(),
+            ORACLE_SERIAL,
+            Some(ORACLE_VENDOR),
+        )
+        .expect("supported bitrate");
+    }
     match input(c) {
         Input::I16(s) => oxivorbis::encode_with_base_quality_and_meta(
             &s,
@@ -312,7 +385,11 @@ fn golden_vectors_are_fresh() {
             Input::I16(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), "s16"),
             Input::F32(s) => (s.iter().flat_map(|v| v.to_le_bytes()).collect(), "f32"),
         };
-        let fresh = common::oracle_encode_raw(&raw, c.rate.hz(), ch, c.quality, fmt);
+        let flags = c
+            .bitrate
+            .map(|m| common::bitrate_oracle_args(m, &BitrateTuning::default()))
+            .unwrap_or_default();
+        let fresh = common::oracle_encode_raw_with(&raw, c.rate.hz(), ch, c.quality, fmt, &flags);
         assert_eq!(common::extract_serial(&fresh), ORACLE_SERIAL);
         assert_eq!(
             common::extract_comment_strings(&fresh),

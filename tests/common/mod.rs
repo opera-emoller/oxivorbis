@@ -38,12 +38,26 @@ pub fn oracle_encode_raw(
     base_quality: f32,
     format: &str,
 ) -> Vec<u8> {
+    oracle_encode_raw_with(raw, rate, channels, base_quality, format, &[])
+}
+
+/// [`oracle_encode_raw`] with leading oracle flags (see
+/// [`bitrate_oracle_args`]).
+pub fn oracle_encode_raw_with(
+    raw: &[u8],
+    rate: u32,
+    channels: u16,
+    base_quality: f32,
+    format: &str,
+    flags: &[String],
+) -> Vec<u8> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     let bin = std::env::current_dir()
         .unwrap()
         .join("tools/oracle-encoder/oracle-encoder");
     let mut child = Command::new(&bin)
+        .args(flags)
         .arg(rate.to_string())
         .arg(channels.to_string())
         .arg(base_quality.to_string())
@@ -60,6 +74,51 @@ pub fn oracle_encode_raw(
     feeder.join().unwrap();
     assert!(out.status.success(), "oracle-encoder exited non-zero");
     out.stdout
+}
+
+/// The oracle flags (oggenc's, see tools/oracle-encoder/main.c) for a
+/// bitrate mode and reservoir tuning.
+pub fn bitrate_oracle_args(
+    mode: oxivorbis::BitrateMode,
+    tuning: &oxivorbis::BitrateTuning,
+) -> Vec<String> {
+    use oxivorbis::BitrateMode;
+    let mut a: Vec<String> = Vec::new();
+    let lim = |a: &mut Vec<String>, min: Option<u32>, max: Option<u32>| {
+        if let Some(m) = min {
+            a.extend(["-m".into(), m.to_string()]);
+        }
+        if let Some(m) = max {
+            a.extend(["-M".into(), m.to_string()]);
+        }
+    };
+    match mode {
+        BitrateMode::Nominal { kbps } => a.extend(["-b".into(), kbps.to_string()]),
+        BitrateMode::Average {
+            kbps,
+            min_kbps,
+            max_kbps,
+        } => {
+            a.extend(["--managed".into(), "-b".into(), kbps.to_string()]);
+            lim(&mut a, min_kbps, max_kbps);
+        }
+        BitrateMode::Limits { min_kbps, max_kbps } => lim(&mut a, min_kbps, max_kbps),
+        BitrateMode::QualityLimits { min_kbps, max_kbps } => {
+            a.push("-q".into());
+            lim(&mut a, min_kbps, max_kbps);
+        }
+        _ => unreachable!("new BitrateMode"),
+    }
+    if let Some(b) = tuning.reservoir_bits {
+        a.extend(["-A".into(), format!("bit_reservoir_bits={b}")]);
+    }
+    if let Some(b) = tuning.reservoir_bias {
+        a.extend(["-A".into(), format!("bit_reservoir_bias={b}")]);
+    }
+    if let Some(d) = tuning.average_damping {
+        a.extend(["-A".into(), format!("bitrate_average_damping={d}")]);
+    }
+    a
 }
 
 /// Ogg stream serial of the first page.

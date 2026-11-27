@@ -27,44 +27,8 @@ use oxivorbis::{BitrateMode, BitrateTuning, Channels, SampleRate};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// The oracle arguments oggenc would get for `mode` / `tuning`.
 fn oracle_args(mode: BitrateMode, tuning: &BitrateTuning) -> Vec<String> {
-    let mut a: Vec<String> = Vec::new();
-    let lim = |a: &mut Vec<String>, min: Option<u32>, max: Option<u32>| {
-        if let Some(m) = min {
-            a.extend(["-m".into(), m.to_string()]);
-        }
-        if let Some(m) = max {
-            a.extend(["-M".into(), m.to_string()]);
-        }
-    };
-    match mode {
-        BitrateMode::Nominal { kbps } => a.extend(["-b".into(), kbps.to_string()]),
-        BitrateMode::Average {
-            kbps,
-            min_kbps,
-            max_kbps,
-        } => {
-            a.extend(["--managed".into(), "-b".into(), kbps.to_string()]);
-            lim(&mut a, min_kbps, max_kbps);
-        }
-        BitrateMode::Limits { min_kbps, max_kbps } => lim(&mut a, min_kbps, max_kbps),
-        BitrateMode::QualityLimits { min_kbps, max_kbps } => {
-            a.push("-q".into());
-            lim(&mut a, min_kbps, max_kbps);
-        }
-        _ => unreachable!("new mode"),
-    }
-    if let Some(b) = tuning.reservoir_bits {
-        a.extend(["-A".into(), format!("bit_reservoir_bits={b}")]);
-    }
-    if let Some(b) = tuning.reservoir_bias {
-        a.extend(["-A".into(), format!("bit_reservoir_bias={b}")]);
-    }
-    if let Some(d) = tuning.average_damping {
-        a.extend(["-A".into(), format!("bitrate_average_damping={d}")]);
-    }
-    a
+    common::bitrate_oracle_args(mode, tuning)
 }
 
 /// The oracle's stream, or `None` if it (libvorbis) refused the setup.
