@@ -1,12 +1,13 @@
 //! Bitrate modes without the oracle: streaming and parallel invariance,
-//! the `Options` API and its errors, and that the modes do what they say.
+//! the `Bitrate` API and its errors, and that the modes do what they say.
 //! Byte parity with libvorbis is in `parity_bitrate.rs`.
 
 mod common;
 
 use common::{Rng, Sig, signal_i16};
 use oxivorbis::{
-    BitrateError, BitrateMode, BitrateTuning, Channels, Encoder, Options, Quality, SampleRate,
+    Bitrate, BitrateError, BitrateMode, BitrateTuning, Channels, Encoder, OggWriter, Options,
+    Quality, S16LeWriter, SampleRate,
 };
 
 const CBR: BitrateMode = BitrateMode::Average {
@@ -15,10 +16,20 @@ const CBR: BitrateMode = BitrateMode::Average {
     max_kbps: Some(96),
 };
 
-fn opts(rate: SampleRate, ch: Channels, mode: BitrateMode) -> Options {
-    Options::default()
-        .with_bitrate(rate, ch, mode)
-        .unwrap_or_else(|e| panic!("{mode:?}: {e}"))
+/// One-shot encode in a bitrate mode that must be valid here.
+fn encode_br(pcm: &[i16], rate: SampleRate, ch: Channels, o: &Options, b: Bitrate) -> Vec<u8> {
+    oxivorbis::encode_with_bitrate(pcm, rate, ch, o, &b)
+        .unwrap_or_else(|e| panic!("{rate} {ch} {b:?}: {e}"))
+}
+
+/// Streaming encoder in a bitrate mode that must be valid here.
+fn encoder_br(rate: SampleRate, ch: Channels, o: &Options, b: Bitrate) -> Encoder {
+    Encoder::with_bitrate(rate, ch, o, &b).unwrap_or_else(|e| panic!("{rate} {ch} {b:?}: {e}"))
+}
+
+/// Whether `Encoder::with_bitrate` accepts the request.
+fn check(rate: SampleRate, ch: Channels, o: &Options, b: Bitrate) -> Result<(), BitrateError> {
+    Encoder::with_bitrate(rate, ch, o, &b).map(|_| ())
 }
 
 /// Tone, noise and transient stretches.
@@ -69,6 +80,12 @@ fn chunking_invariance_managed() {
     for (hz, ch, mode) in [
         (44100, Channels::STEREO, CBR),
         (22050, Channels::MONO, BitrateMode::average(40)),
+        (48000, Channels::SURROUND_5_1, BitrateMode::average(256)),
+        (
+            32000,
+            Channels::new(4).unwrap(),
+            BitrateMode::Nominal { kbps: 200 },
+        ),
         (
             48000,
             Channels::STEREO,
@@ -80,10 +97,10 @@ fn chunking_invariance_managed() {
     ] {
         let rate = SampleRate::new(hz).unwrap();
         let pcm = music(6, ch.count() as usize, hz);
-        let o = opts(rate, ch, mode);
-        let want = oxivorbis::encode(&pcm, rate, ch, &o);
+        let o = Options::default();
+        let want = encode_br(&pcm, rate, ch, &o, mode.into());
         for _ in 0..3 {
-            let mut enc = Encoder::new(rate, ch, &o);
+            let mut enc = encoder_br(rate, ch, &o, mode.into());
             let mut out = Vec::new();
             let mut rest = &pcm[..];
             while !rest.is_empty() {
@@ -115,10 +132,10 @@ fn parallel_batch_sizes_give_identical_bytes_managed() {
     let rate = SampleRate::HZ_44100;
     let pcm = music(8, 2, 44100);
     for mode in [CBR, BitrateMode::Nominal { kbps: 128 }] {
-        let o = opts(rate, Channels::STEREO, mode);
-        let want = oxivorbis::encode(&pcm, rate, Channels::STEREO, &o);
+        let o = Options::default();
+        let want = encode_br(&pcm, rate, Channels::STEREO, &o, mode.into());
         for batch in [1usize, 5, 256] {
-            let mut enc = Encoder::new(rate, Channels::STEREO, &o);
+            let mut enc = encoder_br(rate, Channels::STEREO, &o, mode.into());
             enc.set_parallel_batch(batch);
             let mut out = Vec::new();
             for c in pcm.chunks(9999) {
@@ -136,34 +153,30 @@ fn bitrates_hit_their_targets() {
     let rate = SampleRate::HZ_44100;
     let secs = 20;
     let pcm = music(secs, 2, 44100);
-    let kbps = |o: &Options| {
-        let ogg = oxivorbis::encode(&pcm, rate, Channels::STEREO, o);
+    let kbps = |o: &Options, b: Option<BitrateMode>| {
+        let ogg = match b {
+            Some(b) => encode_br(&pcm, rate, Channels::STEREO, o, b.into()),
+            None => oxivorbis::encode(&pcm, rate, Channels::STEREO, o),
+        };
         let (bytes, hdr) = audio_bytes_and_header(&ogg);
         (bytes as f64 * 8.0 / secs as f64 / 1000.0, hdr)
     };
     // CBR-like: within the 2 s reservoir of 96 kb/s.
-    let (k, hdr) = kbps(&opts(rate, Channels::STEREO, CBR));
+    let (k, hdr) = kbps(&Options::default(), Some(CBR));
     assert!((k - 96.0).abs() < 96.0 * 2.0 / secs as f64 + 1.0, "{k}");
     assert_eq!(hdr, [96_000, 96_000, 96_000]);
     // ABR
-    let (k, hdr) = kbps(&opts(rate, Channels::STEREO, BitrateMode::average(160)));
+    let (k, hdr) = kbps(&Options::default(), Some(BitrateMode::average(160)));
     assert!((k - 160.0).abs() < 16.0, "{k}");
     assert_eq!(hdr, [-1, 160_000, -1]);
     // A hard maximum well below what quality 8 wants.
     let q8 = Options::default().with_quality(Quality::new(8.0).unwrap());
-    let (vbr, _) = kbps(&q8);
-    let capped = q8
-        .clone()
-        .with_bitrate(
-            rate,
-            Channels::STEREO,
-            BitrateMode::QualityLimits {
-                min_kbps: None,
-                max_kbps: Some(128),
-            },
-        )
-        .unwrap();
-    let (k, hdr) = kbps(&capped);
+    let (vbr, _) = kbps(&q8, None);
+    let capped = BitrateMode::QualityLimits {
+        min_kbps: None,
+        max_kbps: Some(128),
+    };
+    let (k, hdr) = kbps(&q8, Some(capped));
     // The reservoir is twice q8's nominal bitrate (2 x 256 kb/s).
     let slack = 2.0 * hdr[1] as f64 / 1000.0 / secs as f64;
     assert!(
@@ -174,45 +187,100 @@ fn bitrates_hit_their_targets() {
 }
 
 #[test]
-fn options_api() {
-    let o = opts(SampleRate::HZ_44100, Channels::STEREO, CBR);
-    assert_eq!(o.bitrate(), Some(CBR));
-    assert_eq!(o.bitrate_tuning(), Some(BitrateTuning::default()));
-    let vbr = o.clone().without_bitrate();
-    assert_eq!(vbr.bitrate(), None);
+fn bitrate_api() {
+    let b = Bitrate::new(CBR);
+    assert_eq!(b.mode, CBR);
+    assert_eq!(b.tuning, BitrateTuning::default());
+    assert_eq!(Bitrate::from(CBR), b);
+    let t = BitrateTuning::default().with_reservoir_bias(0.5);
+    assert_eq!(b.with_tuning(t).tuning, t);
+    let (r, c) = (SampleRate::HZ_44100, Channels::STEREO);
     let pcm = music(2, 2, 44100);
-    assert_eq!(
-        oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::STEREO, &vbr),
-        oxivorbis::encode(
-            &pcm,
-            SampleRate::HZ_44100,
-            Channels::STEREO,
-            &Options::default()
-        )
-    );
-    // Checked for 44.1 kHz stereo, also fine for 48 kHz mono input.
-    let other = oxivorbis::encode(
-        &music(2, 1, 48000),
-        SampleRate::HZ_48000,
-        Channels::MONO,
-        &o,
-    );
-    assert_eq!(&other[..4], b"OggS");
+    let o = Options::default();
+    // Streaming, one-shot i16 and f32, and the writers agree.
+    let want = encode_br(&pcm, r, c, &o, b);
+    let mut enc = encoder_br(r, c, &o, b);
+    let mut streamed = enc.write(&pcm).to_vec();
+    streamed.extend_from_slice(&enc.finish());
+    assert!(streamed == want);
+    let f: Vec<f32> = pcm.iter().map(|&s| s as f32 / 32768.0).collect();
+    assert!(oxivorbis::encode_f32_with_bitrate(&f, r, c, &o, &b).unwrap() == want);
+    let mut w = OggWriter::with_bitrate(Vec::new(), r, c, &o, &b).unwrap();
+    w.write_i16(&pcm).unwrap();
+    assert!(w.finish().unwrap() == want);
+    let mut w = S16LeWriter::with_bitrate(Vec::new(), r, c, &o, &b).unwrap();
+    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    std::io::Write::write_all(&mut w, &bytes).unwrap();
+    assert!(w.finish().unwrap() == want);
+    // VBR is untouched by the bitrate API.
+    assert!(oxivorbis::encode(&pcm, r, c, &o) != want);
 }
 
+/// One `Options` and one `Bitrate`, reused at a rate where the request
+/// is valid and at one where it isn't: `Err`, never a panic, from every
+/// bitrate constructor.
 #[test]
-#[should_panic(expected = "Options::with_bitrate was checked for")]
-fn options_checked_for_another_rate_panic_where_unsupported() {
-    let o = opts(SampleRate::HZ_44100, Channels::STEREO, CBR);
-    let _ = Encoder::new(SampleRate::HZ_96000, Channels::STEREO, &o);
+fn reuse_across_rates_returns_errors() {
+    let q8 = Options::default().with_quality(Quality::new(8.0).unwrap());
+    let cases = [
+        (Bitrate::new(CBR), Channels::STEREO),
+        (BitrateMode::average(320).into(), Channels::SURROUND_5_1),
+        (
+            BitrateMode::QualityLimits {
+                min_kbps: None,
+                max_kbps: Some(200),
+            }
+            .into(),
+            Channels::STEREO,
+        ),
+    ];
+    for (b, ch) in cases {
+        let n = ch.count() as usize;
+        let ok = SampleRate::HZ_44100;
+        let pcm = music(1, n, 44100);
+        let f: Vec<f32> = pcm.iter().map(|&s| s as f32 / 32768.0).collect();
+        assert!(check(ok, ch, &q8, b).is_ok(), "{b:?}");
+        assert!(oxivorbis::encode_with_bitrate(&pcm, ok, ch, &q8, &b).is_ok());
+        for bad in [SampleRate::HZ_96000, SampleRate::new(7999).unwrap()] {
+            let e = check(bad, ch, &q8, b).unwrap_err();
+            assert!(
+                matches!(e, BitrateError::OutOfRange { rate, .. } if rate == bad),
+                "{e:?}"
+            );
+            let e2 = oxivorbis::encode_with_bitrate(&pcm, bad, ch, &q8, &b).unwrap_err();
+            assert_eq!(e2, e);
+            let e3 = oxivorbis::encode_f32_with_bitrate(&f, bad, ch, &q8, &b).unwrap_err();
+            assert_eq!(e3, e);
+            let io = OggWriter::with_bitrate(Vec::new(), bad, ch, &q8, &b)
+                .err()
+                .expect("rejected");
+            assert_eq!(io.kind(), std::io::ErrorKind::InvalidInput);
+            let inner = io.get_ref().unwrap().downcast_ref::<BitrateError>();
+            assert_eq!(inner, Some(&e));
+            assert!(S16LeWriter::with_bitrate(Vec::new(), bad, ch, &q8, &b).is_err());
+            // ... while VBR with the same options works at that rate.
+            let ogg = oxivorbis::encode(&pcm, bad, ch, &q8);
+            assert_eq!(&ogg[..4], b"OggS");
+        }
+        // And still fine at the first rate afterwards.
+        assert!(oxivorbis::encode_with_bitrate(&pcm, ok, ch, &q8, &b).is_ok());
+    }
+    // The channel count matters too: 1440 kb/s is in range for 5.1 at
+    // 48 kHz, not for stereo.
+    let b = BitrateMode::average(1440).into();
+    let r = SampleRate::HZ_48000;
+    assert!(check(r, Channels::SURROUND_5_1, &q8, b).is_ok());
+    assert!(matches!(
+        check(r, Channels::STEREO, &q8, b),
+        Err(BitrateError::OutOfRange { .. })
+    ));
 }
 
 #[test]
 fn errors() {
     let r = SampleRate::HZ_44100;
-    let e = Options::default()
-        .with_bitrate(r, Channels::STEREO, BitrateMode::average(600))
-        .unwrap_err();
+    let o = Options::default();
+    let e = check(r, Channels::STEREO, &o, BitrateMode::average(600).into()).unwrap_err();
     assert_eq!(
         e,
         BitrateError::OutOfRange {
@@ -226,14 +294,25 @@ fn errors() {
         e.to_string(),
         "no libvorbis setup for 600000 b/s at 44100 Hz stereo (supported: 45..=500 kb/s)"
     );
-    let e = Options::default()
-        .with_bitrate(
-            SampleRate::HZ_192000,
-            Channels::MONO,
-            BitrateMode::average(128),
-        )
-        .unwrap_err();
+    let e = check(
+        SampleRate::HZ_192000,
+        Channels::MONO,
+        &o,
+        BitrateMode::average(128).into(),
+    )
+    .unwrap_err();
     assert!(e.to_string().contains("8000..=50000 Hz"), "{e}");
+    let e = check(
+        SampleRate::HZ_48000,
+        Channels::SURROUND_5_1,
+        &o,
+        BitrateMode::average(2000).into(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "no libvorbis setup for 2000000 b/s at 48000 Hz 6 channels (supported: 84..=1440 kb/s)"
+    );
     for m in [
         BitrateMode::Average {
             kbps: 128,
@@ -256,7 +335,7 @@ fn errors() {
         BitrateMode::Nominal { kbps: 0 },
         BitrateMode::average(u32::MAX),
     ] {
-        let e = Options::default().with_bitrate(r, Channels::STEREO, m);
+        let e = check(r, Channels::STEREO, &o, m.into());
         assert!(matches!(e, Err(BitrateError::Invalid(_))), "{m:?}: {e:?}");
     }
     for t in [
@@ -265,7 +344,7 @@ fn errors() {
         BitrateTuning::default().with_average_damping(0.0),
         BitrateTuning::default().with_average_damping(-1.0),
     ] {
-        let e = Options::default().with_bitrate_tuning(r, Channels::STEREO, CBR, t);
+        let e = check(r, Channels::STEREO, &o, Bitrate::new(CBR).with_tuning(t));
         assert!(matches!(e, Err(BitrateError::Invalid(_))), "{t:?}: {e:?}");
     }
 }
@@ -275,10 +354,16 @@ fn errors() {
 #[test]
 fn edges_do_not_panic() {
     for hz in [
-        8000, 8999, 9000, 14999, 15000, 18999, 19000, 25999, 26000, 39999, 40000, 50000,
+        8000, 8999, 9000, 14999, 15000, 18999, 19000, 25999, 26000, 39999, 40000, 50000, 50001,
+        70000,
     ] {
         let rate = SampleRate::new(hz).unwrap();
-        for ch in [Channels::MONO, Channels::STEREO] {
+        for n in [1, 2, 3, 6, 8] {
+            let ch = Channels::new(n).unwrap();
+            if hz > 50000 && n != 6 {
+                assert_eq!(BitrateMode::supported_kbps(rate, ch), None);
+                continue;
+            }
             let r = BitrateMode::supported_kbps(rate, ch).unwrap();
             let (lo, hi) = (*r.start(), *r.end());
             for mode in [
@@ -298,10 +383,10 @@ fn edges_do_not_panic() {
                     max_kbps: Some(1),
                 },
             ] {
-                let o = opts(rate, ch, mode);
+                let o = Options::default();
                 for frames in [0usize, 1, 3000] {
                     let pcm = signal_i16(Sig::Noise, frames, ch.count() as usize, hz, 9);
-                    let ogg = oxivorbis::encode(&pcm, rate, ch, &o);
+                    let ogg = encode_br(&pcm, rate, ch, &o, mode.into());
                     assert_eq!(&ogg[..4], b"OggS", "{hz} {ch:?} {mode:?} {frames}");
                 }
             }

@@ -922,8 +922,7 @@ fn bitrate_flags_match_the_library() {
             7.0,
         ),
     ] {
-        let o = opts(q).with_bitrate(r, c, mode).unwrap();
-        let want = lib_i16(&pcm, 44_100, 2, &o);
+        let want = oxivorbis::encode_with_bitrate(&pcm, r, c, &opts(q), &mode.into()).unwrap();
         cmd()
             .args(["-Q", "-r", "-R", "44100", "-C", "2"])
             .args(args)

@@ -25,8 +25,10 @@ corners. Details and other qualities are under [Performance](#performance).
 - Works on `wasm32-unknown-unknown`.
 - Has a one-shot API and a streaming API, and takes `i16` or `f32`
   input. Streaming memory stays bounded however long the input is.
-- No `Result`s and no panics. Rates, channel counts and qualities are
-  typed, and every input encodes.
+- No panics. Rates, channel counts and qualities are typed, and every
+  input encodes in VBR, so that API has no `Result`s. A bitrate mode is
+  checked once, when its encoder is created, and returns an error where
+  libvorbis has no setup for it.
 - Mono, stereo, 5.1 surround and any other channel count up to 255,
   each exactly as libvorbis encodes it (5.1 with libvorbis's coupling and
   separate LFE coding).
@@ -121,8 +123,6 @@ let ogg = oxivorbis::encode(&pcm, rate, channels, &opts);
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
-[`Options::with_bitrate`]: https://docs.rs/oxivorbis/latest/oxivorbis/struct.Options.html#method.with_bitrate
-
 [`examples/`](examples/) has two runnable programs. `encode_wav`
 converts a 16-bit WAV file to `.ogg`. `stream` reads s16le from stdin
 and writes Ogg to stdout:
@@ -171,10 +171,12 @@ cargo run --release --example transcode -- song.mp3 song.ogg 6
 
 ## Bitrate modes
 
-VBR at a quality is the default. [`Options::with_bitrate`] switches to
-one of libvorbis's bitrate-driven setups instead; each mode is one way
-oggenc 1.4.3 configures libvorbis, and the output matches libvorbis
-configured by those oggenc flags:
+VBR at a quality is the default. `Encoder::with_bitrate`,
+`encode_with_bitrate` / `encode_f32_with_bitrate` and
+`OggWriter::with_bitrate` / `S16LeWriter::with_bitrate` take a `Bitrate`
+and use one of libvorbis's bitrate-driven setups instead; each
+`BitrateMode` is one way oggenc 1.4.3 configures libvorbis, and the
+output matches libvorbis configured by those oggenc flags:
 
 | `BitrateMode`                                  | oggenc flags                     | What it does |
 |------------------------------------------------|----------------------------------|--------------|
@@ -185,33 +187,43 @@ configured by those oggenc flags:
 | `QualityLimits { min_kbps, max_kbps }`         | `-q Q -m MIN -M MAX`             | Quality mode at `Options::quality`, with hard limits |
 
 ```rust
-use oxivorbis::{BitrateMode, Channels, Options, SampleRate};
+use oxivorbis::{Bitrate, BitrateMode, Channels, Encoder, Options, SampleRate};
 
 let (rate, ch) = (SampleRate::HZ_44100, Channels::STEREO);
 // oggenc --managed -b 128 -m 128 -M 128
-let cbr = BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) };
-let opts = Options::default().with_bitrate(rate, ch, cbr).expect("in libvorbis's range");
-let ogg = oxivorbis::encode(&vec![0i16; 44_100 * 2], rate, ch, &opts);
+let cbr = Bitrate::new(BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) });
+let pcm = vec![0i16; 44_100 * 2];
+let ogg = oxivorbis::encode_with_bitrate(&pcm, rate, ch, &Options::default(), &cbr)
+    .expect("in libvorbis's range");
 assert_eq!(&ogg[..4], b"OggS");
+
+// Streaming; 5.1 has its own, larger range (84 to 1440 kb/s at 48 kHz).
+let abr = Bitrate::new(BitrateMode::average(448));
+let mut enc = Encoder::with_bitrate(SampleRate::HZ_48000, Channels::SURROUND_5_1, &Options::default(), &abr)?;
+let mut ogg = enc.write(&vec![0i16; 48_000 * 6]).to_vec();
+ogg.extend_from_slice(&enc.finish());
+# Ok::<(), oxivorbis::BitrateError>(())
 ```
 
-- **Validation.** libvorbis only has bitrate setups for 8 to 50 kHz, and
-  each rate and channel count supports a range of average bitrates
+- **Validation.** libvorbis only has bitrate setups for 8 to 50 kHz (and
+  for 6 channels, through its 5.1 template, up to 70 kHz), and each rate
+  and channel count supports a range of average bitrates
   (`BitrateMode::supported_kbps`: 45 to 500 kb/s for 44.1 kHz stereo, 8 to
-  42 kb/s per channel at 8 kHz, ...). `with_bitrate` takes the input's rate
-  and channels and returns a `BitrateError` where libvorbis would fail
-  (`OV_EIMPL`) or for inconsistent requests (minimum above maximum, a
-  limits mode without limits; `OV_EINVAL`). Encoding itself stays
-  infallible: `Encoder::new` and `encode` never fail for options that
-  passed the check. Options checked for one rate and used for another
-  are re-checked, and panic only if libvorbis can't encode them there.
+  42 kb/s per channel at 8 kHz, 84 to 1440 kb/s for 5.1 at 40 to 70 kHz,
+  ...; libvorbis looks bitrates up per channel). The bitrate constructors
+  take the stream's rate and channels and return a `BitrateError` where
+  libvorbis would fail (`OV_EIMPL`) or for inconsistent requests (minimum
+  above maximum, a limits mode without limits; `OV_EINVAL`). The writers
+  return it as an `io::ErrorKind::InvalidInput` error. Once created, an
+  encoder never fails, and one `Bitrate` and `Options` can be used for
+  streams of any rate and channel count: each is checked for its own.
 - **Quality with a hard maximum** (`-q 6 -M 192`), a common setup,
   works even when the quality averages more than the maximum. oggenc
   itself refuses `-q 6 -M 128` (it first passes the quality's nominal
   bitrate as the average, which libvorbis checks against the limits),
   but libvorbis's API allows it and the setup oggenc would end with is
   the same.
-- **Reservoir tuning.** `Options::with_bitrate_tuning` takes a
+- **Reservoir tuning.** `Bitrate::with_tuning` takes a
   `BitrateTuning`: oggenc's `--advanced-encode-option`
   `bit_reservoir_bits`, `bit_reservoir_bias` and `bitrate_average_damping`
   (the `ovectl_ratemanage2_arg` fields).
@@ -299,7 +311,7 @@ ctypes binding.
 | Sample rate   | Any rate from 1 Hz to 200 kHz (`SampleRate`), as libvorbis |
 | Channels      | 1 to 255 (`Channels`), in Vorbis channel order; see [Multichannel and 5.1](#multichannel-and-51) |
 | Quality       | -1.0 to 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
-| Bitrate modes | 8 kHz to 50 kHz, within each rate's range (see [Bitrate modes](#bitrate-modes)) |
+| Bitrate modes | 8 kHz to 50 kHz (5.1: to 70 kHz), within each rate and channel count's range (see [Bitrate modes](#bitrate-modes)) |
 
 - **Quality** follows oggenc's `-q` scale. `Quality::new(q)` returns
   `None` for NaN or for values outside -1..=10. The value is converted

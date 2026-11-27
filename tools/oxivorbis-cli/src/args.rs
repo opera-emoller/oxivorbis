@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn bitrate_flags_map_like_oggenc() {
         use oxivorbis::BitrateMode as B;
-        let mode = |a: &[&str]| crate::codec::mode(&cfg(a).rate_args).map(|(m, _)| m);
+        let mode = |a: &[&str]| crate::codec::mode(&cfg(a).rate_args).map(|b| b.mode);
         assert_eq!(mode(&["x"]), None);
         assert_eq!(mode(&["-b", "128", "x"]), Some(B::Nominal { kbps: 128 }));
         assert_eq!(
@@ -678,7 +678,7 @@ mod tests {
             "bit_reservoir_bias=0.5",
             "x",
         ]);
-        let (_, t) = crate::codec::mode(&c.rate_args).unwrap();
+        let t = crate::codec::mode(&c.rate_args).unwrap().tuning;
         assert_eq!(t.reservoir_bias, Some(0.5));
         let c = cfg(&[
             "--advanced-encode-option",

@@ -2,7 +2,7 @@
 //! [`std::io::Write`] sink, and [`S16LeWriter`], which accepts raw s16le
 //! PCM bytes through `std::io::Write` itself.
 
-use crate::{Channels, Encoder, Options, SampleRate};
+use crate::{Bitrate, Channels, Encoder, Options, SampleRate};
 use std::io::{self, Write};
 
 /// Streaming Ogg Vorbis encoder that writes to a sink: a [`File`], a
@@ -94,6 +94,38 @@ impl<W: Write> OggWriter<W> {
             Encoder::new(rate, channels, options),
             sink,
         ))
+    }
+
+    /// New writer in a bitrate mode; see [`Encoder::with_bitrate`]. A
+    /// request libvorbis can't encode at `rate` / `channels` is an
+    /// [`io::ErrorKind::InvalidInput`] error whose source (and
+    /// [`io::Error::get_ref`]) is the [`BitrateError`](crate::BitrateError).
+    ///
+    /// ```
+    /// use oxivorbis::{BitrateError, BitrateMode, Channels, OggWriter, Options, SampleRate};
+    ///
+    /// let (rate, ch) = (SampleRate::HZ_44100, Channels::STEREO);
+    /// let abr = BitrateMode::average(128).into();
+    /// let w = OggWriter::with_bitrate(Vec::new(), rate, ch, &Options::default(), &abr)?;
+    /// # w.finish()?;
+    ///
+    /// let e = OggWriter::with_bitrate(Vec::new(), rate, ch, &Options::default(), &BitrateMode::average(9000).into())
+    ///     .err()
+    ///     .unwrap();
+    /// assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    /// assert!(e.get_ref().unwrap().is::<BitrateError>());
+    /// # Ok::<(), std::io::Error>(())
+    /// ```
+    pub fn with_bitrate(
+        sink: W,
+        rate: SampleRate,
+        channels: Channels,
+        options: &Options,
+        bitrate: &Bitrate,
+    ) -> io::Result<Self> {
+        let encoder = Encoder::with_bitrate(rate, channels, options, bitrate)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        Ok(Self::from_encoder(encoder, sink))
     }
 
     /// Wrap an existing [`Encoder`]. If the encoder has already returned
@@ -282,6 +314,17 @@ impl<W: Write> S16LeWriter<W> {
         options: &Options,
     ) -> io::Result<Self> {
         OggWriter::new(sink, rate, channels, options).map(Self::from)
+    }
+
+    /// New writer in a bitrate mode; see [`OggWriter::with_bitrate`].
+    pub fn with_bitrate(
+        sink: W,
+        rate: SampleRate,
+        channels: Channels,
+        options: &Options,
+        bitrate: &Bitrate,
+    ) -> io::Result<Self> {
+        OggWriter::with_bitrate(sink, rate, channels, options, bitrate).map(Self::from)
     }
 
     /// End the stream and return the flushed sink; see

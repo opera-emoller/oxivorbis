@@ -7,7 +7,8 @@
 
 use crate::args::{Advanced, RateArgs};
 use oxivorbis::{
-    BitrateMode, BitrateTuning, Channels, Encoder, EncoderTuning, Options, Quality, SampleRate,
+    Bitrate, BitrateMode, BitrateTuning, Channels, Encoder, EncoderTuning, Options, Quality,
+    SampleRate,
 };
 
 /// Encoder settings in CLI terms.
@@ -24,7 +25,7 @@ pub struct Settings {
 /// with hard limits if `-m`/`-M` are given; otherwise `-b` alone is VBR
 /// tuned for that bitrate, `-b` with management is ABR, and limits
 /// without `-b` are limits only. `None` is plain VBR.
-pub fn mode(r: &RateArgs) -> Option<(BitrateMode, BitrateTuning)> {
+pub fn mode(r: &RateArgs) -> Option<Bitrate> {
     let quality_set = r.quality_set || (r.bitrate.is_none() && r.min.is_none() && r.max.is_none());
     let mode = if quality_set {
         if r.min.is_none() && r.max.is_none() {
@@ -57,7 +58,7 @@ pub fn mode(r: &RateArgs) -> Option<(BitrateMode, BitrateTuning)> {
             _ => t,
         };
     }
-    Some((mode, t))
+    Some(Bitrate::new(mode).with_tuning(t))
 }
 
 /// The lowpass / impulse-noisetune / coupling advanced options.
@@ -85,7 +86,7 @@ pub fn describe(quality: f32, r: &RateArgs) -> String {
     };
     match mode(r) {
         None => format!("q{quality}"),
-        Some((m, _)) => match m {
+        Some(b) => match b.mode {
             BitrateMode::Nominal { kbps } => format!("~{kbps} kbps VBR"),
             BitrateMode::Average {
                 kbps,
@@ -137,18 +138,19 @@ impl Enc {
         let mut opts = Options::default()
             .with_quality(quality)
             .with_encoder_tuning(encoder_tuning(&s.rate_args));
-        if let Some((mode, tuning)) = mode(&s.rate_args) {
-            opts = opts
-                .with_bitrate_tuning(rate, channels, mode, tuning)
-                .map_err(|e| e.to_string())?;
-        }
         if let Some(serial) = s.serial {
             opts = opts.with_serial(serial);
         }
         for (k, v) in &s.comments {
             opts = opts.with_comment(k.as_str(), v.as_str());
         }
-        Ok(Enc(Encoder::new(rate, channels, &opts), channels))
+        let enc = match mode(&s.rate_args) {
+            Some(bitrate) => {
+                Encoder::with_bitrate(rate, channels, &opts, &bitrate).map_err(|e| e.to_string())?
+            }
+            None => Encoder::new(rate, channels, &opts),
+        };
+        Ok(Enc(enc, channels))
     }
 
     /// Reorder whole interleaved frames in place from WAV/SMPTE to Vorbis

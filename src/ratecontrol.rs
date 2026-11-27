@@ -21,7 +21,8 @@ use crate::{Channels, Quality, SampleRate};
 /// by 1000 in `int` arithmetic.
 const MAX_KBPS: u32 = i32::MAX as u32 / 1000;
 
-/// A bitrate-driven encoding mode, set with [`Options::with_bitrate`].
+/// A bitrate-driven encoding mode, passed as a [`Bitrate`] to
+/// [`Encoder::with_bitrate`] or [`encode_with_bitrate`].
 ///
 /// Each mode reproduces one way `oggenc` sets up libvorbis, so a stream
 /// encoded with a mode is byte-identical to libvorbis 1.3.7 configured by
@@ -30,35 +31,33 @@ const MAX_KBPS: u32 = i32::MAX as u32 / 1000;
 /// channels).
 ///
 /// Bitrate management only exists for the libvorbis templates with a
-/// bitrate table, i.e. at 8 kHz to 50 kHz; at other rates every mode is
-/// rejected. Within that, each rate and channel count supports a range of
-/// average bitrates ([`BitrateMode::supported_kbps`]).
+/// bitrate table: at 8 kHz to 50 kHz, and for 6 channels (libvorbis's 5.1
+/// template) up to 70 kHz; at other rates every mode is rejected. Within
+/// that, each rate and channel count supports a range of average bitrates
+/// ([`BitrateMode::supported_kbps`]).
 ///
 /// ```
-/// use oxivorbis::{BitrateMode, Channels, Options, SampleRate};
+/// use oxivorbis::{Bitrate, BitrateMode, Channels, Encoder, Options, SampleRate};
+///
+/// let (rate, ch, opts) = (SampleRate::HZ_44100, Channels::STEREO, Options::default());
 ///
 /// // oggenc --managed -b 128: average bitrate 128 kb/s.
-/// let abr = Options::default()
-///     .with_bitrate(SampleRate::HZ_44100, Channels::STEREO, BitrateMode::average(128))
+/// let abr = Encoder::with_bitrate(rate, ch, &opts, &Bitrate::new(BitrateMode::average(128)))
 ///     .expect("128 kb/s is in range at 44.1 kHz stereo");
 ///
 /// // oggenc --managed -b 128 -m 128 -M 128: "CBR".
 /// let cbr = BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) };
-/// assert!(Options::default().with_bitrate(SampleRate::HZ_44100, Channels::STEREO, cbr).is_ok());
+/// assert!(Encoder::with_bitrate(rate, ch, &opts, &Bitrate::new(cbr)).is_ok());
 ///
 /// // oggenc -q 6 -M 192: quality 6 with a hard maximum.
-/// let capped = Options::default()
-///     .with_quality(oxivorbis::Quality::new(6.0).unwrap())
-///     .with_bitrate(
-///         SampleRate::HZ_48000,
-///         Channels::STEREO,
-///         BitrateMode::QualityLimits { min_kbps: None, max_kbps: Some(192) },
-///     )
-///     .unwrap();
+/// let q6 = Options::default().with_quality(oxivorbis::Quality::new(6.0).unwrap());
+/// let capped = BitrateMode::QualityLimits { min_kbps: None, max_kbps: Some(192) };
+/// let capped = Encoder::with_bitrate(SampleRate::HZ_48000, ch, &q6, &capped.into()).unwrap();
 /// # let _ = (abr, capped);
 /// ```
 ///
-/// [`Options::with_bitrate`]: crate::Options::with_bitrate
+/// [`Encoder::with_bitrate`]: crate::Encoder::with_bitrate
+/// [`encode_with_bitrate`]: crate::encode_with_bitrate
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BitrateMode {
@@ -123,7 +122,9 @@ impl BitrateMode {
 
     /// The average bitrates (in whole kb/s) that libvorbis 1.3.7 has an
     /// encoder setup for at `rate` / `channels`, or `None` if it has none
-    /// (rates below 8 kHz or above 50 kHz). This bounds
+    /// (rates below 8 kHz or above 50 kHz, or above 70 kHz for 6
+    /// channels). libvorbis looks the bitrate up per channel, so the range
+    /// grows with the channel count. This bounds
     /// [`Nominal`](Self::Nominal) and [`Average`](Self::Average)'s `kbps`,
     /// and the derived midpoint of [`Limits`](Self::Limits).
     ///
@@ -132,6 +133,8 @@ impl BitrateMode {
     ///
     /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_44100, Channels::STEREO), Some(45..=500));
     /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_96000, Channels::STEREO), None);
+    /// // 5.1 (libvorbis's 5.1 template)
+    /// assert_eq!(BitrateMode::supported_kbps(SampleRate::HZ_48000, Channels::SURROUND_5_1), Some(84..=1440));
     /// ```
     pub fn supported_kbps(rate: SampleRate, channels: Channels) -> Option<RangeInclusive<u32>> {
         let ch = channels.count() as i64;
@@ -144,6 +147,69 @@ impl BitrateMode {
         let lo = (1..=top).find(|&k| ok(k))?;
         let hi = (lo..=top).rev().find(|&k| ok(k))?;
         Some(lo..=hi)
+    }
+}
+
+/// A bitrate request: a [`BitrateMode`] and its [`BitrateTuning`], for
+/// [`Encoder::with_bitrate`], [`encode_with_bitrate`],
+/// [`encode_f32_with_bitrate`], [`OggWriter::with_bitrate`] and
+/// [`S16LeWriter::with_bitrate`]. Those check it against libvorbis's
+/// templates for the stream's rate and channel count and return a
+/// [`BitrateError`] if it can't be encoded there; the same `Bitrate` may
+/// be used for any number of streams.
+///
+/// [`BitrateMode::QualityLimits`] uses the quality of the [`Options`]
+/// it is encoded with.
+///
+/// ```
+/// use oxivorbis::{Bitrate, BitrateMode, BitrateTuning};
+///
+/// // oggenc --managed -b 96 --advanced-encode-option bit_reservoir_bias=0.5
+/// let b = Bitrate::new(BitrateMode::average(96))
+///     .with_tuning(BitrateTuning::default().with_reservoir_bias(0.5));
+/// // A mode alone converts too.
+/// let plain: Bitrate = BitrateMode::average(96).into();
+/// # let _ = (b, plain);
+/// ```
+///
+/// [`Encoder::with_bitrate`]: crate::Encoder::with_bitrate
+/// [`encode_with_bitrate`]: crate::encode_with_bitrate
+/// [`encode_f32_with_bitrate`]: crate::encode_f32_with_bitrate
+/// [`OggWriter::with_bitrate`]: crate::OggWriter::with_bitrate
+/// [`S16LeWriter::with_bitrate`]: crate::S16LeWriter::with_bitrate
+/// [`Options`]: crate::Options
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Bitrate {
+    /// The mode.
+    pub mode: BitrateMode,
+    /// Bit reservoir tuning (the default changes nothing).
+    pub tuning: BitrateTuning,
+}
+
+impl Bitrate {
+    /// `mode` with the default [`BitrateTuning`].
+    pub const fn new(mode: BitrateMode) -> Self {
+        Bitrate {
+            mode,
+            tuning: BitrateTuning {
+                reservoir_bits: None,
+                reservoir_bias: None,
+                average_damping: None,
+            },
+        }
+    }
+
+    /// Set the reservoir tuning.
+    pub fn with_tuning(mut self, tuning: BitrateTuning) -> Self {
+        self.tuning = tuning;
+        self
+    }
+}
+
+impl From<BitrateMode> for Bitrate {
+    fn from(mode: BitrateMode) -> Self {
+        Bitrate::new(mode)
     }
 }
 
@@ -219,8 +285,8 @@ pub struct EncoderTuning {
     /// (`impulse_noisetune`), clamped to -15.0..=0.0; more negative
     /// spends more bits on transients.
     pub impulse_noisetune: Option<f64>,
-    /// Encode stereo without channel coupling (`disable_coupling`), with
-    /// libvorbis's uncoupled template. VBR only: libvorbis finds no
+    /// Encode stereo or 5.1 without channel coupling (`disable_coupling`),
+    /// with libvorbis's uncoupled template. VBR only: libvorbis finds no
     /// uncoupled template for a bitrate request, so in the bitrate modes
     /// this has no effect, as with oggenc.
     pub disable_coupling: bool,
@@ -305,16 +371,6 @@ impl fmt::Display for BitrateError {
 }
 
 impl std::error::Error for BitrateError {}
-
-/// A validated bitrate request, kept in `Options`.
-#[derive(Clone, Debug)]
-pub(crate) struct BitrateRequest {
-    pub mode: BitrateMode,
-    pub tuning: BitrateTuning,
-    /// The rate and channels it was validated for.
-    pub rate: SampleRate,
-    pub channels: Channels,
-}
 
 /// What the encoder needs from the high-level setup.
 #[derive(Clone, Debug, PartialEq)]

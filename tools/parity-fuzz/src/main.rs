@@ -158,8 +158,8 @@ fn oxivorbis_encode<S: Sample>(
     out
 }
 
-/// [`oxivorbis_encode`] in a bitrate mode (through the public `Options`
-/// API); `Err` when oxivorbis rejects the request.
+/// [`oxivorbis_encode`] in a bitrate mode (through the public
+/// `Encoder::with_bitrate`); `Err` when oxivorbis rejects the request.
 fn oxivorbis_encode_ctl<S: Sample>(
     pcm: &[S],
     rate: u32,
@@ -171,17 +171,18 @@ fn oxivorbis_encode_ctl<S: Sample>(
 ) -> Result<Vec<u8>, String> {
     let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
     let c = oxivorbis::Channels::new(channels).expect("channels validated at CLI");
-    let mut opts = oxivorbis::Options::default()
+    let opts = oxivorbis::Options::default()
         .with_quality(oxivorbis::Quality::from_base_quality(quality).expect("validated"))
         .with_serial(serial)
         .with_vendor(String::from_utf8_lossy(vendor).into_owned())
         .with_encoder_tuning(ctl.enc);
-    if let Some(mode) = ctl.mode {
-        opts = opts
-            .with_bitrate_tuning(r, c, mode, ctl.tuning)
-            .map_err(|e| e.to_string())?;
-    }
-    let mut enc = oxivorbis::Encoder::new(r, c, &opts);
+    let mut enc = match ctl.mode {
+        Some(mode) => {
+            let b = oxivorbis::Bitrate::new(mode).with_tuning(ctl.tuning);
+            oxivorbis::Encoder::with_bitrate(r, c, &opts, &b).map_err(|e| e.to_string())?
+        }
+        None => oxivorbis::Encoder::new(r, c, &opts),
+    };
     let mut out = Vec::new();
     let mut state = (pcm.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut rest = pcm;
