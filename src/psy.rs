@@ -984,10 +984,35 @@ fn seed_curve(
     let sp_lo = (seedptr0 + lp * (lo as i64 - post0 as i64)) as usize;
     let start = (sp_lo % lp_us) * qlen + sp_lo / lp_us;
     let dst = &mut seed[start..start + (hi - lo)];
-    for (d, &c) in dst.iter_mut().zip(&curve[lo..hi]) {
+    let src = &curve[lo..hi];
+    let len = dst.len();
+    let raise = |d: f32, c: f32| {
         let lin = amp + c;
-        *d = if *d < lin { lin } else { *d };
+        if d < lin { lin } else { d }
+    };
+    if len < 4 {
+        for (d, &c) in dst.iter_mut().zip(src) {
+            *d = raise(*d, c);
+        }
+        return;
     }
+    // Runs are short (about 13 cells on average), so do them as 4-wide
+    // chunks plus one final chunk aligned to the end, which may overlap the
+    // last full chunk. The tail is computed from the cells' values before
+    // any store, so overlapping cells get the same max(d, amp + c) twice.
+    let at = |dst: &[f32], k: usize| -> [f32; 4] {
+        let d: [f32; 4] = dst[k..k + 4].try_into().unwrap();
+        let c: [f32; 4] = src[k..k + 4].try_into().unwrap();
+        [raise(d[0], c[0]), raise(d[1], c[1]), raise(d[2], c[2]), raise(d[3], c[3])]
+    };
+    let tail = at(dst, len - 4);
+    let mut k = 0;
+    while k + 4 < len {
+        let r = at(dst, k);
+        dst[k..k + 4].copy_from_slice(&r);
+        k += 4;
+    }
+    dst[len - 4..].copy_from_slice(&tail);
 }
 
 // ---------------------------------------------------------------------------
