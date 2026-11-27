@@ -2,13 +2,26 @@
  * oracle-encoder — own-built libvorbis encoder, pinned compile flags.
  *
  * Reads interleaved PCM from stdin, writes Ogg Vorbis to stdout.
- * Args: <rate> <channels> [base_quality [format [comment]]]
+ * Args: [bitrate options] <rate> <channels> [base_quality [format [comment]]]
  *       e.g. ./oracle-encoder 44100 1
  *       base_quality: libvorbis -0.1..1.0 scale (q-1..q10), default 0.5.
  *       format: s16 (default; i16 LE, fed as sample/32768.0f) or f32
  *               (f32 LE, fed to vorbis_analysis_buffer unchanged).
  *       comment: optional "KEY=value" user comment (vorbis_comment_add);
  *               none by default. Used by tools/gen-header-vectors.
+ *
+ * Bitrate options (any of them switches from vorbis_encode_init_vbr to
+ * oggenc 1.4.3's setup sequence in oggenc/encode.c, replayed in
+ * setup_like_oggenc below):
+ *       -b KBPS      oggenc -b (nominal bitrate)
+ *       -m KBPS      oggenc -m (hard minimum; implies --managed)
+ *       -M KBPS      oggenc -M (hard maximum; implies --managed)
+ *       --managed    oggenc --managed
+ *       -q           oggenc -q given: quality mode at base_quality
+ *       -A KEY=VAL   oggenc --advanced-encode-option KEY=VAL (the rate
+ *                    management keys: bitrate_average_damping,
+ *                    bitrate_average, bit_reservoir_bias,
+ *                    bit_reservoir_bits, bitrate_hard_min, bitrate_hard_max)
  *
  * Compiled from the pristine libvorbis 1.3.7 and libogg 1.3.5 sources in
  * tools/libvorbis-1.3.7 and tools/libogg-1.3.5 by build.sh with
@@ -37,9 +50,161 @@ static void die(const char *msg) {
     exit(1);
 }
 
+#define MAX_ADV 16
+
+/* oggenc's oe_enc_opt fields that drive the libvorbis setup. */
+struct bitrate_opts {
+    int any;          /* a bitrate option was given */
+    int bitrate;      /* -b, kbps; -1 = unset */
+    int min_bitrate;  /* -m */
+    int max_bitrate;  /* -M */
+    int managed;
+    int quality_set;
+    int adv_count;
+    char *adv_arg[MAX_ADV];
+    char *adv_val[MAX_ADV];
+};
+
+static int parse_kbps(const char *s) {
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || v < -1 || v > 2147483) die("invalid kbps");
+    return (int)v;
+}
+
+/* oggenc/encode.c set_advanced_encoder_options, rate management keys. */
+static void set_advanced_encoder_options(const struct bitrate_opts *o, vorbis_info *vi) {
+    int manage = 0, i;
+    struct ovectl_ratemanage2_arg ai;
+    vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_GET, &ai);
+    for (i = 0; i < o->adv_count; i++) {
+        const char *a = o->adv_arg[i], *v = o->adv_val[i];
+        if (!strcmp(a, "bitrate_average_damping")) {
+            ai.bitrate_average_damping = strtod(v, NULL);
+            manage = 1;
+        } else if (!strcmp(a, "bitrate_average")) {
+            ai.bitrate_average_kbps = strtol(v, NULL, 10);
+            manage = 1;
+        } else if (!strcmp(a, "bit_reservoir_bias")) {
+            ai.bitrate_limit_reservoir_bias = strtod(v, NULL);
+            manage = 1;
+        } else if (!strcmp(a, "bit_reservoir_bits")) {
+            ai.bitrate_limit_reservoir_bits = strtol(v, NULL, 10);
+            manage = 1;
+        } else if (!strcmp(a, "bitrate_hard_min")) {
+            ai.bitrate_limit_min_kbps = strtol(v, NULL, 10);
+            manage = 1;
+        } else if (!strcmp(a, "bitrate_hard_max")) {
+            ai.bitrate_limit_max_kbps = strtol(v, NULL, 10);
+            manage = 1;
+        } else {
+            die("unknown advanced option");
+        }
+    }
+    if (manage && vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_SET, &ai))
+        die("advanced rate management parameters rejected");
+}
+
+/* oggenc/encode.c oe_encode, from "if(!opt->managed && ..." to
+ * vorbis_encode_setup_init, with oggenc's error exits turned into die().
+ * One deliberate difference: in quality mode with limits, oggenc first
+ * passes the quality's nominal bitrate as the average, so libvorbis
+ * refuses limits that don't bracket it (oggenc -q 6 -M 128 fails), and
+ * then replaces it by -1. This passes -1 right away, which leaves the
+ * same setup whenever oggenc succeeds, and also allows any limits. */
+static void setup_like_oggenc(struct bitrate_opts *opt, vorbis_info *vi, int channels, long rate,
+                              float quality) {
+    if (!opt->managed && (opt->min_bitrate >= 0 || opt->max_bitrate >= 0))
+        die("Requesting a minimum or maximum bitrate requires --managed");
+    if (opt->bitrate < 0 && opt->min_bitrate < 0 && opt->max_bitrate < 0) opt->quality_set = 1;
+
+    if (opt->quality_set > 0) {
+        if (vorbis_encode_setup_vbr(vi, channels, rate, quality))
+            die("Mode initialisation failed: invalid parameters for quality");
+        if (opt->max_bitrate > 0 || opt->min_bitrate > 0) {
+            long bitrate;
+            struct ovectl_ratemanage2_arg ai;
+            vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_GET, &ai);
+            {
+                vorbis_info vi2;
+                vorbis_info_init(&vi2);
+                vorbis_encode_setup_vbr(&vi2, channels, rate, quality);
+                vorbis_encode_setup_init(&vi2);
+                bitrate = vi2.bitrate_nominal;
+                vorbis_info_clear(&vi2);
+            }
+            ai.bitrate_average_kbps = -1; /* oggenc: bitrate/1000 (see above) */
+            ai.bitrate_average_damping = 1.5;
+            ai.bitrate_limit_reservoir_bits = bitrate * 2;
+            ai.bitrate_limit_reservoir_bias = .1;
+            ai.bitrate_limit_min_kbps = opt->min_bitrate;
+            ai.bitrate_limit_max_kbps = opt->max_bitrate;
+            ai.management_active = 1;
+            if (vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_SET, &ai) != 0)
+                die("Failed to set bitrate min/max in quality mode");
+        }
+    } else {
+        if (vorbis_encode_setup_managed(vi, channels, rate,
+                                        opt->max_bitrate > 0 ? opt->max_bitrate * 1000 : -1,
+                                        opt->bitrate * 1000,
+                                        opt->min_bitrate > 0 ? opt->min_bitrate * 1000 : -1))
+            die("Mode initialisation failed: invalid parameters for bitrate");
+    }
+
+    if (opt->managed && opt->bitrate < 0) {
+        struct ovectl_ratemanage2_arg ai;
+        vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_GET, &ai);
+        ai.bitrate_average_kbps = -1;
+        vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_SET, &ai);
+    } else if (!opt->managed) {
+        /* Turn off management entirely (if it was turned on). */
+        vorbis_encode_ctl(vi, OV_ECTL_RATEMANAGE2_SET, NULL);
+    }
+
+    set_advanced_encoder_options(opt, vi);
+
+    if (vorbis_encode_setup_init(vi)) die("vorbis_encode_setup_init failed");
+}
+
 int main(int argc, char **argv) {
+    struct bitrate_opts bopt = {0, -1, -1, -1, 0, 0, 0, {0}, {0}};
+    while (argc > 1 && argv[1][0] == '-' && argv[1][1] != '\0' &&
+           !(argv[1][1] >= '0' && argv[1][1] <= '9')) {
+        const char *o = argv[1];
+        int take = 1;
+        bopt.any = 1;
+        if (!strcmp(o, "--managed")) {
+            bopt.managed = 1;
+        } else if (!strcmp(o, "-q")) {
+            bopt.quality_set = 1;
+        } else if (argc > 2 && !strcmp(o, "-b")) {
+            bopt.bitrate = parse_kbps(argv[2]);
+            take = 2;
+        } else if (argc > 2 && !strcmp(o, "-m")) {
+            bopt.min_bitrate = parse_kbps(argv[2]);
+            bopt.managed = 1;
+            take = 2;
+        } else if (argc > 2 && !strcmp(o, "-M")) {
+            bopt.max_bitrate = parse_kbps(argv[2]);
+            bopt.managed = 1;
+            take = 2;
+        } else if (argc > 2 && !strcmp(o, "-A")) {
+            char *eq = strchr(argv[2], '=');
+            if (!eq || bopt.adv_count == MAX_ADV) die("invalid -A KEY=VALUE");
+            *eq = '\0';
+            bopt.adv_arg[bopt.adv_count] = argv[2];
+            bopt.adv_val[bopt.adv_count] = eq + 1;
+            bopt.adv_count++;
+            take = 2;
+        } else {
+            die("unknown option");
+        }
+        argc -= take;
+        argv += take;
+    }
     if (argc < 3 || argc > 6)
-        die("usage: oracle-encoder <rate> <channels> [base_quality [s16|f32 [comment]]]");
+        die("usage: oracle-encoder [-b K] [-m K] [-M K] [--managed] [-q] [-A KEY=VAL]... "
+            "<rate> <channels> [base_quality [s16|f32 [comment]]]");
     long rate = atol(argv[1]);
     int channels = atoi(argv[2]);
     if (rate <= 0 || channels < 1 || channels > 2) die("invalid rate/channels");
@@ -94,7 +259,9 @@ int main(int argc, char **argv) {
     /* libvorbis init at the requested quality (default q5). */
     vorbis_info vi;
     vorbis_info_init(&vi);
-    if (vorbis_encode_init_vbr(&vi, channels, rate, quality) != 0)
+    if (bopt.any)
+        setup_like_oggenc(&bopt, &vi, channels, rate, quality);
+    else if (vorbis_encode_init_vbr(&vi, channels, rate, quality) != 0)
         die("vorbis_encode_init_vbr failed");
 
     vorbis_comment vc;
