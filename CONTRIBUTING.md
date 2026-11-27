@@ -51,7 +51,12 @@ only deviations from upstream are applied from outside the trees:
   header that libogg's `configure` would generate.
 
 The oracle reads s16le (or f32 LE with the `f32` argument) from stdin
-and takes `<rate> <channels> [base_quality [s16|f32 [comment]]]`. It
+and takes `<rate> <channels> [base_quality [s16|f32 [comment]]]`.
+Leading oggenc-style flags (`-b K`, `-m K`, `-M K`, `--managed`, `-q`,
+`-A KEY=VALUE` for the reservoir advanced options) switch it from
+`vorbis_encode_init_vbr` to a replay of oggenc 1.4.3's bitrate setup
+(`setup_like_oggenc` in `main.c`); `-q` means quality mode at
+`base_quality`. It
 feeds libvorbis in 64-frame `vorbis_analysis_wrote` chunks and drains
 blocks after every call. oxivorbis's output is defined to match this. The
 oracle writes nothing to stderr unless it fails.
@@ -145,15 +150,28 @@ in `tests/vectors/fuzz/`. File names are parity-fuzz case ids,
 fails the test unless it is in `LEGACY_UNTAGGED_REPROS`, which lists
 the three pre-tagging repros (q5).
 
+`tests/parity_bitrate.rs` covers the bitrate modes (`BitrateMode`)
+against the oracle's oggenc flags: `bitrate_range::*` sweeps each
+template family and rate-range edge (8 to 50 kHz) across its whole
+supported bitrate range, ends included, in `Nominal` (`-b`) and
+`Average` (`--managed -b`) mode; `bitrate_limits::*` crosses seven rates
+with hard minimum / maximum / both, with and without an average, CBR
+(`min = avg = max`) and quality mode with limits at q-1 to q10;
+`bitrate_tuning::*` the reservoir knobs; `bitrate_long::*` 30 to 120 s
+inputs so the reservoirs fill and drain many times; and
+`bitrate_rejects_like_libvorbis` requests both sides refuse.
+`tests/bitrate.rs` (no oracle) checks chunking and parallel-batch
+invariance in the managed modes, the `Options` API and its errors.
+
 `tests/parity_f32.rs` checks `f32` input against the oracle's f32 mode.
 It covers several qualities and configs, values beyond ±1.0,
 subnormals, `-0.0`, NaN/inf (encoded as 0.0) and odd-sized chunked
 writes.
 
 `tests/golden.rs` compares oxivorbis against committed oracle output
-(`tests/vectors/golden/*.ogg`) for six integer-generated signals,
-including q-1, q10 and f32 input. It needs no oracle at run time, so it
-runs in every `cargo test` and on wasm. With `--features oracle`,
+(`tests/vectors/golden/*.ogg`) for integer-generated signals,
+including q-1, q10, f32 input and three bitrate modes. It needs no
+oracle at run time, so it runs in every `cargo test` and on wasm. With `--features oracle`,
 `golden_vectors_are_fresh` also checks the vectors against a fresh
 oracle run. `just regen-golden-vectors` rewrites them.
 
@@ -245,9 +263,10 @@ as positional arguments to `just corpus`:
 | `CORPUS_QUALITY` | `-0.1,0.5,1.0`                  | `0.5`      | libvorbis `base_quality` list |
 | `CORPUS_CONFIGS` | `44100x2,22050x1`, or `all`     | `44100x2`  | Rate × channel configurations (any rate 1..=200000; `all` = 44.1/48 kHz × mono/stereo) |
 | `CORPUS_JOBS`    | `4`                             | all cores  | Worker threads |
+| `CORPUS_BITRATE` | `"--managed -b 128 -M 160"`     | unset (VBR) | A bitrate mode as oracle flags (`-b -m -M --managed -q`; `-q` is quality mode at each `CORPUS_QUALITY` with the limits) |
 | `CORPUS_REQUIRE` | `1`                             | unset      | Fail instead of warning when there is no corpus |
 
-Positional order: `just corpus <limit> <extra-features> <quality> <configs> <jobs>`.
+Positional order: `just corpus <limit> <extra-features> <quality> <configs> <jobs> <bitrate>`.
 Use `""` to skip an argument.
 
 Failing inputs are saved under
@@ -280,6 +299,10 @@ cargo run -p parity-fuzz --release -- --iters 10000 --seed 1 --quality 0.5
 #   --keep-going         collect all failures instead of stopping at the first
 #   --minimize-per-sig N only minimize the first N failures per signature
 #   --no-minimize        --start I  --min-frames N  --out DIR  --oracle PATH
+#   --bitrate            a random bitrate mode per case (8-50 kHz rates only;
+#                        default rates 22050,44100,48000); both sides must
+#                        agree on which requests libvorbis rejects
+#   --mode "FLAGS"       one fixed mode as oracle flags, for replays
 
 # Replay a saved raw file (one rate / channel count). The descriptor.json
 # of every saved case contains the exact command, including --quality:

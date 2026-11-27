@@ -5,7 +5,9 @@
 
 A pure-Rust Ogg Vorbis **encoder** that produces the same bytes as
 libvorbis 1.3.7. It supports VBR mode at oggenc qualities -1 to 10,
-including fractional ones.
+including fractional ones, and libvorbis's bitrate management: average
+bitrate, hard minimum/maximum ("CBR"), and quality mode with limits, as
+oggenc's `-b`, `-m`, `-M` and `--managed` set them up.
 
 **Faster than libvorbis itself: 1.5–1.7× `oggenc` on one core, and
 7–9× with the `parallel` feature.**
@@ -116,6 +118,8 @@ let ogg = oxivorbis::encode(&pcm, rate, channels, &opts);
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
+[`Options::with_bitrate`]: https://docs.rs/oxivorbis/latest/oxivorbis/struct.Options.html#method.with_bitrate
+
 [`examples/`](examples/) has two runnable programs. `encode_wav`
 converts a 16-bit WAV file to `.ogg`. `stream` reads s16le from stdin
 and writes Ogg to stdout:
@@ -161,6 +165,82 @@ dev-dependency only):
 ```sh
 cargo run --release --example transcode -- song.mp3 song.ogg 6
 ```
+
+## Bitrate modes
+
+VBR at a quality is the default. [`Options::with_bitrate`] switches to
+one of libvorbis's bitrate-driven setups instead; each mode is one way
+oggenc 1.4.3 configures libvorbis, and the output matches libvorbis
+configured by those oggenc flags:
+
+| `BitrateMode`                                  | oggenc flags                     | What it does |
+|------------------------------------------------|----------------------------------|--------------|
+| `Nominal { kbps }`                             | `-b K`                           | VBR with the setup for about K kb/s; no reservoir |
+| `Average { kbps, min_kbps: None, max_kbps: None }` (`BitrateMode::average(K)`) | `--managed -b K` | Average bitrate (ABR) through the bit reservoir |
+| `Average { kbps, min_kbps, max_kbps }`         | `--managed -b K -m MIN -M MAX`   | ABR with hard limits; `min = avg = max` is libvorbis's "CBR" |
+| `Limits { min_kbps, max_kbps }`                | `-m MIN` / `-M MAX` (no `-b`)    | Hard limits only, setup for their midpoint |
+| `QualityLimits { min_kbps, max_kbps }`         | `-q Q -m MIN -M MAX`             | Quality mode at `Options::quality`, with hard limits |
+
+```rust
+use oxivorbis::{BitrateMode, Channels, Options, SampleRate};
+
+let (rate, ch) = (SampleRate::HZ_44100, Channels::Stereo);
+// oggenc --managed -b 128 -m 128 -M 128
+let cbr = BitrateMode::Average { kbps: 128, min_kbps: Some(128), max_kbps: Some(128) };
+let opts = Options::default().with_bitrate(rate, ch, cbr).expect("in libvorbis's range");
+let ogg = oxivorbis::encode(&vec![0i16; 44_100 * 2], rate, ch, &opts);
+assert_eq!(&ogg[..4], b"OggS");
+```
+
+- **Validation.** libvorbis only has bitrate setups for 8 to 50 kHz, and
+  each rate and channel count supports a range of average bitrates
+  (`BitrateMode::supported_kbps`: 45 to 500 kb/s for 44.1 kHz stereo, 8 to
+  42 kb/s per channel at 8 kHz, ...). `with_bitrate` takes the input's rate
+  and channels and returns a `BitrateError` where libvorbis would fail
+  (`OV_EIMPL`) or for inconsistent requests (minimum above maximum, a
+  limits mode without limits; `OV_EINVAL`). Encoding itself stays
+  infallible: `Encoder::new` and `encode` never fail for options that
+  passed the check. Options checked for one rate and used for another
+  are re-checked, and panic only if libvorbis can't encode them there.
+- **Quality with a hard maximum** (`-q 6 -M 192`), a common setup,
+  works even when the quality averages more than the maximum. oggenc
+  itself refuses `-q 6 -M 128` (it first passes the quality's nominal
+  bitrate as the average, which libvorbis checks against the limits),
+  but libvorbis's API allows it and the setup oggenc would end with is
+  the same.
+- **Reservoir tuning.** `Options::with_bitrate_tuning` takes a
+  `BitrateTuning`: oggenc's `--advanced-encode-option`
+  `bit_reservoir_bits`, `bit_reservoir_bias` and `bitrate_average_damping`
+  (the `ovectl_ratemanage2_arg` fields).
+- **ID header.** `bitrate_upper`, `bitrate_nominal` and `bitrate_lower`
+  are what libvorbis writes for the same oggenc flags (e.g. `-1` for an
+  unset limit with `-b`, `0` without it, `-1000` in quality mode).
+- **Streaming and `parallel`** work as in VBR, with the same bytes.
+  Choosing among a block's candidate packets is sequential (the
+  reservoir carries over), but each block's analysis isn't, so the
+  parallel pipeline analyzes batches in parallel and chooses serially.
+- **Cost.** Managed modes (all but `Nominal`, which costs the same as
+  VBR) encode every block 15 times, from the smallest to the largest
+  candidate packet, as libvorbis does. That makes them about 4× slower
+  than VBR (261 s stereo track at 160 kb/s: 3.0 s serial on the M4 vs
+  0.77 s for q5; 5.0 s vs 1.18 s on the Intel), still about twice as fast
+  as `oggenc --managed` (6.3 s on the M4). Memory per block is the 15
+  candidate packets (about 7 KB per long block at 160 kb/s stereo) plus
+  8 KB of floor posts per analysis scratch: streaming serially peaks
+  0.1 MB higher than VBR, and with `parallel` about 5 MB higher (each
+  batch's candidates wait for the serial choice).
+
+libvorbis's other encoder ctls, `OV_ECTL_LOWPASS_SET`,
+`OV_ECTL_IBLOCK_SET` and `OV_ECTL_COUPLING_SET` (oggenc's
+`lowpass_frequency`, `impulse_noisetune` and `disable_coupling` advanced
+options), are `Options::with_encoder_tuning` with an `EncoderTuning`,
+in VBR and the bitrate modes alike (libvorbis ignores
+`disable_coupling` in the bitrate modes).
+
+Not supported: the deprecated `OV_ECTL_RATEMANAGE_*` ctls (superseded by
+the `RATEMANAGE2` ones the modes use), and oggenc's `bitrate_average` /
+`bitrate_hard_min` / `bitrate_hard_max` advanced options (the same knobs
+as the modes' fields, re-applied after the setup).
 
 ## Command-line encoder
 
@@ -215,6 +295,7 @@ ctypes binding.
 | Sample rate   | Any rate from 1 Hz to 200 kHz (`SampleRate`), as libvorbis |
 | Channels      | Mono **or** stereo (`Channels`) |
 | Quality       | -1.0 to 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
+| Bitrate modes | 8 kHz to 50 kHz, within each rate's range (see [Bitrate modes](#bitrate-modes)) |
 
 - **Quality** follows oggenc's `-q` scale. `Quality::new(q)` returns
   `None` for NaN or for values outside -1..=10. The value is converted
@@ -324,6 +405,14 @@ from them (rounded band edges, comparisons, the stored tables) is
 unchanged when each libm result moves by ±1 ulp, at every rate from
 1 Hz to 200 kHz and every block size, so the output does not depend on
 the platform's libm (`psy_setup_robust_to_libm_ulps`).
+The bitrate modes are byte-identical to the oracle set up as oggenc sets
+it up. The real-audio corpus is byte-identical at 44.1 kHz stereo with
+`--managed -b 128 -m 128 -M 128`, `--managed -b 160`, `-q 5 -M 128` and
+`-b 128`, and at 22.05 kHz mono with `--managed -b 40 -m 40 -M 40`,
+`--managed -b 32`, `-q 5 -M 40` and `-m 24 -M 48` (53,224 encodes). The
+differential fuzzer has run more than 95,000 cases with random bitrate modes,
+limits and reservoir tuning across 8 to 50 kHz (i16 and f32, macOS arm64
+and Linux x86_64), and CI runs 264 bitrate parity tests per platform.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
 ## Features
