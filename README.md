@@ -274,11 +274,16 @@ exit codes and the overwrite policy.
 and libogg 1.3.5 sources (vendored and checksum-verified under `tools/`),
 a real-audio corpus of 6653 files is byte-identical in all four
 rate/channel configurations at q-1, q5 and q10 (79,836 encodes), and at
-44.1 kHz stereo also at q0, q2, q3 and q8. A differential fuzzer has
-run more than 190,000 generated cases clean, with 16-bit and f32 input
-and inputs of up to 30 s, and CI compares 30 to 120 s of non-silent
-audio on every push. Parity is verified on macOS arm64, Linux x86_64
-(glibc) and wasm32 (under wasmtime). oxivorbis's output is also identical
+44.1 kHz stereo also at q0, q2, q3 and q8. At the other template
+families the same corpus is byte-identical at 8 kHz and 11.025 kHz mono
+and 16, 22.05, 32 and 96 kHz stereo, at q-1, q5 and q10 (119,754
+encodes). A differential fuzzer has run more than 190,000 generated
+cases clean at 44.1/48 kHz and more than 400,000 across 4, 8, 11.025,
+16, 22.05, 32 and 96 kHz (mono and stereo, 16-bit and f32 input), and
+the CI parity suite covers every rate range's edges from 1 Hz to
+200 kHz. CI also compares 30 to 120 s of non-silent audio on every push.
+Parity is verified on macOS arm64, Linux x86_64 (glibc) and wasm32
+(under wasmtime). oxivorbis's output is also identical
 on Windows x86_64 (MSVC).
 
 This works because libvorbis's encoder uses f32 throughout. Without FMA
@@ -364,6 +369,10 @@ looser arithmetic.
 | Intel Core Ultra 7 356H (16 cores, serial pinned to a P-core) | q-1 | 2.17 s | **1.26 s** | **0.20 s** |
 | | q5 | 1.80 s | **1.17 s** | **0.20 s** |
 | | q10 | 2.06 s | **1.40 s** | **0.23 s** |
+
+Other rates scale with the sample count. On the M4 at q5, the same
+track takes 0.10 s at 8 kHz mono (oggenc 0.16 s), 0.45 s at 22.05 kHz
+stereo (oggenc 0.72 s) and 1.45 s at 96 kHz stereo (oggenc 2.31 s).
 
 Serial oxivorbis is about 1.5–1.8× as fast as oggenc. With `parallel` it is
 7–11× faster on long inputs, at about 1.6× the total CPU time of serial.
