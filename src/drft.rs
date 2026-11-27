@@ -20,74 +20,81 @@ use crate::tables::drft::{
 // ---------------------------------------------------------------------------
 // dradf2  (radix-2 forward butterfly)
 // Port of smallft.c lines 113-166.
+//
+// Same slicing scheme as dradf4 below: the two input halves and each k's
+// 2*ido output block are split into exactly-sized slices, so the loops are
+// bounds-check free. Every element is the C expression, unchanged.
 // ---------------------------------------------------------------------------
 fn dradf2(ido: usize, l1: usize, cc: &[f32], ch: &mut [f32], wa1: &[f32]) {
     let t0 = l1 * ido;
+    let (c0, c1) = cc[..2 * t0].split_at(t0);
+    let ch = &mut ch[..2 * t0];
 
-    // DC butterfly
-    let mut t1 = 0usize;
-    let mut t2 = t0;
-    let t3_const = ido << 1;
-    for _k in 0..l1 {
-        ch[t1 << 1] = cc[t1] + cc[t2];
-        ch[(t1 << 1) + t3_const - 1] = cc[t1] - cc[t2];
-        t1 += ido;
-        t2 += ido;
-    }
+    // Twiddle pairs per k (C's `i` from 2 below ido in steps of 2).
+    let m = if ido > 2 { (ido - 1) / 2 } else { 0 };
+    let w1 = &wa1[..2 * m];
+    // Opaque imaginary-half index; see dradf4_general.
+    let im = std::hint::black_box(1usize);
 
-    if ido < 2 {
-        return;
-    }
-    if ido != 2 {
-        // Twiddle loop
-        let mut t1 = 0usize;
-        let mut t2 = t0;
-        for _k in 0..l1 {
-            let mut t3 = t2;
-            let mut t4 = (t1 << 1) + (ido << 1);
-            let mut t5 = t1;
-            let mut t6 = t1 << 1;
-            let mut i = 2usize;
-            while i < ido {
-                t3 += 2;
-                t4 -= 2;
-                t5 += 2;
-                t6 += 2;
-                let tr2 = wa1[i - 2] * cc[t3 - 1] + wa1[i - 1] * cc[t3];
-                let ti2 = wa1[i - 2] * cc[t3] - wa1[i - 1] * cc[t3 - 1];
-                ch[t6] = cc[t5] + ti2;
-                ch[t4] = ti2 - cc[t5];
-                ch[t6 - 1] = cc[t5 - 1] + tr2;
-                ch[t4 - 1] = cc[t5 - 1] - tr2;
-                i += 2;
-            }
-            t1 += ido;
-            t2 += ido;
+    for ((o, a0), a1) in ch
+        .chunks_exact_mut(2 * ido)
+        .zip(c0.chunks_exact(ido))
+        .zip(c1.chunks_exact(ido))
+    {
+        // DC butterfly
+        o[0] = a0[0] + a1[0];
+        o[2 * ido - 1] = a0[0] - a1[0];
+
+        if ido < 2 {
+            continue;
+        }
+        // Twiddle loop. C's ch[t6-1..] ascends from o[1], ch[t4-1..]
+        // descends to o[2*ido-2].
+        let (q0, q1) = o.split_at_mut(ido);
+        let ra = &mut q0[1..1 + 2 * m];
+        let rb = &mut q1[ido - 1 - 2 * m..ido - 1];
+        let it = a0[1..1 + 2 * m]
+            .chunks_exact(2)
+            .zip(a1[1..1 + 2 * m].chunks_exact(2))
+            .zip(w1.chunks_exact(2))
+            .zip(ra.chunks_exact_mut(2))
+            .zip(rb.rchunks_exact_mut(2));
+        for ((((x0, x1), w), oa), ob) in it {
+            let tr2 = w[0] * x1[0] + w[1] * x1[1];
+            let ti2 = w[0] * x1[1] - w[1] * x1[0];
+            oa[im] = x0[1] + ti2;
+            ob[im] = ti2 - x0[1];
+            oa[0] = x0[0] + tr2;
+            ob[0] = x0[0] - tr2;
         }
         if ido % 2 == 1 {
-            return;
+            continue;
         }
-    }
 
-    // L105: Nyquist terms (ido even, or ido==2 falls through here)
-    // C: t3=(t2=(t1=ido)-1); t2+=t0;
-    // So: t1=ido, t2=ido-1+t0, t3=ido-1
-    let mut t1 = ido;
-    let mut t2 = (ido - 1) + t0;
-    let mut t3 = ido - 1;
-    for _k in 0..l1 {
-        ch[t1] = -cc[t2];
-        ch[t1 - 1] = cc[t3];
-        t1 += ido << 1;
-        t2 += ido;
-        t3 += ido;
+        // L105: Nyquist terms (ido even, or ido==2 falls through here)
+        o[ido] = -a1[ido - 1];
+        o[ido - 1] = a0[ido - 1];
     }
 }
 
 // ---------------------------------------------------------------------------
 // dradf4  (radix-4 forward butterfly)
 // Port of smallft.c lines 168-268.
+//
+// The C walks running offsets (t1..t6) through `cc` and `ch`. Here the four
+// input quarters `cc[q*t0..]` and the 4*ido output block of each k are split
+// into disjoint, exactly-sized slices up front, so every access is
+// bounds-check free and the twiddle loop is a plain zip over (re, im) pairs.
+// Each output element is still produced by exactly the C expression (same
+// operands, same operation order); only the address arithmetic changed.
 // ---------------------------------------------------------------------------
+
+// libvorbis: static const float hsqt2 = .70710678118654752f;
+// 17 sig digits round-trip to f32 bits 0x3f3504f3 (Rust's `7.0710678e-1` does too).
+// The shorter `7.071068e-1` rounds to 0x3f3504f4 (1 ULP off), which is wrong.
+#[allow(clippy::approx_constant)]
+const HSQT2: f32 = 7.0710678e-1_f32;
+
 fn dradf4(
     ido: usize,
     l1: usize,
@@ -97,111 +104,197 @@ fn dradf4(
     wa2: &[f32],
     wa3: &[f32],
 ) {
-    // libvorbis: static const float hsqt2 = .70710678118654752f;
-    // 17 sig digits round-trip to f32 bits 0x3f3504f3 (Rust's `7.0710678e-1` does too).
-    // The shorter `7.071068e-1` rounds to 0x3f3504f4 (1 ULP off), which is wrong.
-    #[allow(clippy::approx_constant)]
-    const HSQT2: f32 = 7.0710678e-1_f32;
     let t0 = l1 * ido;
 
-    // DC butterfly
-    // C: t1=t0; t4=t1<<1; t2=t1+(t1<<1); t3=0;
-    let mut t1 = t0;
-    let mut t4 = t1 << 1;
-    let mut t2 = t1 + (t1 << 1);
-    let mut t3 = 0usize;
-    for _k in 0..l1 {
-        let tr1 = cc[t1] + cc[t2];
-        let tr2 = cc[t3] + cc[t4];
-        // ch[t5=t3<<2]=tr1+tr2  (t5 is a new local computed inline)
-        let t5 = t3 << 2;
-        ch[t5] = tr1 + tr2;
-        ch[(ido << 2) + t5 - 1] = tr2 - tr1;
-        // ch[(t5+=(ido<<1))-1] = ...  means t5 becomes t5+(ido<<1), then index t5-1
-        let t5b = t5 + (ido << 1);
-        ch[t5b - 1] = cc[t3] - cc[t4];
-        ch[t5b] = cc[t2] - cc[t1];
-        t1 += ido;
-        t2 += ido;
-        t3 += ido;
-        t4 += ido;
-    }
+    // Input quarters: C's cc[t3] / cc[t1] / cc[t4] / cc[t2] streams
+    // (offsets 0, t0, 2*t0, 3*t0).
+    let (c0, rest) = cc[..4 * t0].split_at(t0);
+    let (c1, rest) = rest.split_at(t0);
+    let (c2, c3) = rest.split_at(t0);
+    let ch = &mut ch[..4 * t0];
 
-    if ido < 2 {
+    if ido == 1 {
+        // Only the DC butterfly runs; every stream is contiguous in k, so
+        // this loop vectorizes (4-way interleaved store).
+        for ((((o, &a0), &a1), &a2), &a3) in ch.chunks_exact_mut(4).zip(c0).zip(c1).zip(c2).zip(c3)
+        {
+            let tr1 = a1 + a3;
+            let tr2 = a0 + a2;
+            o[0] = tr1 + tr2;
+            o[3] = tr2 - tr1;
+            o[1] = a0 - a2;
+            o[2] = a3 - a1;
+        }
         return;
     }
-    if ido != 2 {
-        // Twiddle loop
-        // C: t1=0; for(k=0;k<l1;k++){ t2=t1; t4=t1<<2; t5=(t6=ido<<1)+t4;
-        let mut t1 = 0usize;
-        for _k in 0..l1 {
-            let mut t2 = t1;
-            let mut t4 = t1 << 2;
-            let t6 = ido << 1;
-            let mut t5 = t6 + t4;
-            let mut i = 2usize;
-            while i < ido {
-                t2 += 2;
-                t4 += 2;
-                t5 -= 2;
-                // t3=(t2+=2); t4+=2; t5-=2; t3+=t0;
-                let mut t3 = t2 + t0;
-                let cr2 = wa1[i - 2] * cc[t3 - 1] + wa1[i - 1] * cc[t3];
-                let ci2 = wa1[i - 2] * cc[t3] - wa1[i - 1] * cc[t3 - 1];
-                t3 += t0;
-                let cr3 = wa2[i - 2] * cc[t3 - 1] + wa2[i - 1] * cc[t3];
-                let ci3 = wa2[i - 2] * cc[t3] - wa2[i - 1] * cc[t3 - 1];
-                t3 += t0;
-                let cr4 = wa3[i - 2] * cc[t3 - 1] + wa3[i - 1] * cc[t3];
-                let ci4 = wa3[i - 2] * cc[t3] - wa3[i - 1] * cc[t3 - 1];
+
+    if ido == 4 {
+        // One twiddle pair per k: the general loop below, fully unrolled on
+        // fixed-size views (DC, the i==2 twiddle step, then Nyquist).
+        let (wr1, wi1) = (wa1[0], wa1[1]);
+        let (wr2, wi2) = (wa2[0], wa2[1]);
+        let (wr3, wi3) = (wa3[0], wa3[1]);
+        for ((((o, a0), a1), a2), a3) in ch
+            .chunks_exact_mut(16)
+            .zip(c0.chunks_exact(4))
+            .zip(c1.chunks_exact(4))
+            .zip(c2.chunks_exact(4))
+            .zip(c3.chunks_exact(4))
+        {
+            let tr1 = a1[0] + a3[0];
+            let tr2 = a0[0] + a2[0];
+            o[0] = tr1 + tr2;
+            o[15] = tr2 - tr1;
+            o[7] = a0[0] - a2[0];
+            o[8] = a3[0] - a1[0];
+
+            let cr2 = wr1 * a1[1] + wi1 * a1[2];
+            let ci2 = wr1 * a1[2] - wi1 * a1[1];
+            let cr3 = wr2 * a2[1] + wi2 * a2[2];
+            let ci3 = wr2 * a2[2] - wi2 * a2[1];
+            let cr4 = wr3 * a3[1] + wi3 * a3[2];
+            let ci4 = wr3 * a3[2] - wi3 * a3[1];
+            let tr1 = cr2 + cr4;
+            let tr4 = cr4 - cr2;
+            let ti1 = ci2 + ci4;
+            let ti4 = ci2 - ci4;
+            let ti2 = a0[2] + ci3;
+            let ti3 = a0[2] - ci3;
+            let tr2 = a0[1] + cr3;
+            let tr3 = a0[1] - cr3;
+            o[1] = tr1 + tr2;
+            o[2] = ti1 + ti2;
+            o[5] = tr3 - ti4;
+            o[6] = tr4 - ti3;
+            o[9] = ti4 + tr3;
+            o[10] = tr4 + ti3;
+            o[13] = tr2 - tr1;
+            o[14] = ti1 - ti2;
+
+            let ti1 = -HSQT2 * (a1[3] + a3[3]);
+            let tr1 = HSQT2 * (a1[3] - a3[3]);
+            o[3] = tr1 + a0[3];
+            o[11] = a0[3] - tr1;
+            o[4] = ti1 - a2[3];
+            o[12] = ti1 + a2[3];
+        }
+        return;
+    }
+
+    // Constant ido for the sizes that occur, so the per-k slicing folds.
+    match ido {
+        16 => dradf4_general(16, ch, c0, c1, c2, c3, wa1, wa2, wa3),
+        64 => dradf4_general(64, ch, c0, c1, c2, c3, wa1, wa2, wa3),
+        256 => dradf4_general(256, ch, c0, c1, c2, c3, wa1, wa2, wa3),
+        _ => dradf4_general(ido, ch, c0, c1, c2, c3, wa1, wa2, wa3),
+    }
+}
+
+/// dradf4 for ido >= 2: `c0..c3` are the input quarters, `ch` the 4*t0
+/// output.
+#[inline(always)]
+fn dradf4_general(
+    ido: usize,
+    ch: &mut [f32],
+    c0: &[f32],
+    c1: &[f32],
+    c2: &[f32],
+    c3: &[f32],
+    wa1: &[f32],
+    wa2: &[f32],
+    wa3: &[f32],
+) {
+    // Twiddle pairs per k (C's `i` from 2 below ido in steps of 2).
+    let m = (ido - 1) / 2;
+    let w1 = &wa1[..2 * m];
+    let w2 = &wa2[..2 * m];
+    let w3 = &wa3[..2 * m];
+    // Index of the imaginary half of each output pair: always 1, but opaque
+    // to the optimizer. With a literal 1 the SLP vectorizer packs each
+    // (re, im) pair into 2-lane shuffled code that is ~2x slower on x86_64
+    // (and no faster on aarch64) than this plain scalar loop.
+    let im = std::hint::black_box(1usize);
+
+    for ((((o, a0), a1), a2), a3) in ch
+        .chunks_exact_mut(4 * ido)
+        .zip(c0.chunks_exact(ido))
+        .zip(c1.chunks_exact(ido))
+        .zip(c2.chunks_exact(ido))
+        .zip(c3.chunks_exact(ido))
+    {
+        // DC butterfly. C: tr1=cc[t1]+cc[t2]; tr2=cc[t3]+cc[t4];
+        let tr1 = a1[0] + a3[0];
+        let tr2 = a0[0] + a2[0];
+        o[0] = tr1 + tr2;
+        o[4 * ido - 1] = tr2 - tr1;
+        o[2 * ido - 1] = a0[0] - a2[0];
+        o[2 * ido] = a3[0] - a1[0];
+
+        if ido != 2 {
+            // Twiddle loop. Output pairs: C's ch[t4-1..] ascending from
+            // o[1], ch[t5-1..] descending to o[2*ido-2], ch[t4+t6-1..]
+            // ascending from o[2*ido+1], ch[t5+t6-1..] descending to
+            // o[4*ido-2].
+            let (q01, q23) = o.split_at_mut(2 * ido);
+            let (q0, q1) = q01.split_at_mut(ido);
+            let (q2, q3) = q23.split_at_mut(ido);
+            let ra = &mut q0[1..1 + 2 * m];
+            let rb = &mut q1[ido - 1 - 2 * m..ido - 1];
+            let rc = &mut q2[1..1 + 2 * m];
+            let rd = &mut q3[ido - 1 - 2 * m..ido - 1];
+            let it = a0[1..1 + 2 * m]
+                .chunks_exact(2)
+                .zip(a1[1..1 + 2 * m].chunks_exact(2))
+                .zip(a2[1..1 + 2 * m].chunks_exact(2))
+                .zip(a3[1..1 + 2 * m].chunks_exact(2))
+                .zip(w1.chunks_exact(2))
+                .zip(w2.chunks_exact(2))
+                .zip(w3.chunks_exact(2))
+                .zip(ra.chunks_exact_mut(2))
+                .zip(rb.rchunks_exact_mut(2))
+                .zip(rc.chunks_exact_mut(2))
+                .zip(rd.rchunks_exact_mut(2));
+            for ((((((((((x0, x1), x2), x3), w1), w2), w3), oa), ob), oc), od) in it {
+                let cr2 = w1[0] * x1[0] + w1[1] * x1[1];
+                let ci2 = w1[0] * x1[1] - w1[1] * x1[0];
+                let cr3 = w2[0] * x2[0] + w2[1] * x2[1];
+                let ci3 = w2[0] * x2[1] - w2[1] * x2[0];
+                let cr4 = w3[0] * x3[0] + w3[1] * x3[1];
+                let ci4 = w3[0] * x3[1] - w3[1] * x3[0];
 
                 let tr1 = cr2 + cr4;
                 let tr4 = cr4 - cr2;
                 let ti1 = ci2 + ci4;
                 let ti4 = ci2 - ci4;
-                let ti2 = cc[t2] + ci3;
-                let ti3 = cc[t2] - ci3;
-                let tr2 = cc[t2 - 1] + cr3;
-                let tr3 = cc[t2 - 1] - cr3;
+                let ti2 = x0[1] + ci3;
+                let ti3 = x0[1] - ci3;
+                let tr2 = x0[0] + cr3;
+                let tr3 = x0[0] - cr3;
 
-                ch[t4 - 1] = tr1 + tr2;
-                ch[t4] = ti1 + ti2;
-                ch[t5 - 1] = tr3 - ti4;
-                ch[t5] = tr4 - ti3;
-                ch[t4 + t6 - 1] = ti4 + tr3;
-                ch[t4 + t6] = tr4 + ti3;
-                ch[t5 + t6 - 1] = tr2 - tr1;
-                ch[t5 + t6] = ti1 - ti2;
-
-                i += 2;
+                oa[0] = tr1 + tr2;
+                oa[im] = ti1 + ti2;
+                ob[0] = tr3 - ti4;
+                ob[im] = tr4 - ti3;
+                oc[0] = ti4 + tr3;
+                oc[im] = tr4 + ti3;
+                od[0] = tr2 - tr1;
+                od[im] = ti1 - ti2;
             }
-            t1 += ido;
+            if ido & 1 != 0 {
+                continue;
+            }
         }
-        if ido & 1 != 0 {
-            return;
-        }
-    }
 
-    // L105: Nyquist half-sample terms (reached when ido is even, including ido==2)
-    // C: t2=(t1=t0+ido-1)+(t0<<1); t3=ido<<2; t4=ido; t5=ido<<1; t6=ido;
-    let mut t1 = t0 + ido - 1;
-    let mut t2 = t1 + (t0 << 1);
-    let t3 = ido << 2;
-    let mut t4 = ido;
-    let t5 = ido << 1;
-    let mut t6 = ido;
-
-    for _k in 0..l1 {
-        let ti1 = -HSQT2 * (cc[t1] + cc[t2]);
-        let tr1 = HSQT2 * (cc[t1] - cc[t2]);
-        ch[t4 - 1] = tr1 + cc[t6 - 1];
-        ch[t4 + t5 - 1] = cc[t6 - 1] - tr1;
-        ch[t4] = ti1 - cc[t1 + t0];
-        ch[t4 + t5] = ti1 + cc[t1 + t0];
-        t1 += ido;
-        t2 += ido;
-        t4 += t3;
-        t6 += ido;
+        // L105: Nyquist half-sample terms (ido even, including ido==2).
+        // C: ti1=-hsqt2*(cc[t1]+cc[t2]); tr1=hsqt2*(cc[t1]-cc[t2]);
+        let n1 = a1[ido - 1];
+        let n3 = a3[ido - 1];
+        let ti1 = -HSQT2 * (n1 + n3);
+        let tr1 = HSQT2 * (n1 - n3);
+        o[ido - 1] = tr1 + a0[ido - 1];
+        o[3 * ido - 1] = a0[ido - 1] - tr1;
+        o[ido] = ti1 - a2[ido - 1];
+        o[3 * ido] = ti1 + a2[ido - 1];
     }
 }
 
@@ -363,6 +456,9 @@ pub(crate) fn drft_forward_with(t: &DrftTables, data: &mut [f32]) {
     // (zeroed) stack scratch to the call so short blocks stay cheap.
     if n <= 512 {
         let mut ch = [0.0f32; 512];
+        drftf1(n, data, &mut ch[..n], t.wa, t.split);
+    } else if n <= 2048 {
+        let mut ch = [0.0f32; 2048];
         drftf1(n, data, &mut ch[..n], t.wa, t.split);
     } else {
         let mut ch = [0.0f32; DRFT_MAX_N];
