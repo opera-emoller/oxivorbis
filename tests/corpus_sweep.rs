@@ -14,6 +14,10 @@
 //!   `all` = `44100x2,44100x1,48000x2,48000x1`.
 //! - `CORPUS_JOBS=N` worker threads (default: available parallelism).
 //! - `CORPUS_LIMIT=N` only the first N files (sorted).
+//! - `CORPUS_BITRATE="<oracle flags>"` encode in a bitrate mode instead of
+//!   VBR, given as oggenc-style oracle flags, e.g. `"--managed -b 128"`,
+//!   `"--managed -b 128 -m 128 -M 128"`, `"-M 160"` or `"-q -M 128"`
+//!   (quality mode at each `CORPUS_QUALITY`, with a hard maximum).
 //!
 //! Failing cases are saved to
 //! `target/corpus-failures/<rate>x<ch>-q<q>/<relpath>/` as `input.s16le`,
@@ -177,8 +181,79 @@ fn ffmpeg_decode(path: &Path, rate: u32, ch: u16) -> Vec<i16> {
         .collect()
 }
 
+/// `CORPUS_BITRATE`: the oracle flags and the matching oxivorbis mode.
+#[derive(Clone)]
+struct Bitrate {
+    flags: Vec<String>,
+    mode: oxivorbis::BitrateMode,
+}
+
+fn parse_bitrate() -> Option<Bitrate> {
+    use oxivorbis::BitrateMode;
+    let raw = std::env::var("CORPUS_BITRATE").ok()?;
+    let flags: Vec<String> = raw.split_whitespace().map(str::to_string).collect();
+    if flags.is_empty() {
+        return None;
+    }
+    let (mut b, mut min, mut max) = (None, None, None);
+    let (mut managed, mut q) = (false, false);
+    let mut it = flags.iter();
+    let kbps = |v: Option<&String>| -> u32 {
+        v.and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("CORPUS_BITRATE={raw:?}: expected a kbps value"))
+    };
+    while let Some(t) = it.next() {
+        match t.as_str() {
+            "-b" => b = Some(kbps(it.next())),
+            "-m" => min = Some(kbps(it.next())),
+            "-M" => max = Some(kbps(it.next())),
+            "--managed" => managed = true,
+            "-q" => q = true,
+            other => {
+                panic!("CORPUS_BITRATE={raw:?}: unknown flag {other:?} (-b -m -M --managed -q)")
+            }
+        }
+    }
+    let mode = match (q, b, managed || min.is_some() || max.is_some()) {
+        (true, _, _) => BitrateMode::QualityLimits {
+            min_kbps: min,
+            max_kbps: max,
+        },
+        (false, Some(kbps), false) => BitrateMode::Nominal { kbps },
+        (false, Some(kbps), true) => BitrateMode::Average {
+            kbps,
+            min_kbps: min,
+            max_kbps: max,
+        },
+        (false, None, _) => BitrateMode::Limits {
+            min_kbps: min,
+            max_kbps: max,
+        },
+    };
+    Some(Bitrate { flags, mode })
+}
+
+/// Failure-directory suffix for a bitrate mode.
+fn bitrate_tag(b: &Option<Bitrate>) -> String {
+    match b {
+        None => String::new(),
+        Some(b) => format!("-br{}", b.flags.join("").replace('-', "_")),
+    }
+}
+
 fn oracle_encode(raw: &[u8], rate: u32, ch: u16, base_quality: f32) -> Vec<u8> {
+    oracle_encode_with(raw, rate, ch, base_quality, &[])
+}
+
+fn oracle_encode_with(
+    raw: &[u8],
+    rate: u32,
+    ch: u16,
+    base_quality: f32,
+    flags: &[String],
+) -> Vec<u8> {
     let mut child = Command::new(ORACLE_BIN)
+        .args(flags)
         .args([
             &rate.to_string(),
             &ch.to_string(),
@@ -228,14 +303,23 @@ struct Divergence {
     artifacts: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
 }
 
-fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<(), Divergence> {
+fn check_one(
+    cfg: SweepConfig,
+    samples: &[i16],
+    raw: &[u8],
+    q: f32,
+    bitrate: &Option<Bitrate>,
+) -> Result<(), Divergence> {
     if samples.is_empty() {
         return Err(Divergence {
             why: "empty samples".into(),
             artifacts: None,
         });
     }
-    let oracle = oracle_encode(raw, cfg.rate, cfg.ch, q);
+    let oracle = match bitrate {
+        None => oracle_encode(raw, cfg.rate, cfg.ch, q),
+        Some(b) => oracle_encode_with(raw, cfg.rate, cfg.ch, q, &b.flags),
+    };
     if oracle.len() < 18 {
         return Err(Divergence {
             why: format!("oracle too short: {} bytes", oracle.len()),
@@ -245,8 +329,8 @@ fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<()
     let serial = u32::from_le_bytes(oracle[14..18].try_into().unwrap());
     let vendor: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
     let (rate, channels) = cfg.oxivorbis();
-    let lw = match catch_unwind(AssertUnwindSafe(|| {
-        oxivorbis::encode_with_base_quality_and_meta(
+    let lw = match catch_unwind(AssertUnwindSafe(|| match bitrate {
+        None => oxivorbis::encode_with_base_quality_and_meta(
             samples,
             rate,
             channels,
@@ -254,7 +338,18 @@ fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<()
             serial,
             Some(vendor),
             Some(b""),
+        ),
+        Some(b) => oxivorbis::encode_bitrate_with_meta(
+            samples,
+            rate,
+            channels,
+            q,
+            b.mode,
+            oxivorbis::BitrateTuning::default(),
+            serial,
+            Some(vendor),
         )
+        .unwrap_or_else(|e| panic!("oxivorbis rejected {:?}: {e}", b.mode)),
     })) {
         Ok(lw) => lw,
         Err(p) => {
@@ -289,12 +384,17 @@ fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<()
     })
 }
 
-fn save_failure(cfg: SweepConfig, q: f32, rel: &Path, d: &Divergence) {
+fn save_failure(cfg: SweepConfig, q: f32, bitrate: &Option<Bitrate>, rel: &Path, d: &Divergence) {
+    let br = bitrate_tag(bitrate);
+    let mode = bitrate
+        .as_ref()
+        .map(|b| format!(" --mode \"{}\"", b.flags.join(" ")))
+        .unwrap_or_default();
     let Some((pcm, oracle, lw)) = &d.artifacts else {
         return;
     };
     let dir = failures_root()
-        .join(format!("{}-q{q}", cfg.tag()))
+        .join(format!("{}-q{q}{br}", cfg.tag()))
         .join(rel);
     let res = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(&dir)?;
@@ -307,7 +407,7 @@ fn save_failure(cfg: SweepConfig, q: f32, rel: &Path, d: &Divergence) {
             format!(
                 "source: corpus/{}\nrate: {} channels: {} quality: {q}\nframes: {}\n{}\n\n\
                  replay:\n  cargo run -p parity-fuzz --release -- --pcm {} --rates {} \
-                 --channels {} --quality {q} --no-minimize\n",
+                 --channels {} --quality {q}{mode} --no-minimize\n",
                 rel.display(),
                 cfg.rate,
                 cfg.ch,
@@ -399,6 +499,8 @@ fn corpus_parity_sweep() {
     let qualities = parse_qualities();
     let configs = parse_configs();
     let jobs = parse_jobs();
+    let bitrate = parse_bitrate();
+    let br = bitrate_tag(&bitrate);
 
     let root = std::env::current_dir().unwrap().join(CORPUS_DIR);
     if !root.exists() {
@@ -426,7 +528,8 @@ fn corpus_parity_sweep() {
     // Clear stale failures for exactly the combos this run covers.
     for cfg in &configs {
         for &q in &qualities {
-            let _ = std::fs::remove_dir_all(failures_root().join(format!("{}-q{q}", cfg.tag())));
+            let _ =
+                std::fs::remove_dir_all(failures_root().join(format!("{}-q{q}{br}", cfg.tag())));
         }
     }
 
@@ -461,8 +564,8 @@ fn corpus_parity_sweep() {
                     let per_q: UnitResult = qualities
                         .iter()
                         .map(|&q| {
-                            check_one(cfg, &samples, &raw, q).map_err(|d| {
-                                save_failure(cfg, q, rel, &d);
+                            check_one(cfg, &samples, &raw, q, &bitrate).map_err(|d| {
+                                save_failure(cfg, q, &bitrate, rel, &d);
                                 d.why
                             })
                         })
@@ -514,8 +617,12 @@ fn corpus_parity_sweep() {
         for (qi, q) in qualities.iter().enumerate() {
             let c = &combos[ci * qualities.len() + qi];
             eprintln!(
-                "\n=== corpus sweep ({}, base_quality {q}) ===",
-                cfg.describe()
+                "\n=== corpus sweep ({}, base_quality {q}{}) ===",
+                cfg.describe(),
+                bitrate
+                    .as_ref()
+                    .map(|b| format!(", oracle flags {}", b.flags.join(" ")))
+                    .unwrap_or_default()
             );
             eprintln!("Overall: {}/{} byte-identical", c.passed, c.total);
             eprintln!("By category:");
