@@ -281,10 +281,9 @@ fn setup_tone_curves(
             for k in 0..EHMER_MAX {
                 // apply centered curve boost/decay, then normalize
                 w[k] = (mask[k] + adj[k]) + att;
-                // overlay ATH: max_curve(athc[j], workc[i][j])
-                if a[k] < w[k] {
-                    a[k] = w[k];
-                }
+                // overlay ATH: max_curve(athc[j], workc[i][j]), i.e.
+                // `if (a < w) a = w`, as a select so it vectorizes.
+                a[k] = if a[k] < w[k] { w[k] } else { a[k] };
             }
         }
 
@@ -295,13 +294,9 @@ fn setup_tone_curves(
             let w = &mut workc[i][j];
             for k in 0..EHMER_MAX {
                 // min_curve(athc[j], athc[j-1])
-                if a[k] > prev[k] {
-                    a[k] = prev[k];
-                }
+                a[k] = if a[k] > prev[k] { prev[k] } else { a[k] };
                 // min_curve(workc[i][j], athc[j])
-                if w[k] > a[k] {
-                    w[k] = a[k];
-                }
+                w[k] = if w[k] > a[k] { a[k] } else { w[k] };
             }
         }
     }
@@ -333,27 +328,25 @@ fn setup_tone_curves(
     }
 
     for i in 0..P_BANDS {
-        let pull = &geom.pull[i];
+        let slot = &geom.slot[i];
 
         // libvorbis spreads every curve into a per-bin `brute` buffer and
-        // then reads it back only at the `pull` bins. `geom.ops` lists, in
+        // then reads it back only at the pulled bins. `geom.ops` lists, in
         // the walk's order, just the min updates that land on those bins,
-        // so each `cell[j]` (= `brute[pull[j]]`, all levels at once) sees
+        // so each `cell[s]` (= `brute[bin]`, all levels at once) sees
         // exactly libvorbis's sequence of `if (brute > w) brute = w`.
         let mut cell = [[999.0_f32; P_LEVELS]; EHMER_MAX];
-        for &(src, j, c) in &geom.ops[geom.op_start[i]..geom.op_start[i + 1]] {
-            min_levels(&mut cell[c as usize], &workt[src as usize][j as usize]);
+        for &(src, j, s) in &geom.ops[geom.op_start[i]..geom.op_start[i + 1]] {
+            min_levels(&mut cell[s as usize], &workt[src as usize][j as usize]);
         }
 
         for m in 0..P_LEVELS {
             // pull values back into curve
             for j in 0..EHMER_MAX {
-                let bin = pull[j];
-                if bin < 0 || bin >= n as i64 {
-                    ret[i][m][j + 2] = -999.0;
-                } else {
-                    ret[i][m][j + 2] = cell[j][m];
-                }
+                ret[i][m][j + 2] = match slot[j] {
+                    NO_SLOT => -999.0,
+                    s => cell[s as usize][m],
+                };
             }
             // fenceposts
             let mut j = 0;
@@ -435,15 +428,20 @@ fn min_levels(b: &mut [f32; P_LEVELS], w: &[f32; P_LEVELS]) {
 /// The bin geometry of `setup_tone_curves`' spreading walk. It depends only
 /// on `binHz` (`rate*.5/n`) and `n`, not on the tone attenuations.
 struct ToneGeom {
-    /// `fromOC(j*.125+i*.5-2.)/binHz`: the bin curve point j of band i is
-    /// read back from, the same for every level.
-    pull: [[i64; EHMER_MAX]; P_BANDS],
+    /// Curve point j of band i is read back from bin
+    /// `fromOC(j*.125+i*.5-2.)/binHz`, the same for every level. Each
+    /// distinct such bin inside [0, n) has a slot; `slot[i][j]` is that
+    /// bin's slot, or [`NO_SLOT`] for a bin outside [0, n) (read as -999).
+    slot: [[u8; EHMER_MAX]; P_BANDS],
     /// The spreading walk's min updates that land on a pulled bin, in walk
-    /// order: `(src, j, c)` is `brute[pull[i][c]] min= workc[src][.][j]`.
+    /// order: `(src, j, s)` is `brute[bin of slot s] min= workc[src][.][j]`.
     /// Band i's are `ops[op_start[i]..op_start[i + 1]]`.
     ops: Vec<(u8, u8, u8)>,
     op_start: [usize; P_BANDS + 1],
 }
+
+/// [`ToneGeom::slot`] of a curve point pulled from outside [0, n).
+const NO_SLOT: u8 = u8::MAX;
 
 impl ToneGeom {
     fn new(bin_hz: f32, n: usize) -> Self {
@@ -497,16 +495,28 @@ impl ToneGeom {
         // point. Only the updates of pulled bins are kept.
         let mut ops = Vec::new();
         let mut op_start = [0usize; P_BANDS + 1];
+        let mut slot = [[NO_SLOT; EHMER_MAX]; P_BANDS];
         for i in 0..P_BANDS {
             op_start[i] = ops.len();
-            // The pulled points inside [0, n), sorted by bin.
-            let mut order: Vec<usize> = (0..EHMER_MAX)
-                .filter(|&c| (0..n as i64).contains(&pull[i][c]))
+            // The distinct pulled bins inside [0, n), sorted. Points pulled
+            // from the same bin read the same brute cell, so they share a
+            // slot (low bands pull many points from the same few bins).
+            let mut bins: Vec<usize> = pull[i]
+                .iter()
+                .filter(|&&b| (0..n as i64).contains(&b))
+                .map(|&b| b as usize)
                 .collect();
-            order.sort_by_key(|&c| pull[i][c]);
-            let bins: Vec<usize> = order.iter().map(|&c| pull[i][c] as usize).collect();
+            bins.sort_unstable();
+            bins.dedup();
+            for (c, s) in slot[i].iter_mut().enumerate() {
+                *s = match usize::try_from(pull[i][c]) {
+                    Ok(b) => bins.binary_search(&b).map_or(NO_SLOT, |s| s as u8),
+                    Err(_) => NO_SLOT,
+                };
+            }
+            // The slots of the bins in [lo, hi).
             let covered = |lo: usize, hi: usize| {
-                &order[bins.partition_point(|&b| b < lo)..bins.partition_point(|&b| b < hi)]
+                bins.partition_point(|&b| b < lo)..bins.partition_point(|&b| b < hi)
             };
             let mut walk = |row: &[(usize, usize); EHMER_MAX], src: usize| {
                 let mut l: usize = 0;
@@ -518,11 +528,11 @@ impl ToneGeom {
                     if l < hi_bin.min(n) {
                         l = hi_bin.min(n);
                     }
-                    for &c in covered(first, l) {
+                    for c in covered(first, l) {
                         ops.push((src as u8, j as u8, c as u8));
                     }
                 }
-                for &c in covered(l.min(n), n) {
+                for c in covered(l.min(n), n) {
                     ops.push((src as u8, (EHMER_MAX - 1) as u8, c as u8));
                 }
             };
@@ -536,7 +546,7 @@ impl ToneGeom {
         }
         op_start[P_BANDS] = ops.len();
         ToneGeom {
-            pull,
+            slot,
             ops,
             op_start,
         }
