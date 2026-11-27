@@ -426,6 +426,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxivorbis-ffi"
+version = "0.1.0"
+dependencies = [
+ "oxivorbis",
+]
+
+[[package]]
 name = "parity-diff"
 version = "0.1.0"
 

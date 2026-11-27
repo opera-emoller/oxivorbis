@@ -1,0 +1,47 @@
+[package]
+name = "oxivorbis-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "C API for oxivorbis, a pure-Rust Ogg Vorbis encoder byte-identical to libvorbis 1.3.7."
+repository = "https://github.com/opera-emoller/oxivorbis"
+categories = ["multimedia::audio", "encoding", "api-bindings"]
+keywords = ["vorbis", "ogg", "ffi", "audio", "encoder"]
+readme = "README.md"
+# Ships as a C library (include/oxivorbis.h + liboxivorbis), not as a crate.
+publish = false
+
+[lib]
+# Named `oxivorbis` so the artifacts are liboxivorbis.{so,dylib,a} and, on
+# Windows, oxivorbis.dll (+ oxivorbis.dll.lib import library and
+# oxivorbis.lib static library with MSVC).
+#
+# No "rlib": it would be target/*/liboxivorbis.rlib, the same file name as
+# the main crate's rlib, and cargo warns about that collision (slated to
+# become a hard error, rust-lang/cargo#6313). Nothing needs it: the tests
+# drive the C ABI through the built cdylib, as real callers do.
+name = "oxivorbis"
+crate-type = ["cdylib", "staticlib"]
+# rustdoc would also write target/doc/oxivorbis; the API docs are the header.
+doc = false
+
+[features]
+# Multi-core encoding (the library's `parallel` feature). Output bytes are
+# the same either way.
+parallel = ["vorbis/parallel"]
+
+[dependencies]
+# Renamed: this crate's own library target is also called `oxivorbis`.
+vorbis = { package = "oxivorbis", path = "..", version = "0.1" }
+
+[lints.rust]
+# Raw pointers need `unsafe`; the library itself forbids it. Every unsafe
+# operation sits in its own `unsafe {}` block with a SAFETY comment.
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"

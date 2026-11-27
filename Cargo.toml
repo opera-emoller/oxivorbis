@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tools/gen-tables", "tools/gen-header-vectors", "tools/parity-diff", "tools/debug-rust-dump", "tools/debug-diff", "tools/oxivorbis-cli", "tools/parity-fuzz"]
+members = [".", "tools/gen-tables", "tools/gen-header-vectors", "tools/parity-diff", "tools/debug-rust-dump", "tools/debug-diff", "tools/oxivorbis-cli", "tools/parity-fuzz", "ffi"]
 
 [package]
 name = "oxivorbis"
