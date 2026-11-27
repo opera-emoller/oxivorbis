@@ -310,6 +310,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y valgrind
       - name: Header is up to date (just ffi-header-check)
+        # Platform-independent; the Windows checkout has CRLF line endings,
+        # so this runs on Linux and macOS only.
+        if: runner.os != 'Windows'
         run: |
           cbindgen --config ffi/cbindgen.toml --crate oxivorbis-ffi --output "$RUNNER_TEMP/oxivorbis.h" ffi
           diff -u ffi/include/oxivorbis.h "$RUNNER_TEMP/oxivorbis.h" \
