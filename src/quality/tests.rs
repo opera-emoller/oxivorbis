@@ -24,7 +24,7 @@ fn oracle_text(c: &QualityConfig) -> String {
     writeln!(s, "lowpass_khz {:016x}", c.lowpass_khz.to_bits()).unwrap();
     writeln!(s, "blocksizes {} {}", c.blocksizes[0], c.blocksizes[1]).unwrap();
     writeln!(s, "bitrate 0 {} 0", c.bitrate_nominal).unwrap();
-    writeln!(s, "psys 4").unwrap();
+    writeln!(s, "psys {}", c.psys).unwrap();
     let g = &c.psy_global;
     writeln!(s, "g.eighth_octave_lines {}", g.eighth_octave_lines).unwrap();
     fa(&mut s, "g.preecho_thresh", &g.preecho_thresh);
@@ -50,6 +50,10 @@ fn oracle_text(c: &QualityConfig) -> String {
     ia(&mut s, "g.sliding_lowpass0", &g.sliding_lowpass[0]);
     ia(&mut s, "g.sliding_lowpass1", &g.sliding_lowpass[1]);
     for (b, p) in c.psy.iter().enumerate() {
+        if b >= c.psys {
+            writeln!(s, "p{b} missing").unwrap();
+            continue;
+        }
         let f = |s: &mut String, n: &str, v: f32| {
             writeln!(s, "p{b}.{n} {:08x}", v.to_bits()).unwrap();
         };
@@ -86,6 +90,20 @@ fn oracle_text(c: &QualityConfig) -> String {
 
 const COMBOS: [(u32, usize); 4] = [(44100, 1), (44100, 2), (48000, 1), (48000, 2)];
 
+/// Rates for the oracle grid: a representative rate per template family,
+/// every range edge with its neighbours, and odd rates.
+#[cfg(feature = "oracle")]
+const GRID_RATES: &[u32] = &[
+    1, 2, 100, 1000, 4000, 7999, 8000, 8001, 8999, 9000, 9001, 11025, 12000, 14999, 15000, 15001,
+    16000, 18999, 19000, 19001, 22050, 24000, 25999, 26000, 26001, 32000, 37800, 39999, 40000,
+    40001, 44056, 44100, 48000, 49999, 50000, 50001, 64000, 88200, 96000, 176400, 192000, 199999,
+    200000, 200001, 1_000_000,
+];
+
+fn base_setting_for(q: f32) -> Option<f64> {
+    select_template(q, 44100, 2).map(|(_, s)| s)
+}
+
 #[test]
 fn q5_template_and_id_header_values() {
     for (rate, ch) in COMBOS {
@@ -93,6 +111,10 @@ fn q5_template_and_id_header_values() {
         assert_eq!(c.is, 6);
         assert_eq!(c.blocksizes, [256, 2048]);
         assert_eq!(c.bitrate_nominal, if ch == 2 { 160_000 } else { 96_000 });
+        assert_eq!(
+            t::SETUP_LIST[c.template].name,
+            ["44_UNCOUPLED", "44_STEREO"][ch - 1]
+        );
     }
 }
 
@@ -108,6 +130,141 @@ fn base_setting_domain() {
     let qm1 = quality_config(-0.1, 44100, 2);
     assert_eq!(qm1.is, 0);
     assert_eq!(qm1.blocksizes, [512, 4096]);
+}
+
+/// The public API promises every rate in `MIN_RATE..=MAX_RATE` at every
+/// quality in `MIN_BASE_QUALITY..=1.0`, mono and stereo: every template's
+/// quality mapping spans exactly that range, and the rate ranges of the
+/// stereo and the uncoupled templates each cover 0..=MAX_RATE with no gap.
+#[test]
+fn templates_cover_every_rate_and_quality() {
+    for tpl in t::SETUP_LIST {
+        assert_eq!(
+            tpl.quality_mapping[0] as f32, MIN_BASE_QUALITY,
+            "{}",
+            tpl.name
+        );
+        assert_eq!(tpl.quality_mapping[tpl.mappings], 1.0, "{}", tpl.name);
+    }
+    for ch in [1usize, 2] {
+        let mut ranges: Vec<(i64, i64)> = t::SETUP_LIST
+            .iter()
+            .filter(|t| t.coupling_restriction == -1 || t.coupling_restriction as usize == ch)
+            .map(|t| (t.samplerate_min_restriction, t.samplerate_max_restriction))
+            .collect();
+        ranges.sort();
+        assert_eq!(ranges[0].0, 0);
+        for w in ranges.windows(2) {
+            assert!(
+                w[1].0 <= w[0].1 + 1,
+                "gap between {:?} and {:?}",
+                w[0],
+                w[1]
+            );
+        }
+        assert_eq!(ranges.iter().map(|r| r.1).max(), Some(MAX_RATE as i64));
+    }
+    for rate in [MIN_RATE, 8000, 22050, 44100, MAX_RATE] {
+        for ch in [1, 2] {
+            for q in [MIN_BASE_QUALITY, 0.0, 0.5, 1.0] {
+                assert!(select_template(q, rate, ch).is_some(), "{rate} {ch} {q}");
+            }
+        }
+    }
+    assert!(select_template(0.5, MAX_RATE + 1, 2).is_none());
+}
+
+/// The only requests where libvorbis indexes past its mode tables: base
+/// quality `0x3f7ffffd` on the templates with a wide top interval (every
+/// family below 26 kHz). Scans every f32 from 0.99 to 1.0 per family.
+#[test]
+fn libvorbis_oob_inputs_are_exactly_known() {
+    let lo = 0.99_f32.to_bits();
+    let hi = 1.0_f32.to_bits();
+    for (rate, affected) in [
+        (4000, true),
+        (8000, true),
+        (11025, true),
+        (16000, true),
+        (22050, true),
+        (32000, false),
+        (44100, false),
+        (48000, false),
+        (96000, false),
+    ] {
+        for ch in [1, 2] {
+            let oob: Vec<u32> = (lo..=hi)
+                .filter(|&b| is_libvorbis_oob(f32::from_bits(b), rate, ch))
+                .collect();
+            let want: &[u32] = if affected { &[0x3f7f_fffd] } else { &[] };
+            assert_eq!(oob, want, "{rate} Hz {ch} ch");
+            if affected {
+                // Encoded as libvorbis's own top clamp (q10).
+                let a = quality_config(f32::from_bits(0x3f7f_fffd), rate, ch);
+                let b = quality_config(1.0, rate, ch);
+                assert_eq!(a.base_setting, b.base_setting);
+            }
+        }
+    }
+}
+
+/// Template selection by rate, as `get_setup_template` scans
+/// `setup_list` (first match wins at shared range edges).
+#[test]
+fn template_selection_edges() {
+    let name = |rate: u32, ch: usize| t::SETUP_LIST[select_template(0.5, rate, ch).unwrap().0].name;
+    let cases: &[(u32, &str)] = &[
+        (1, "XX"),
+        (7999, "XX"),
+        (8000, "8"),
+        (8999, "8"),
+        (9000, "11"),
+        (14999, "11"),
+        (15000, "16"),
+        (18999, "16"),
+        (19000, "22"),
+        (25999, "22"),
+        (26000, "32"),
+        (39999, "32"),
+        (40000, "44"),
+        (50000, "44"),
+        (50001, "X"),
+        (200000, "X"),
+    ];
+    for &(rate, fam) in cases {
+        assert_eq!(name(rate, 2), format!("{fam}_STEREO"), "{rate}");
+        assert_eq!(name(rate, 1), format!("{fam}_UNCOUPLED"), "{rate}");
+    }
+}
+
+/// `tables::quality::SETUP_LIST` and `setup_templates::SETUP_LIST` come
+/// from two generators; they must describe the same templates in the same
+/// order, since an index into one is used with the other.
+#[test]
+fn template_lists_agree() {
+    let q = &t::SETUP_LIST;
+    let s = &crate::setup_templates::SETUP_LIST;
+    assert_eq!(q.len(), s.len());
+    for (a, b) in q.iter().zip(s.iter()) {
+        assert_eq!(a.mappings, b.mappings as usize, "{}", a.name);
+        assert_eq!(a.quality_mapping, b.quality_mapping, "{}", a.name);
+        assert_eq!(a.coupling_restriction, b.coupling_restriction, "{}", a.name);
+        assert_eq!(a.samplerate_min_restriction, b.samplerate_min_restriction);
+        assert_eq!(a.samplerate_max_restriction, b.samplerate_max_restriction);
+        assert_eq!(
+            &a.blocksize_short[..a.mappings],
+            b.blocksize_short,
+            "{}",
+            a.name
+        );
+        assert_eq!(
+            &a.blocksize_long[..a.mappings],
+            b.blocksize_long,
+            "{}",
+            a.name
+        );
+        assert_eq!(a.psy_lowpass, b.psy_lowpass, "{}", a.name);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,9 +295,11 @@ fn q_grid() -> Vec<f32> {
         qs.push((i as f64 * 0.01 - 0.1) as f32);
     }
     let mut centres: Vec<f32> = Vec::new();
-    for &m in &t::QUALITY_MAPPING_44 {
-        centres.push(m as f32);
-        centres.push((m - 0.0000001) as f32);
+    for tpl in t::SETUP_LIST {
+        for &m in tpl.quality_mapping {
+            centres.push(m as f32);
+            centres.push((m - 0.0000001) as f32);
+        }
     }
     centres.extend([0.9999_f32, (0.9999_f64 - 0.0000001) as f32]);
     for c in centres {
@@ -177,10 +336,20 @@ fn quality_oracle_grid() {
         "{} missing; run ./tools/oracle-encoder/build_quality_dumpers.sh",
         bin.display()
     );
-    let qs = q_grid();
+    let all_qs = q_grid();
     let mut checked = 0usize;
+    let mut skipped_oob = 0usize;
     let mut failures = Vec::new();
-    for (rate, ch) in COMBOS {
+    let combos = GRID_RATES.iter().flat_map(|&r| [(r, 1usize), (r, 2)]);
+    for (rate, ch) in combos {
+        // libvorbis reads out of bounds for these (undefined output; at
+        // 1 Hz it can even crash dump_params); see `is_libvorbis_oob`.
+        let qs: Vec<f32> = all_qs
+            .iter()
+            .copied()
+            .filter(|&q| !is_libvorbis_oob(q, rate, ch))
+            .collect();
+        skipped_oob += all_qs.len() - qs.len();
         let out = Command::new(&bin)
             .arg(rate.to_string())
             .arg(ch.to_string())
@@ -188,14 +357,18 @@ fn quality_oracle_grid() {
             .stderr(Stdio::null())
             .output()
             .expect("spawn dump_params");
-        assert!(out.status.success());
+        assert!(
+            out.status.success(),
+            "dump_params {rate} {ch}: {:?}",
+            out.status
+        );
         let text = String::from_utf8(out.stdout).unwrap();
         let blocks: Vec<&str> = text.split("end\n").filter(|b| !b.is_empty()).collect();
         assert_eq!(blocks.len(), qs.len());
         for (q, block) in qs.iter().zip(blocks) {
             let (head, body) = block.split_once('\n').unwrap();
             assert_eq!(head, format!("q {:08x}", q.to_bits()));
-            let ours = match base_setting_for(*q) {
+            let ours = match select_template(*q, rate, ch) {
                 None => "error\n".to_string(),
                 Some(_) => oracle_text(&quality_config(*q, rate, ch)),
             };
@@ -222,5 +395,14 @@ fn quality_oracle_grid() {
         failures.len(),
         failures[..failures.len().min(10)].join("\n")
     );
-    eprintln!("quality_oracle_grid: {checked} configs bit-identical");
+    // Guard against a degenerate grid (CI also checks the count).
+    assert!(checked > 30_000, "only {checked} configs checked");
+    assert!(
+        skipped_oob > 0,
+        "the grid should reach the libvorbis OOB input"
+    );
+    eprintln!(
+        "quality_oracle_grid: {checked} configs bit-identical \
+         ({skipped_oob} skipped: libvorbis reads out of bounds)"
+    );
 }

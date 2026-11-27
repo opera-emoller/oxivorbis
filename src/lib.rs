@@ -1,8 +1,8 @@
 //! oxivorbis: a pure-Rust Ogg Vorbis encoder whose audio packets are
 //! bit-identical to libvorbis 1.3.7 (VBR mode, oggenc qualities -1..10).
 //!
-//! Input is interleaved `i16` or `f32` PCM at 44.1 or 48 kHz, mono or
-//! stereo. Encode a whole buffer at once with [`encode`] / [`encode_f32`],
+//! Input is interleaved `i16` or `f32` PCM at any rate from 1 Hz to
+//! 200 kHz, mono or stereo. Encode a whole buffer at once with [`encode`] / [`encode_f32`],
 //! or stream it through an [`Encoder`] in chunks of any size; both give the
 //! same bytes.
 //!
@@ -15,7 +15,7 @@
 //! let opts = Options::default()
 //!     .with_quality(Quality::new(6.5).unwrap())
 //!     .with_comment("TITLE", "Silence");
-//! let ogg = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+//! let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
@@ -24,7 +24,7 @@
 //! ```
 //! use oxivorbis::{Channels, Encoder, Options, SampleRate};
 //!
-//! let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
+//! let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Mono, &Options::default());
 //! let mut ogg = Vec::new();
 //! for _ in 0..10 {
 //!     let chunk: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
@@ -141,23 +141,92 @@ pub use writer::{OggWriter, S16LeWriter};
 
 use std::fmt;
 
-/// Input sample rate.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum SampleRate {
-    /// 44 100 Hz.
-    Hz44100,
-    /// 48 000 Hz.
-    Hz48000,
-}
+/// Input sample rate: any rate from 1 Hz to 200 kHz.
+///
+/// libvorbis 1.3.7 has an encoder template for every rate in
+/// `1..=200_000` Hz, mono and stereo, at every quality from -1 to 10, so
+/// every [`SampleRate`] encodes with every [`Quality`] and [`Channels`].
+/// The rate selects the template exactly as libvorbis does:
+///
+/// | Rate (Hz)         | Template | Blocks (short/long)         |
+/// |-------------------|----------|-----------------------------|
+/// | 1 – 7999          | `XX`     | 512/512                     |
+/// | 8000 – 8999       | `8`      | 512/512                     |
+/// | 9000 – 14999      | `11`     | 512/512                     |
+/// | 15000 – 18999     | `16`     | 1024/1024 at q-1..q0, else 512/1024 |
+/// | 19000 – 25999     | `22`     | as `16`                     |
+/// | 26000 – 39999     | `32`     | 512/4096 at q-1, else 256/2048 |
+/// | 40000 – 50000     | `44`     | as `32`                     |
+/// | 50001 – 200000    | `X`      | as `32`                     |
+///
+/// ```
+/// use oxivorbis::SampleRate;
+///
+/// assert_eq!(SampleRate::HZ_44100.hz(), 44_100);
+/// assert_eq!(SampleRate::new(22_050), Some(SampleRate::HZ_22050));
+/// assert!(SampleRate::new(37_800).is_some());
+/// assert!(SampleRate::new(0).is_none());
+/// assert!(SampleRate::new(200_001).is_none());
+/// assert!(SampleRate::try_from(384_000u32).is_err());
+/// ```
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SampleRate(u32);
 
 impl SampleRate {
+    /// Lowest supported rate, 1 Hz.
+    pub const MIN: SampleRate = SampleRate(crate::quality::MIN_RATE);
+    /// Highest supported rate, 200 kHz (libvorbis has no template above).
+    pub const MAX: SampleRate = SampleRate(crate::quality::MAX_RATE);
+
+    /// 8 000 Hz.
+    pub const HZ_8000: SampleRate = SampleRate(8_000);
+    /// 11 025 Hz.
+    pub const HZ_11025: SampleRate = SampleRate(11_025);
+    /// 16 000 Hz.
+    pub const HZ_16000: SampleRate = SampleRate(16_000);
+    /// 22 050 Hz.
+    pub const HZ_22050: SampleRate = SampleRate(22_050);
+    /// 32 000 Hz.
+    pub const HZ_32000: SampleRate = SampleRate(32_000);
+    /// 44 100 Hz.
+    pub const HZ_44100: SampleRate = SampleRate(44_100);
+    /// 48 000 Hz.
+    pub const HZ_48000: SampleRate = SampleRate(48_000);
+    /// 88 200 Hz.
+    pub const HZ_88200: SampleRate = SampleRate(88_200);
+    /// 96 000 Hz.
+    pub const HZ_96000: SampleRate = SampleRate(96_000);
+    /// 192 000 Hz.
+    pub const HZ_192000: SampleRate = SampleRate(192_000);
+
+    /// Transitional alias of [`SampleRate::HZ_44100`] for code written
+    /// against the old enum; will be removed.
+    #[doc(hidden)]
+    #[allow(non_upper_case_globals)]
+    pub const Hz44100: SampleRate = SampleRate(44_100);
+    /// Transitional alias of [`SampleRate::HZ_48000`]; will be removed.
+    #[doc(hidden)]
+    #[allow(non_upper_case_globals)]
+    pub const Hz48000: SampleRate = SampleRate(48_000);
+
+    /// `hz` if it is in `1..=200_000`, else `None`.
+    pub const fn new(hz: u32) -> Option<SampleRate> {
+        if hz >= crate::quality::MIN_RATE && hz <= crate::quality::MAX_RATE {
+            Some(SampleRate(hz))
+        } else {
+            None
+        }
+    }
+
     /// The rate in Hz.
     pub const fn hz(self) -> u32 {
-        match self {
-            SampleRate::Hz44100 => 44_100,
-            SampleRate::Hz48000 => 48_000,
-        }
+        self.0
+    }
+}
+
+impl fmt::Display for SampleRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} Hz", self.0)
     }
 }
 
@@ -178,16 +247,18 @@ impl std::error::Error for Unsupported {}
 
 impl TryFrom<u32> for SampleRate {
     type Error = Unsupported;
-    /// `44100` or `48000`.
+    /// Any rate in `1..=200_000` Hz (see [`SampleRate::new`]).
     fn try_from(hz: u32) -> Result<Self, Unsupported> {
-        match hz {
-            44_100 => Ok(SampleRate::Hz44100),
-            48_000 => Ok(SampleRate::Hz48000),
-            _ => Err(Unsupported {
-                what: "sample rate",
-                value: hz,
-            }),
-        }
+        SampleRate::new(hz).ok_or(Unsupported {
+            what: "sample rate",
+            value: hz,
+        })
+    }
+}
+
+impl From<SampleRate> for u32 {
+    fn from(rate: SampleRate) -> u32 {
+        rate.hz()
     }
 }
 
@@ -426,14 +497,14 @@ fn comment_bytes(key: &str, value: &str) -> Option<Vec<u8>> {
 /// ```
 /// use oxivorbis::{Channels, Encoder, Options, SampleRate};
 ///
-/// let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+/// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
 /// let mut ogg = Vec::new();
 /// for chunk in vec![0i16; 44100 * 2].chunks(4097) {
 ///     ogg.extend_from_slice(enc.write(chunk));
 /// }
 /// ogg.extend_from_slice(&enc.finish());
 /// let pcm = vec![0i16; 44100 * 2];
-/// let one_shot = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+/// let one_shot = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
 /// assert_eq!(ogg, one_shot);
 /// ```
 pub struct Encoder {

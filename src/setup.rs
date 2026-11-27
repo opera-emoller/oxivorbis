@@ -373,8 +373,13 @@ static CACHE: Mutex<Vec<(CacheKey, Arc<EncoderSetup>)>> = Mutex::new(Vec::new())
 
 fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> EncoderSetup {
     let cfg = quality_config(base_quality, rate, channels);
-    let generated =
-        crate::setup_gen::build_setup(rate, channels, cfg.base_setting, cfg.lowpass_khz);
+    let generated = crate::setup_gen::build_setup(
+        cfg.template,
+        rate,
+        channels,
+        cfg.base_setting,
+        cfg.lowpass_khz,
+    );
     debug_assert_eq!(
         [
             generated.blocksizes[0] as usize,
@@ -389,25 +394,25 @@ fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> Encoder
         short: cfg.blocksizes[0],
         long: cfg.blocksizes[1],
     };
-    let [vi_impulse, vi_padding, vi_transition, vi_long] = cfg.psy.clone();
+    // psy_look[blocktype]: impulse and padding at bs0/2, transition and long
+    // at bs1/2. With equal block sizes libvorbis sets up only psys 0 and 1
+    // and never uses block types 2 and 3; `cfg.psy[2..4]` are then copies
+    // of padding, which the reuse turns into shared tone curves.
     let rate = rate as i64;
-    let impulse = vp_psy_init_reusing(vi_impulse, gi, bs.short_half(), rate, &[]);
-    let padding = vp_psy_init_reusing(
-        vi_padding,
-        gi,
-        bs.short_half(),
-        rate,
-        std::slice::from_ref(&impulse),
-    );
-    let transition = vp_psy_init_reusing(vi_transition, gi, bs.long_half(), rate, &[]);
-    let long = vp_psy_init_reusing(
-        vi_long,
-        gi,
-        bs.long_half(),
-        rate,
-        std::slice::from_ref(&transition),
-    );
-    let psy_looks = [impulse, padding, transition, long];
+    let mut looks: Vec<VorbisLookPsy> = Vec::with_capacity(4);
+    for (b, vi) in cfg.psy.iter().enumerate() {
+        let n = if b < 2 {
+            bs.short_half()
+        } else {
+            bs.long_half()
+        };
+        let look = vp_psy_init_reusing(vi.clone(), gi, n, rate, &looks);
+        looks.push(look);
+    }
+    let psy_looks: [VorbisLookPsy; 4] = match looks.try_into() {
+        Ok(a) => a,
+        Err(_) => unreachable!("four psy looks"),
+    };
     EncoderSetup {
         cfg,
         packet: generated.packet,

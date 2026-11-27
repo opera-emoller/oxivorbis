@@ -39,10 +39,7 @@ pub fn write_id_header_with(
     w: &mut BitWriter,
 ) {
     debug_assert!(blocksizes.iter().all(|b| b.is_power_of_two()));
-    let audio_sample_rate: u32 = match rate {
-        SampleRate::Hz44100 => 44_100,
-        SampleRate::Hz48000 => 48_000,
-    };
+    let audio_sample_rate: u32 = rate.hz();
     let audio_channels: u32 = match channels {
         Channels::Mono => 1,
         Channels::Stereo => 2,

@@ -280,10 +280,7 @@ impl EncoderCore {
             Channels::Mono => 1usize,
             Channels::Stereo => 2usize,
         };
-        let rate_hz: i64 = match rate {
-            SampleRate::Hz44100 => 44100,
-            SampleRate::Hz48000 => 48000,
-        };
+        let rate_hz = rate.hz() as i64;
         // Guaranteed by `Quality`.
         debug_assert!(
             (crate::quality::MIN_BASE_QUALITY..=1.0).contains(&base_quality),
@@ -292,12 +289,15 @@ impl EncoderCore {
 
         let setup = encoder_setup_for(rate_hz as u32, ch, base_quality);
         let cfg = &setup.cfg;
-        // 256/2048 for q0..q10, 512/4096 for q-1.
+        // Per template and quality, e.g. 256/2048 (44.1 kHz q0..q10),
+        // 512/4096 (q-1), 512/1024 (16/22 kHz) or 512/512 (8/11 kHz).
         let bs = BlockSizes {
             short: cfg.blocksizes[0],
             long: cfg.blocksizes[1],
         };
-        // libvorbis VBR setups have mode 0 = short and mode 1 = long.
+        // libvorbis VBR setups have mode 0 = short and mode 1 = long, or a
+        // single short mode when both block sizes are equal (every block
+        // is then W = 0).
         let short_mode = setup
             .setup
             .modes
@@ -309,7 +309,12 @@ impl EncoderCore {
             .modes
             .iter()
             .position(|m| m.blockflag)
-            .expect("setup must contain a long-block mode");
+            .unwrap_or(short_mode);
+        debug_assert_eq!(
+            bs.short == bs.long,
+            setup.setup.modes.len() == 1,
+            "one mode exactly when the block sizes are equal"
+        );
 
         let gi = &cfg.psy_global;
         let mut ogg = OggStreamWriter::new(serial);
@@ -682,7 +687,9 @@ impl EncoderCore {
             }
             false
         } else {
-            bp == 1
+            // With a single block size the search still runs (it marks
+            // impulses), but the next block is always short.
+            bp == 1 && self.bs.short != self.bs.long
         };
         let bsw = self.bs.get(self.w) as i64;
         let bsn = self.bs.get(nw) as i64;
@@ -1218,7 +1225,7 @@ mod tests {
         let pcm: Vec<i16> = (0..44100 * 2)
             .map(|i: i32| (i % 65536 - 32768) as i16)
             .collect();
-        let mut core = EncoderCore::new(SampleRate::Hz44100, Channels::Stereo, 0.5, 1, b"v", &[]);
+        let mut core = EncoderCore::new(SampleRate::HZ_44100, Channels::Stereo, 0.5, 1, b"v", &[]);
         core.feed(&pcm, i16_to_f32);
         let log = core.w_log.clone();
         core.finish();
@@ -1249,8 +1256,8 @@ mod tests {
             };
             let ch = if channels == Channels::Stereo { 2 } else { 1 };
             let pcm = signal(&mut rng, frames, ch);
-            let oneshot = one_shot(&pcm, SampleRate::Hz44100, channels, q);
-            let chunked = streaming(&pcm, SampleRate::Hz44100, channels, q, &mut rng);
+            let oneshot = one_shot(&pcm, SampleRate::HZ_44100, channels, q);
+            let chunked = streaming(&pcm, SampleRate::HZ_44100, channels, q, &mut rng);
             assert!(chunked == oneshot, "frames={frames} q={q} {channels:?}");
         }
     }
@@ -1259,7 +1266,8 @@ mod tests {
     #[test]
     fn buffer_is_bounded() {
         for q in [0.5f32, -0.1] {
-            let mut core = EncoderCore::new(SampleRate::Hz44100, Channels::Stereo, q, 1, b"v", &[]);
+            let mut core =
+                EncoderCore::new(SampleRate::HZ_44100, Channels::Stereo, q, 1, b"v", &[]);
             let mut rng = Rng(3);
             let mut max = 0;
             for _ in 0..200 {

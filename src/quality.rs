@@ -1,6 +1,7 @@
 //! Quality-dependent encoder parameters, derived bit-exactly the way
-//! libvorbis 1.3.7 `vorbis_encode_init_vbr()` derives them for the 44.1/48 kHz
-//! mono/stereo templates (`ve_setup_44_stereo` / `ve_setup_44_uncoupled`).
+//! libvorbis 1.3.7 `vorbis_encode_init_vbr()` derives them from the mono
+//! and stereo mode templates (`ve_setup_{44,32,22,16,11,8,X,XX}_{stereo,
+//! uncoupled}`; the tables are generated into `tables/quality.rs`).
 //!
 //! Entry point: [`quality_config`]`(base_quality, rate, channels)`.
 //!
@@ -14,8 +15,8 @@
 //! | `bitrate_nominal` | `vi->bitrate_nominal` (ID header); upper/lower are 0     |
 //! | `lowpass_khz`     | `ci->hi.lowpass_kHz`                                     |
 //! | `psy_global`      | `ci->psy_g_param`                                        |
-//! | `psy`             | `ci->psy_param[0..4]`: 0 impulse, 1 padding (short),     |
-//! |                   | 2 transition, 3 long                                     |
+//! | `psys`, `psy`     | `ci->psys`, `ci->psy_param[0..psys]`: 0 impulse,         |
+//! |                   | 1 padding (short), 2 transition, 3 long                  |
 //!
 //! `base_setting` and `lowpass_khz` are what the setup-header generator
 //! consumes (floor/residue/mapping template selection and residue `end`).
@@ -43,17 +44,27 @@ use crate::psy::{
     NOISE_COMPAND_LEVELS, P_BANDS, P_NOISECURVES, PACKETBLOBS, VE_BANDS, VorbisInfoPsy,
     VorbisInfoPsyGlobal,
 };
-use crate::tables::quality as t;
+use crate::tables::quality::{self as t, QualityTemplate};
 
-/// Lowest `base_quality` libvorbis accepts for these templates (after its
-/// `+1e-7` nudge, the request must be `>= quality_mapping_44[0] = -0.1`).
+/// Lowest `base_quality` libvorbis accepts (after its `+1e-7` nudge, the
+/// request must be `>= quality_mapping[0] = -0.1`; every template starts
+/// its quality mapping there and ends it at 1.0, see the tests).
 pub(crate) const MIN_BASE_QUALITY: f32 = -0.1;
+
+/// Lowest and highest sample rate any 1-2 channel template accepts
+/// (`ve_setup_XX_*` starts at 0, but `vorbis_encode_setup_vbr` rejects
+/// `rate <= 0`; `ve_setup_X_*` ends at 200 kHz).
+pub(crate) const MIN_RATE: u32 = 1;
+pub(crate) const MAX_RATE: u32 = 200_000;
 
 /// Everything quality-dependent that the encoder needs outside the setup
 /// header itself. See the module docs for field provenance.
 #[derive(Clone, Debug)]
 pub(crate) struct QualityConfig {
-    /// `hi->base_setting`: template position in `0.0..11.0`.
+    /// Index of the selected template in [`t::SETUP_LIST`] (and
+    /// `setup_templates::SETUP_LIST`).
+    pub template: usize,
+    /// `hi->base_setting`: template position in `0.0..mappings`.
     pub base_setting: f64,
     /// `(int)base_setting` (diagnostic; the encoder only needs base_setting).
     #[allow(dead_code)]
@@ -68,7 +79,15 @@ pub(crate) struct QualityConfig {
     /// `hi->lowpass_kHz` (may be 999 for "no lowpass").
     pub lowpass_khz: f64,
     pub psy_global: VorbisInfoPsyGlobal,
-    /// Indexed by libvorbis block type: 0 impulse, 1 padding, 2 transition, 3 long.
+    /// `ci->psys`: 4, or 2 when the short and long blocks are the same
+    /// size (libvorbis then sets up only the impulse and padding psys).
+    /// Only the oracle comparison reads it; the encoder never uses block
+    /// types 2 and 3 then.
+    #[allow(dead_code)]
+    pub psys: usize,
+    /// Indexed by libvorbis block type: 0 impulse, 1 padding, 2 transition,
+    /// 3 long. With `psys == 2`, entries 2 and 3 are copies of entry 1
+    /// (only block types 0 and 1 occur).
     pub psy: [VorbisInfoPsy; 4],
 }
 
@@ -91,90 +110,153 @@ fn remap(s: f64, x: &[f64]) -> (usize, f64) {
     (is, ds)
 }
 
-/// `vorbis_encode_setup_vbr` quality nudge + `get_setup_template` lookup.
-/// Returns `base_setting`, or `None` if libvorbis would return `OV_EIMPL`.
-fn base_setting_for(base_quality: f32) -> Option<f64> {
+/// `vorbis_encode_setup_vbr` quality nudge + `get_setup_template` lookup:
+/// the index of the selected template in [`t::SETUP_LIST`] and
+/// `base_setting`, or `None` if libvorbis would return `OV_EIMPL` (no
+/// template for this rate, channel count and quality).
+///
+/// One input is not libvorbis's: see [`is_libvorbis_oob`]. There the
+/// request is treated as libvorbis's own top clamp (`.9999`, i.e. q10).
+pub(crate) fn select_template(
+    base_quality: f32,
+    rate: u32,
+    channels: usize,
+) -> Option<(usize, f64)> {
+    let (i, s) = get_setup_template(nudged_request(base_quality)?, rate, channels)?;
+    if s as usize >= t::SETUP_LIST[i].mappings {
+        return get_setup_template(0.9999_f64 as f32 as f64, rate, channels);
+    }
+    Some((i, s))
+}
+
+/// True when libvorbis 1.3.7 itself reads its mode tables out of bounds
+/// for this request, so its output is undefined (it depends on whatever
+/// the compiler placed after the tables).
+///
+/// `get_setup_template` computes `base_setting = j + del` in float. For
+/// the templates whose top mapping interval is wider than ~0.5 (8, 11,
+/// 16, 22 kHz and below 8 kHz) and the single request `0.99999994`
+/// (`base_quality` `0x3f7ffffd`, ~0.99999982 before the `+1e-7` nudge;
+/// oggenc `-q 9.999998`), that sum rounds up to `mappings`, one past the
+/// last setting, and every `table[is]` / `table[is+1]` lookup that
+/// follows overruns its array. AddressSanitizer confirms the read
+/// (`vorbis_encode_setup_setting`, `_psy_lowpass_8[3]`). The 44.1 kHz-style
+/// templates, with interval 0.1, are not affected.
+#[cfg(test)]
+pub(crate) fn is_libvorbis_oob(base_quality: f32, rate: u32, channels: usize) -> bool {
+    nudged_request(base_quality)
+        .and_then(|req| get_setup_template(req, rate, channels))
+        .is_some_and(|(i, s)| s as usize >= t::SETUP_LIST[i].mappings)
+}
+
+/// `vorbis_encode_setup_vbr`: `quality += .0000001` (f32), clamped to
+/// `.9999` from 1.0 up; `None` for NaN, which C would let fall through to
+/// `base_setting = mappings - .001`.
+fn nudged_request(base_quality: f32) -> Option<f64> {
     let mut quality = (base_quality as f64 + 0.0000001) as f32;
     if quality as f64 >= 1. {
         quality = 0.9999_f64 as f32;
     }
     let req = quality as f64;
-    let map = &t::QUALITY_MAPPING_44;
-    // C would let NaN fall through to base_setting = 10.999; reject it instead.
-    if req.is_nan() || req < map[0] || req > map[t::MAPPINGS] {
-        return None;
-    }
-    let mut j = 0;
-    while j < t::MAPPINGS {
-        if req >= map[j] && req < map[j + 1] {
-            break;
+    (!req.is_nan()).then_some(req)
+}
+
+/// `get_setup_template` (quality mode): the first template in
+/// `setup_list` whose channel restriction, rate range and quality range
+/// all match, and the `base_setting` within it.
+fn get_setup_template(req: f64, rate: u32, channels: usize) -> Option<(usize, f64)> {
+    let srate = rate as i64;
+    for (i, tpl) in t::SETUP_LIST.iter().enumerate() {
+        if tpl.coupling_restriction != -1 && tpl.coupling_restriction as usize != channels {
+            continue;
         }
-        j += 1;
+        if srate < tpl.samplerate_min_restriction || srate > tpl.samplerate_max_restriction {
+            continue;
+        }
+        let mappings = tpl.mappings;
+        let map = tpl.quality_mapping;
+        if req < map[0] || req > map[mappings] {
+            continue;
+        }
+        let mut j = 0;
+        while j < mappings {
+            if req >= map[j] && req < map[j + 1] {
+                break;
+            }
+            j += 1;
+        }
+        if j == mappings {
+            return Some((i, j as f64 - 0.001));
+        }
+        let low = map[j] as f32;
+        let high = map[j + 1] as f32;
+        let del = ((req - low as f64) / (high - low) as f64) as f32;
+        return Some((i, (j as f32 + del) as f64));
     }
-    if j == t::MAPPINGS {
-        return Some(j as f64 - 0.001);
-    }
-    let low = map[j] as f32;
-    let high = map[j + 1] as f32;
-    let del = ((req - low as f64) / (high - low) as f64) as f32;
-    Some((j as f32 + del) as f64)
+    None
 }
 
 /// Derive all quality-dependent parameters for `base_quality` (libvorbis
 /// scale: -0.1 = q-1 .. 1.0 = q10; fractional allowed), `rate` in
-/// 40000..=50000 Hz and 1 or 2 channels.
+/// `MIN_RATE..=MAX_RATE` Hz and 1 or 2 channels.
 ///
 /// Panics outside that domain (where libvorbis' `vorbis_encode_init_vbr`
-/// would fail or select a different template).
+/// would fail).
 pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> QualityConfig {
-    assert!(
-        (t::SAMPLERATE_MIN..=t::SAMPLERATE_MAX).contains(&rate),
-        "quality_config: rate {rate} outside the 44.1/48 kHz template range"
-    );
     assert!(
         channels == 1 || channels == 2,
         "quality_config: {channels} channels unsupported"
     );
-    let base_setting = base_setting_for(base_quality).unwrap_or_else(|| {
-        panic!("quality_config: base_quality {base_quality} outside -0.1..=1.0")
-    });
+    let (template, base_setting) =
+        select_template(base_quality, rate, channels).unwrap_or_else(|| {
+            panic!(
+                "quality_config: no libvorbis template for q={base_quality} {rate} Hz {channels} ch"
+            )
+        });
+    let tpl = t::SETUP_LIST[template];
     let s = base_setting;
     let is = s as usize;
     let ds = s - is as f64;
 
     // vorbis_encode_blocksize_setup
     let blocksizes = [
-        t::BLOCKSIZE_SHORT_44[is] as usize,
-        t::BLOCKSIZE_LONG_44[is] as usize,
+        tpl.blocksize_short[is] as usize,
+        tpl.blocksize_long[is] as usize,
     ];
+    let singleblock = blocksizes[0] == blocksizes[1];
 
     // vorbis_encode_setup_setting (hi->*)
-    let lowpass_khz = lerp(t::PSY_LOWPASS_44[is], t::PSY_LOWPASS_44[is + 1], ds);
+    let lowpass_khz = lerp(tpl.psy_lowpass[is], tpl.psy_lowpass[is + 1], ds);
     let mut ath_floating_db = lerp(
-        t::PSY_ATH_FLOATER[is] as f64,
-        t::PSY_ATH_FLOATER[is + 1] as f64,
+        tpl.psy_ath_float[is] as f64,
+        tpl.psy_ath_float[is + 1] as f64,
         ds,
     );
-    let ath_absolute_db = lerp(t::PSY_ATH_ABS[is] as f64, t::PSY_ATH_ABS[is + 1] as f64, ds);
+    let ath_absolute_db = lerp(
+        tpl.psy_ath_abs[is] as f64,
+        tpl.psy_ath_abs[is + 1] as f64,
+        ds,
+    );
     let amplitude_track_db_per_sec = -6.0_f64;
     // vorbis_encode_setup_init clamps
     ath_floating_db = ath_floating_db.clamp(-200., -80.);
 
-    let psy_global = global_psych(s, blocksizes, rate, amplitude_track_db_per_sec);
+    let psy_global = global_psych(tpl, s, blocksizes, rate, amplitude_track_db_per_sec);
 
-    let psy = std::array::from_fn(|block| {
-        block_psy(s, block, ath_floating_db as f32, ath_absolute_db as f32)
-    });
+    let block = |b: usize| block_psy(tpl, s, b, ath_floating_db as f32, ath_absolute_db as f32);
+    let (psys, psy) = if singleblock {
+        let p1 = block(1);
+        (2, [block(0), p1.clone(), p1.clone(), p1])
+    } else {
+        (4, std::array::from_fn(block))
+    };
 
     // setting_to_approx_bitrate
-    let r: &[f64; 12] = if channels == 2 {
-        &t::RATE_MAPPING_44_STEREO
-    } else {
-        &t::RATE_MAPPING_44_UN
-    };
+    let r = tpl.rate_mapping;
     let bitrate_nominal = (lerp(r[is], r[is + 1], ds) * channels as f64) as i64 as i32;
 
     QualityConfig {
+        template,
         base_setting,
         is,
         ds,
@@ -182,6 +264,7 @@ pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> Q
         bitrate_nominal,
         lowpass_khz,
         psy_global,
+        psys,
         psy,
     }
 }
@@ -189,13 +272,15 @@ pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> Q
 /// `vorbis_encode_global_psych_setup` + `vorbis_encode_global_stereo`
 /// (unmanaged / VBR branch).
 fn global_psych(
+    tpl: &QualityTemplate,
     s: f64,
     blocksizes: [usize; 2],
     rate: u32,
     amplitude_track: f64,
 ) -> VorbisInfoPsyGlobal {
-    let x = &t::GLOBAL_MAPPING_44;
-    let tmpl = &t::PSY_GLOBAL_44;
+    let x = tpl.global_mapping;
+    let tmpl = tpl.global_params;
+    // memcpy(g, in + (int)x[is], sizeof(*g))
     let base = &tmpl[x[s as usize] as usize];
 
     let mut g = VorbisInfoPsyGlobal {
@@ -204,7 +289,12 @@ fn global_psych(
         postecho_thresh: base.postecho_thresh,
         stretch_penalty: base.stretch_penalty,
         preecho_minenergy: base.preecho_minenergy,
-        ..Default::default()
+        ampmax_att_per_sec: base.ampmax_att_per_sec,
+        coupling_pkHz: base.coupling_pkhz,
+        coupling_pointlimit: base.coupling_pointlimit,
+        coupling_prepointamp: base.coupling_prepointamp,
+        coupling_postpointamp: base.coupling_postpointamp,
+        sliding_lowpass: base.sliding_lowpass,
     };
     let (is, ds) = remap(s, x);
     for i in 0..4 {
@@ -222,11 +312,20 @@ fn global_psych(
     g.ampmax_att_per_sec = amplitude_track as f32;
     debug_assert_eq!(g.preecho_thresh.len(), VE_BANDS);
 
+    let Some(p) = tpl.stereo_modes else {
+        // No stereo modes (32 kHz and catch-all uncoupled templates): the
+        // coupling fields keep the global template's values.
+        for i in 0..PACKETBLOBS {
+            g.sliding_lowpass[0][i] = blocksizes[0] as i32;
+            g.sliding_lowpass[1][i] = blocksizes[1] as i32;
+        }
+        return g;
+    };
+
     // global_stereo: `float s = hi->stereo_point_setting` (== base_setting).
     let s = s as f32;
     let is = s as usize;
     let ds = s as f64 - is as f64;
-    let p = &t::PSY_STEREO_MODES_44;
     g.coupling_prepointamp = p[is].pre;
     g.coupling_postpointamp = p[is].post;
 
@@ -251,12 +350,25 @@ fn global_psych(
     g
 }
 
+/// A table only blocks 2 and 3 use. Those are only set up for two-block
+/// templates, which have every table (dump_quality_tables.c checks).
+fn long_table<T>(tpl: &QualityTemplate, table: Option<T>) -> T {
+    table.unwrap_or_else(|| panic!("template {} lacks a long-block table", tpl.name))
+}
+
 /// psyset + tonemask + compand + peak + noisebias + ath setup for one block
 /// type. All four per-block settings equal `base_setting` in VBR mode.
-fn block_psy(s: f64, block: usize, ath_adjatt: f32, ath_maxatt: f32) -> VorbisInfoPsy {
+fn block_psy(
+    tpl: &QualityTemplate,
+    s: f64,
+    block: usize,
+    ath_adjatt: f32,
+    ath_maxatt: f32,
+) -> VorbisInfoPsy {
     let is = s as usize;
     let ds = s - is as f64;
     let long = block >= 2;
+    let nn = long as usize;
 
     // vorbis_encode_psyset_setup (memcpy _psy_info_template; noise_normalize_p=1)
     let mut p = VorbisInfoPsy {
@@ -265,36 +377,28 @@ fn block_psy(s: f64, block: usize, ath_adjatt: f32, ath_maxatt: f32) -> VorbisIn
         noisewindowlo: t::PSY_INFO_TEMPLATE_NOISEWINDOWLO,
         noisewindowhi: t::PSY_INFO_TEMPLATE_NOISEWINDOWHI,
         normal_p: 1,
-        normal_start: if long {
-            t::NOISE_START_LONG_44[is]
-        } else {
-            t::NOISE_START_SHORT_44[is]
-        },
-        normal_partition: if long {
-            t::NOISE_PART_LONG_44[is]
-        } else {
-            t::NOISE_PART_SHORT_44[is]
-        },
-        normal_thresh: t::NOISE_THRESH_44[is],
+        normal_start: tpl.psy_noise_normal_start[nn][is],
+        normal_partition: tpl.psy_noise_normal_partition[nn][is],
+        normal_thresh: tpl.psy_noise_normal_thresh[is],
         ..Default::default()
     };
 
     // vorbis_encode_tonemask_setup
-    let att = &t::PSY_TONE_MASTERATT_44;
+    let att = tpl.psy_tone_masteratt;
     for k in 0..P_NOISECURVES {
         p.tone_masteratt[k] = lerp(att[is].att[k] as f64, att[is + 1].att[k] as f64, ds) as f32;
     }
     p.tone_centerboost = lerp(att[is].boost as f64, att[is + 1].boost as f64, ds) as f32;
     p.tone_decay = lerp(att[is].decay as f64, att[is + 1].decay as f64, ds) as f32;
     p.max_curve_dB = lerp(
-        t::PSY_TONE_0DB[is] as f64,
-        t::PSY_TONE_0DB[is + 1] as f64,
+        tpl.psy_tone_0db[is] as f64,
+        tpl.psy_tone_0db[is + 1] as f64,
         ds,
     ) as f32;
-    let adj = if block == 3 {
-        &t::VP_TONEMASK_ADJ_LONGBLOCK
-    } else {
-        &t::VP_TONEMASK_ADJ_OTHERBLOCK
+    let adj = match block {
+        0 => tpl.psy_tone_adj_impulse,
+        3 => long_table(tpl, tpl.psy_tone_adj_long),
+        _ => tpl.psy_tone_adj_other,
     };
     for i in 0..P_BANDS {
         p.toneatt[i] = lerp(adj[is][i] as f64, adj[is + 1][i] as f64, ds) as f32;
@@ -304,39 +408,39 @@ fn block_psy(s: f64, block: usize, ath_adjatt: f32, ath_maxatt: f32) -> VorbisIn
     let (cis, cds) = remap(
         s,
         if long {
-            &t::PSY_COMPAND_LONG_MAPPING
+            long_table(tpl, tpl.psy_noise_compand_long_mapping)
         } else {
-            &t::PSY_COMPAND_SHORT_MAPPING
+            tpl.psy_noise_compand_short_mapping
         },
     );
-    let c = &t::PSY_COMPAND_44;
+    let c = tpl.psy_noise_compand;
     for i in 0..NOISE_COMPAND_LEVELS {
         p.noisecompand[i] = lerp(c[cis][i] as f64, c[cis + 1][i] as f64, cds) as f32;
     }
 
     // vorbis_encode_peak_setup
     p.tone_abs_limit = lerp(
-        t::PSY_TONE_SUPPRESS[is] as f64,
-        t::PSY_TONE_SUPPRESS[is + 1] as f64,
+        tpl.psy_tone_dbsuppress[is] as f64,
+        tpl.psy_tone_dbsuppress[is + 1] as f64,
         ds,
     ) as f32;
 
     // vorbis_encode_noisebias_setup (userbias = impulse_noisetune = 0 for
     // block 0, literal 0 otherwise)
     p.noisemaxsupp = lerp(
-        t::PSY_NOISE_SUPPRESS[is] as f64,
-        t::PSY_NOISE_SUPPRESS[is + 1] as f64,
+        tpl.psy_noise_dbsuppress[is] as f64,
+        tpl.psy_noise_dbsuppress[is + 1] as f64,
         ds,
     ) as f32;
-    let guard = t::PSY_NOISEGUARDS_44[block];
+    let guard = tpl.psy_noiseguards[block];
     p.noisewindowlomin = guard[0];
     p.noisewindowhimin = guard[1];
     p.noisewindowfixed = guard[2];
     let bias = match block {
-        0 => &t::PSY_NOISEBIAS_IMPULSE,
-        1 => &t::PSY_NOISEBIAS_PADDING,
-        2 => &t::PSY_NOISEBIAS_TRANS,
-        _ => &t::PSY_NOISEBIAS_LONG,
+        0 => tpl.psy_noise_bias_impulse,
+        1 => tpl.psy_noise_bias_padding,
+        2 => long_table(tpl, tpl.psy_noise_bias_trans),
+        _ => long_table(tpl, tpl.psy_noise_bias_long),
     };
     for j in 0..P_NOISECURVES {
         for i in 0..P_BANDS {

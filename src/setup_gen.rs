@@ -98,8 +98,14 @@ pub(crate) struct SetupTemplate {
     /// `tables::quality`), kept here for template completeness.
     #[allow(dead_code)]
     pub quality_mapping: &'static [f64],
+    /// Template selection happens in `quality::select_template` (from
+    /// `tables::quality::SETUP_LIST`, the same list in the same order);
+    /// these are kept to cross-check the two generated lists in tests.
+    #[allow(dead_code)]
     pub coupling_restriction: i32,
+    #[allow(dead_code)]
     pub samplerate_min_restriction: i64,
+    #[allow(dead_code)]
     pub samplerate_max_restriction: i64,
     pub blocksize_short: &'static [i32],
     pub blocksize_long: &'static [i32],
@@ -155,21 +161,6 @@ pub(crate) struct GeneratedSetup {
 // ---------------------------------------------------------------------------
 // Template selection / quality helpers
 // ---------------------------------------------------------------------------
-
-/// `get_setup_template`'s scan of `setup_list`, restricted to the 44.1/48
-/// kHz templates (stereo precedes 5.1 precedes uncoupled in the list, so
-/// for 1–2 channels the first match is stereo-for-2, uncoupled-for-1).
-fn select_template(channels: usize, rate: u32) -> &'static SetupTemplate {
-    for t in [&T::SETUP_44_STEREO, &T::SETUP_44_UNCOUPLED] {
-        if (t.coupling_restriction == -1 || t.coupling_restriction as usize == channels)
-            && (rate as i64) >= t.samplerate_min_restriction
-            && (rate as i64) <= t.samplerate_max_restriction
-        {
-            return t;
-        }
-    }
-    panic!("no setup template for {channels} ch @ {rate} Hz");
-}
 
 // ---------------------------------------------------------------------------
 // Internal setup model (mirrors codec_setup_info for the header subset)
@@ -372,9 +363,9 @@ fn vorbis_encode_residue_setup(
     s.residues[number] = Some(r);
 }
 
-fn plan(rate: u32, channels: usize, base_setting: f64, lowpass_khz: f64) -> Setup {
+fn plan(template: usize, rate: u32, channels: usize, base_setting: f64, lowpass_khz: f64) -> Setup {
     assert!((1..=2).contains(&channels), "1 or 2 channels supported");
-    let t = select_template(channels, rate);
+    let t = T::SETUP_LIST[template];
     let is = base_setting as usize;
     assert!(is < t.mappings as usize, "base_setting out of range");
 
@@ -568,16 +559,19 @@ fn pack(s: &Setup, channels: usize) -> Vec<u8> {
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Builds the Vorbis setup header libvorbis 1.3.7 emits for VBR mode at
-/// `rate` (40–50 kHz), `channels` (1 or 2), given `hi.base_setting` and
-/// `hi.lowpass_kHz`, plus the encode-only floor/residue parameters.
+/// Builds the Vorbis setup header libvorbis 1.3.7 emits for VBR mode with
+/// template `template` (the index `get_setup_template` picked, see
+/// `quality::select_template`) at `rate`, `channels` (1 or 2), given
+/// `hi.base_setting` and `hi.lowpass_kHz`, plus the encode-only
+/// floor/residue parameters.
 pub(crate) fn build_setup(
+    template: usize,
     rate: u32,
     channels: usize,
     base_setting: f64,
     lowpass_khz: f64,
 ) -> GeneratedSetup {
-    let s = plan(rate, channels, base_setting, lowpass_khz);
+    let s = plan(template, rate, channels, base_setting, lowpass_khz);
     let packet = pack(&s, channels);
     GeneratedSetup {
         packet,
@@ -604,7 +598,7 @@ pub(crate) mod test_support {
     /// The q=0.5 setup header for `rate` Hz, `channels` channels.
     pub(crate) fn q5_generated(rate: u32, channels: usize) -> GeneratedSetup {
         let c = crate::quality::quality_config(0.5, rate, channels);
-        build_setup(rate, channels, c.base_setting, c.lowpass_khz)
+        build_setup(c.template, rate, channels, c.base_setting, c.lowpass_khz)
     }
 
     /// The q=0.5, 44.1 kHz mono setup header packet (starts with
@@ -625,6 +619,17 @@ mod tests {
     use super::*;
 
     const COMBOS: [(u32, usize); 4] = [(44100, 1), (48000, 1), (44100, 2), (48000, 2)];
+
+    /// A rate per template family plus range edges and odd rates; every
+    /// one is swept mono and stereo.
+    const SWEEP_RATES: [u32; 26] = [
+        1, 1000, 7999, 8000, 8999, 9000, 11025, 14999, 15000, 16000, 18999, 19000, 22050, 25999,
+        26000, 32000, 37800, 39999, 40000, 44100, 48000, 50000, 50001, 96000, 192000, 200000,
+    ];
+
+    fn sweep_combos() -> impl Iterator<Item = (u32, usize)> {
+        SWEEP_RATES.iter().flat_map(|&r| [(r, 1), (r, 2)])
+    }
 
     /// Length and SHA-256 of the q=0.5 setup headers libvorbis 1.3.7 emits
     /// (formerly committed as src/setup_blob_{mono,stereo}{44,48}.bin).
@@ -730,7 +735,7 @@ mod tests {
 
     fn generate(rate: u32, ch: usize, q: f32) -> GeneratedSetup {
         let c = crate::quality::quality_config(q, rate, ch);
-        build_setup(rate, ch, c.base_setting, c.lowpass_khz)
+        build_setup(c.template, rate, ch, c.base_setting, c.lowpass_khz)
     }
 
     /// build_setup at q=0.5 must reproduce libvorbis's q5 setup headers
@@ -816,7 +821,7 @@ mod tests {
     /// accepts, with the right number of encode params.
     #[test]
     fn all_qualities_parse() {
-        for (rate, ch) in COMBOS {
+        for (rate, ch) in sweep_combos() {
             for i in -10..=100 {
                 let q = i as f32 / 100.0;
                 let g = generate(rate, ch, q);
@@ -901,6 +906,8 @@ mod tests {
                     // template-boundary neighbors
                     "-0.0999", "-0.0001", "0.0001", "0.0999", "0.1001", "0.2999", "0.3001",
                     "0.4999", "0.5001", "0.6999", "0.7001", "0.8999", "0.9001", "0.9999",
+                    // 16/22 kHz template boundary (0.05)
+                    "0.0499", "0.0501",
                 ]
                 .iter()
                 .map(|s| s.to_string()),
@@ -910,39 +917,68 @@ mod tests {
 
         #[test]
         fn oracle_setup_header_sweep() {
-            let mut bad = Vec::new();
-            let mut n = 0;
-            let mut distinct = std::collections::HashSet::new();
-            for q in qualities() {
-                let qf: f32 = q.parse().unwrap();
-                for (rate, ch) in COMBOS {
-                    let want = oracle_setup(rate, ch, &q);
-                    let got = generate(rate, ch, qf).packet;
-                    n += 1;
-                    distinct.insert(want.clone());
-                    if got != want {
-                        bad.push(format!(
-                            "q={q} {rate}/{ch}: got {} want {} bytes",
-                            got.len(),
-                            want.len()
-                        ));
-                    }
-                }
-            }
+            let qs = qualities();
+            let combos: Vec<(u32, usize)> = sweep_combos().collect();
+            // One thread per (rate, channels): ~2400 oracle runs.
+            let results: Vec<(Vec<String>, Vec<Vec<u8>>)> = std::thread::scope(|sc| {
+                let handles: Vec<_> = combos
+                    .iter()
+                    .map(|&(rate, ch)| {
+                        let qs = &qs;
+                        sc.spawn(move || {
+                            let mut bad = Vec::new();
+                            let mut wants = Vec::new();
+                            for q in qs {
+                                let qf: f32 = q.parse().unwrap();
+                                let want = oracle_setup(rate, ch, q);
+                                let got = generate(rate, ch, qf).packet;
+                                if got != want {
+                                    bad.push(format!(
+                                        "q={q} {rate}/{ch}: got {} want {} bytes",
+                                        got.len(),
+                                        want.len()
+                                    ));
+                                }
+                                wants.push(want);
+                            }
+                            (bad, wants)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let n = qs.len() * combos.len();
+            let bad: Vec<String> = results.iter().flat_map(|r| r.0.clone()).collect();
+            let distinct: std::collections::HashSet<&Vec<u8>> =
+                results.iter().flat_map(|r| &r.1).collect();
             assert!(
                 bad.is_empty(),
                 "{} of {n} mismatched:\n{}",
                 bad.len(),
                 bad.join("\n")
             );
+            eprintln!(
+                "oracle_setup_header_sweep: {n} headers identical, {} distinct",
+                distinct.len()
+            );
             // Guard against a degenerate sweep (e.g. an oracle that ignores
-            // the quality argument). Above q~0.6 the lowpass exceeds nyquist,
-            // so only ~78 of the 180 points are distinct headers.
+            // the quality argument). Once the lowpass exceeds nyquist the
+            // header stops changing with quality (above q~0.6 at 44.1 kHz,
+            // almost everywhere at the lowest rates), and rates of one
+            // family share headers, so many points repeat. 284 today.
             assert!(
-                distinct.len() > n / 4,
+                distinct.len() > 250,
                 "only {} distinct headers",
                 distinct.len()
             );
+            for (&(rate, ch), (_, wants)) in combos.iter().zip(&results) {
+                let d: std::collections::HashSet<&Vec<u8>> = wants.iter().collect();
+                assert!(
+                    d.len() >= 2,
+                    "{rate}/{ch}: only {} distinct headers",
+                    d.len()
+                );
+            }
         }
     }
 }
