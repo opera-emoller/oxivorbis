@@ -206,10 +206,12 @@ pub struct VorbisLookPsyGlobal {
 
 // ---------------------------------------------------------------------------
 // Tone curve buffer: mirrors the float*** returned by setup_tone_curves.
-// We flatten to Box<[[[f32; EHMER_MAX+2]; P_LEVELS]; P_BANDS]>.
+// We flatten to [[[f32; EHMER_MAX+2]; P_LEVELS]; P_BANDS], shared (`Arc`)
+// between the looks that use the same curves (short and long block types
+// usually do).
 // ---------------------------------------------------------------------------
 
-pub type ToneCurves = Box<[[[f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]>;
+pub type ToneCurves = std::sync::Arc<[[[f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]>;
 
 // ---------------------------------------------------------------------------
 // Look struct
@@ -250,7 +252,7 @@ fn setup_tone_curves(
     let athc0 = ath_curves();
 
     // build return buffer
-    let mut ret = Box::new([[[0.0_f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS]);
+    let mut ret = [[[0.0_f32; EHMER_MAX + 2]; P_LEVELS]; P_BANDS];
 
     // The centered curve boost/decay depends only on k.
     let mut adj = [0.0_f32; EHMER_MAX];
@@ -369,7 +371,7 @@ fn setup_tone_curves(
         }
     }
 
-    ret
+    std::sync::Arc::new(ret)
 }
 
 /// setup_tone_curves' ATH overlay before the curves are folded in:

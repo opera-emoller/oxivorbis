@@ -305,9 +305,11 @@ pub(crate) fn unpack_codebook(r: &mut BitReader) -> Result<Codebook, CodebookErr
 /// header: the packet copies them verbatim (`setup_gen::copy_packed_book`).
 pub(crate) fn static_book(id: u16) -> &'static Codebook {
     use crate::setup_templates as T;
-    static CACHE: OnceLock<Box<[OnceLock<Codebook>]>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| T::BOOKS.iter().map(|_| OnceLock::new()).collect());
-    cache[id as usize].get_or_init(|| {
+    // A static array rather than a boxed one: only the touched entries'
+    // pages are ever faulted in.
+    static CACHE: [OnceLock<Codebook>; T::BOOKS.len()] =
+        [const { OnceLock::new() }; T::BOOKS.len()];
+    CACHE[id as usize].get_or_init(|| {
         let (offset, bits) = T::BOOKS[id as usize];
         let bytes = &T::BOOKS_PACKED[offset as usize..][..bits.div_ceil(8) as usize];
         unpack_codebook(&mut BitReader::new(bytes)).expect("static codebook failed to unpack")
