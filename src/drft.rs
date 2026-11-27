@@ -53,19 +53,11 @@ fn dradf2(ido: usize, l1: usize, cc: &[f32], ch: &mut [f32], wa1: &[f32]) {
         let (q0, q1) = o.split_at_mut(ido);
         let ra = &mut q0[1..1 + 2 * m];
         let rb = &mut q1[ido - 1 - 2 * m..ido - 1];
-        let it = a0[1..1 + 2 * m]
-            .chunks_exact(2)
-            .zip(a1[1..1 + 2 * m].chunks_exact(2))
-            .zip(w1.chunks_exact(2))
-            .zip(ra.chunks_exact_mut(2))
-            .zip(rb.rchunks_exact_mut(2));
-        for ((((x0, x1), w), oa), ob) in it {
-            let tr2 = w[0] * x1[0] + w[1] * x1[1];
-            let ti2 = w[0] * x1[1] - w[1] * x1[0];
-            oa[im] = x0[1] + ti2;
-            ob[im] = ti2 - x0[1];
-            oa[0] = x0[0] + tr2;
-            ob[0] = x0[0] - tr2;
+        let (x0, x1) = (&a0[1..1 + 2 * m], &a1[1..1 + 2 * m]);
+        if ido >= 64 {
+            dradf2_row(x0, x1, w1, ra, rb);
+        } else {
+            dradf2_row_body(x0, x1, w1, ra, rb, im);
         }
         if ido % 2 == 1 {
             continue;
@@ -74,6 +66,34 @@ fn dradf2(ido: usize, l1: usize, cc: &[f32], ch: &mut [f32], wa1: &[f32]) {
         // L105: Nyquist terms (ido even, or ido==2 falls through here)
         o[ido] = -a1[ido - 1];
         o[ido - 1] = a0[ido - 1];
+    }
+}
+
+/// One k's dradf2 twiddle loop, out of line for `noalias` arguments; see
+/// [`dradf4_row`].
+#[inline(never)]
+fn dradf2_row(x0: &[f32], x1: &[f32], w1: &[f32], ra: &mut [f32], rb: &mut [f32]) {
+    dradf2_row_body(x0, x1, w1, ra, rb, 1);
+}
+
+/// The dradf2 twiddle loop: `x0`/`x1` are the two input halves' (re, im)
+/// pairs from i = 2 on, `ra` the ascending and `rb` the descending output
+/// pairs, `im` the imaginary-half index (always 1).
+#[inline(always)]
+fn dradf2_row_body(x0: &[f32], x1: &[f32], w1: &[f32], ra: &mut [f32], rb: &mut [f32], im: usize) {
+    let it = x0
+        .chunks_exact(2)
+        .zip(x1.chunks_exact(2))
+        .zip(w1.chunks_exact(2))
+        .zip(ra.chunks_exact_mut(2))
+        .zip(rb.rchunks_exact_mut(2));
+    for ((((x0, x1), w), oa), ob) in it {
+        let tr2 = w[0] * x1[0] + w[1] * x1[1];
+        let ti2 = w[0] * x1[1] - w[1] * x1[0];
+        oa[im] = x0[1] + ti2;
+        ob[im] = ti2 - x0[1];
+        oa[0] = x0[0] + tr2;
+        ob[0] = x0[0] - tr2;
     }
 }
 
@@ -242,43 +262,16 @@ fn dradf4_general(
             let rb = &mut q1[ido - 1 - 2 * m..ido - 1];
             let rc = &mut q2[1..1 + 2 * m];
             let rd = &mut q3[ido - 1 - 2 * m..ido - 1];
-            let it = a0[1..1 + 2 * m]
-                .chunks_exact(2)
-                .zip(a1[1..1 + 2 * m].chunks_exact(2))
-                .zip(a2[1..1 + 2 * m].chunks_exact(2))
-                .zip(a3[1..1 + 2 * m].chunks_exact(2))
-                .zip(w1.chunks_exact(2))
-                .zip(w2.chunks_exact(2))
-                .zip(w3.chunks_exact(2))
-                .zip(ra.chunks_exact_mut(2))
-                .zip(rb.rchunks_exact_mut(2))
-                .zip(rc.chunks_exact_mut(2))
-                .zip(rd.rchunks_exact_mut(2));
-            for ((((((((((x0, x1), x2), x3), w1), w2), w3), oa), ob), oc), od) in it {
-                let cr2 = w1[0] * x1[0] + w1[1] * x1[1];
-                let ci2 = w1[0] * x1[1] - w1[1] * x1[0];
-                let cr3 = w2[0] * x2[0] + w2[1] * x2[1];
-                let ci3 = w2[0] * x2[1] - w2[1] * x2[0];
-                let cr4 = w3[0] * x3[0] + w3[1] * x3[1];
-                let ci4 = w3[0] * x3[1] - w3[1] * x3[0];
-
-                let tr1 = cr2 + cr4;
-                let tr4 = cr4 - cr2;
-                let ti1 = ci2 + ci4;
-                let ti4 = ci2 - ci4;
-                let ti2 = x0[1] + ci3;
-                let ti3 = x0[1] - ci3;
-                let tr2 = x0[0] + cr3;
-                let tr3 = x0[0] - cr3;
-
-                oa[0] = tr1 + tr2;
-                oa[im] = ti1 + ti2;
-                ob[0] = tr3 - ti4;
-                ob[im] = tr4 - ti3;
-                oc[0] = ti4 + tr3;
-                oc[im] = tr4 + ti3;
-                od[0] = tr2 - tr1;
-                od[im] = ti1 - ti2;
+            let x = [
+                &a0[1..1 + 2 * m],
+                &a1[1..1 + 2 * m],
+                &a2[1..1 + 2 * m],
+                &a3[1..1 + 2 * m],
+            ];
+            if ido >= 64 {
+                dradf4_row(x, [w1, w2, w3], ra, rb, rc, rd);
+            } else {
+                dradf4_row_body(x, [w1, w2, w3], ra, rb, rc, rd, im);
             }
             if ido & 1 != 0 {
                 continue;
@@ -295,6 +288,80 @@ fn dradf4_general(
         o[3 * ido - 1] = a0[ido - 1] - tr1;
         o[ido] = ti1 - a2[ido - 1];
         o[3 * ido] = ti1 + a2[ido - 1];
+    }
+}
+
+/// One k's dradf4 twiddle loop, vectorized across i. It is kept out of
+/// line on purpose: as function arguments the eleven streams are distinct
+/// `noalias` slices, so LLVM's loop vectorizer needs no runtime overlap
+/// checks (inlined, those checks send it to the scalar fallback, which is
+/// the slow 2-lane SLP code on x86_64). Worth it for long rows (ido >= 64);
+/// shorter rows use [`dradf4_row_body`] inline.
+#[inline(never)]
+fn dradf4_row(
+    x: [&[f32]; 4],
+    w: [&[f32]; 3],
+    ra: &mut [f32],
+    rb: &mut [f32],
+    rc: &mut [f32],
+    rd: &mut [f32],
+) {
+    dradf4_row_body(x, w, ra, rb, rc, rd, 1);
+}
+
+/// The twiddle loop proper. `x` are the four input quarters' (re, im)
+/// pairs from i = 2 on, `w` the three twiddle tables, `ra`/`rc` the
+/// ascending and `rb`/`rd` the descending output pairs; `im` is the index
+/// of the imaginary half of an output pair (always 1).
+#[inline(always)]
+fn dradf4_row_body(
+    x: [&[f32]; 4],
+    w: [&[f32]; 3],
+    ra: &mut [f32],
+    rb: &mut [f32],
+    rc: &mut [f32],
+    rd: &mut [f32],
+    im: usize,
+) {
+    let [a0, a1, a2, a3] = x;
+    let [w1, w2, w3] = w;
+    let it = a0
+        .chunks_exact(2)
+        .zip(a1.chunks_exact(2))
+        .zip(a2.chunks_exact(2))
+        .zip(a3.chunks_exact(2))
+        .zip(w1.chunks_exact(2))
+        .zip(w2.chunks_exact(2))
+        .zip(w3.chunks_exact(2))
+        .zip(ra.chunks_exact_mut(2))
+        .zip(rb.rchunks_exact_mut(2))
+        .zip(rc.chunks_exact_mut(2))
+        .zip(rd.rchunks_exact_mut(2));
+    for ((((((((((x0, x1), x2), x3), w1), w2), w3), oa), ob), oc), od) in it {
+        let cr2 = w1[0] * x1[0] + w1[1] * x1[1];
+        let ci2 = w1[0] * x1[1] - w1[1] * x1[0];
+        let cr3 = w2[0] * x2[0] + w2[1] * x2[1];
+        let ci3 = w2[0] * x2[1] - w2[1] * x2[0];
+        let cr4 = w3[0] * x3[0] + w3[1] * x3[1];
+        let ci4 = w3[0] * x3[1] - w3[1] * x3[0];
+
+        let tr1 = cr2 + cr4;
+        let tr4 = cr4 - cr2;
+        let ti1 = ci2 + ci4;
+        let ti4 = ci2 - ci4;
+        let ti2 = x0[1] + ci3;
+        let ti3 = x0[1] - ci3;
+        let tr2 = x0[0] + cr3;
+        let tr3 = x0[0] - cr3;
+
+        oa[0] = tr1 + tr2;
+        oa[im] = ti1 + ti2;
+        ob[0] = tr3 - ti4;
+        ob[im] = tr4 - ti3;
+        oc[0] = ti4 + tr3;
+        oc[im] = tr4 + ti3;
+        od[0] = tr2 - tr1;
+        od[im] = ti1 - ti2;
     }
 }
 
