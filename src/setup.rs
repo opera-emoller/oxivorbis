@@ -345,7 +345,7 @@ fn unpack_mapping(
 use std::sync::{Arc, Mutex};
 
 use crate::psy::{VorbisLookPsy, vp_psy_init_reusing};
-use crate::quality::{QualityConfig, quality_config};
+use crate::quality::{HighLevel, QualityConfig, setting_config};
 
 /// Everything quality-dependent the encoder needs that does not depend on
 /// the input samples: the derived parameters, the setup header packet, its
@@ -367,18 +367,32 @@ pub(crate) struct EncoderSetup {
 /// the same settings from paying it every call.
 const CACHE_CAP: usize = 8;
 
-type CacheKey = (u32, usize, u32);
+/// What an [`EncoderSetup`] depends on besides the rate and channel count:
+/// the template `get_setup_template` picked (by quality or by bitrate),
+/// `hi->base_setting` and `hi->managed`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SetupKey {
+    pub template: usize,
+    pub base_setting: f64,
+    pub managed: bool,
+}
+
+type CacheKey = (u32, usize, usize, u64, bool);
 
 static CACHE: Mutex<Vec<(CacheKey, Arc<EncoderSetup>)>> = Mutex::new(Vec::new());
 
-fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> EncoderSetup {
-    let cfg = quality_config(base_quality, rate, channels);
-    let generated = crate::setup_gen::build_setup(
+fn build_encoder_setup(rate: u32, channels: usize, key: SetupKey) -> EncoderSetup {
+    let hl = HighLevel {
+        managed: key.managed,
+    };
+    let cfg = setting_config(key.template, key.base_setting, rate, channels, &hl);
+    let generated = crate::setup_gen::build_setup_managed(
         cfg.template,
         rate,
         channels,
         cfg.base_setting,
         cfg.lowpass_khz,
+        key.managed,
     );
     debug_assert_eq!(
         [
@@ -422,14 +436,41 @@ fn build_encoder_setup(rate: u32, channels: usize, base_quality: f32) -> Encoder
 }
 
 /// Returns the (cached) encoder setup for `rate` Hz, `channels` and the
-/// libvorbis `base_quality` (-0.1..=1.0). The cache is keyed on the exact
-/// f32 bits of `base_quality`.
+/// libvorbis `base_quality` (-0.1..=1.0) in VBR mode.
 pub(crate) fn encoder_setup_for(
     rate: u32,
     channels: usize,
     base_quality: f32,
 ) -> Arc<EncoderSetup> {
-    let key = (rate, channels, base_quality.to_bits());
+    let (template, base_setting) = crate::quality::select_template(base_quality, rate, channels)
+        .unwrap_or_else(|| {
+            panic!("no libvorbis template for q={base_quality} {rate} Hz {channels} ch")
+        });
+    encoder_setup_for_key(
+        rate,
+        channels,
+        SetupKey {
+            template,
+            base_setting,
+            managed: false,
+        },
+    )
+}
+
+/// Returns the (cached) encoder setup for `rate` Hz, `channels` and
+/// `setup`. The cache is keyed on the exact bits of `base_setting`.
+pub(crate) fn encoder_setup_for_key(
+    rate: u32,
+    channels: usize,
+    setup: SetupKey,
+) -> Arc<EncoderSetup> {
+    let key = (
+        rate,
+        channels,
+        setup.template,
+        setup.base_setting.to_bits(),
+        setup.managed,
+    );
     {
         let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, s)) = cache.iter().find(|(k, _)| *k == key) {
@@ -438,7 +479,7 @@ pub(crate) fn encoder_setup_for(
     }
     // Build outside the lock so concurrent encodes at other settings don't
     // serialize behind us.
-    let built = Arc::new(build_encoder_setup(rate, channels, base_quality));
+    let built = Arc::new(build_encoder_setup(rate, channels, setup));
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((_, s)) = cache.iter().find(|(k, _)| *k == key) {
         return Arc::clone(s);

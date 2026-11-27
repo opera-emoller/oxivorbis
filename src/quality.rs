@@ -75,6 +75,8 @@ pub(crate) struct QualityConfig {
     /// `[short, long]` block sizes.
     pub blocksizes: [usize; 2],
     /// ID-header nominal bitrate.
+    /// (The encoder writes `ratecontrol::RatePlan::header_bitrates`.)
+    #[allow(dead_code)]
     pub bitrate_nominal: i32,
     /// `hi->lowpass_kHz` (may be 999 for "no lowpass").
     pub lowpass_khz: f64,
@@ -165,16 +167,43 @@ fn nudged_request(base_quality: f32) -> Option<f64> {
 /// `setup_list` whose channel restriction, rate range and quality range
 /// all match, and the `base_setting` within it.
 fn get_setup_template(req: f64, rate: u32, channels: usize) -> Option<(usize, f64)> {
+    get_setup_template_by(req, rate, channels as i64, false)
+}
+
+/// `get_setup_template` in bitrate mode (`q_or_bitrate = 1`), as
+/// `vorbis_encode_setup_managed` calls it: `nominal` bits per second,
+/// divided by `ch` and looked up in each template's `rate_mapping`. `ch`
+/// is the channel count, or -1 for libvorbis's `OV_ECTL_COUPLING_SET`
+/// re-fetch with coupling off (only unrestricted templates match then,
+/// and the negative request matches none of them). `None` is libvorbis's
+/// `OV_EIMPL`. The catch-all `X`/`XX` templates have an all -1
+/// `rate_mapping`, so only 8-50 kHz can match.
+pub(crate) fn select_template_bitrate(nominal: f64, rate: u32, ch: i64) -> Option<(usize, f64)> {
+    let (i, s) = get_setup_template_by(nominal, rate, ch, true)?;
+    // `j + del` in float can only round up to `mappings` for requests
+    // within half a float ulp of a mapping's top; a bitrate request (a
+    // whole number of bits per second, over 1 or 2 channels) is never
+    // that close (see the tests).
+    debug_assert!((s as usize) < t::SETUP_LIST[i].mappings);
+    Some((i, s))
+}
+
+fn get_setup_template_by(req: f64, rate: u32, ch: i64, q_or_bitrate: bool) -> Option<(usize, f64)> {
     let srate = rate as i64;
+    let req = if q_or_bitrate { req / ch as f64 } else { req };
     for (i, tpl) in t::SETUP_LIST.iter().enumerate() {
-        if tpl.coupling_restriction != -1 && tpl.coupling_restriction as usize != channels {
+        if tpl.coupling_restriction != -1 && tpl.coupling_restriction as i64 != ch {
             continue;
         }
         if srate < tpl.samplerate_min_restriction || srate > tpl.samplerate_max_restriction {
             continue;
         }
         let mappings = tpl.mappings;
-        let map = tpl.quality_mapping;
+        let map = if q_or_bitrate {
+            tpl.rate_mapping
+        } else {
+            tpl.quality_mapping
+        };
         if req < map[0] || req > map[mappings] {
             continue;
         }
@@ -202,17 +231,47 @@ fn get_setup_template(req: f64, rate: u32, channels: usize) -> Option<(usize, f6
 ///
 /// Panics outside that domain (where libvorbis' `vorbis_encode_init_vbr`
 /// would fail).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> QualityConfig {
-    assert!(
-        channels == 1 || channels == 2,
-        "quality_config: {channels} channels unsupported"
-    );
     let (template, base_setting) =
         select_template(base_quality, rate, channels).unwrap_or_else(|| {
             panic!(
                 "quality_config: no libvorbis template for q={base_quality} {rate} Hz {channels} ch"
             )
         });
+    setting_config(
+        template,
+        base_setting,
+        rate,
+        channels,
+        &HighLevel::default(),
+    )
+}
+
+/// The `highlevel_encode_setup` fields besides the template and
+/// `base_setting` that `vorbis_encode_setup_init` reads. The default is
+/// what `vorbis_encode_setup_vbr` leaves.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct HighLevel {
+    /// `hi->managed`: per-packetblob stereo setup (and, in `setup_gen`, the
+    /// managed residue books).
+    pub managed: bool,
+}
+
+/// [`quality_config`] for an already selected template and
+/// `hi->base_setting` (from the quality or, in bitrate mode, the
+/// `rate_mapping`), with the given high-level flags.
+pub(crate) fn setting_config(
+    template: usize,
+    base_setting: f64,
+    rate: u32,
+    channels: usize,
+    hl: &HighLevel,
+) -> QualityConfig {
+    assert!(
+        channels == 1 || channels == 2,
+        "quality_config: {channels} channels unsupported"
+    );
     let tpl = t::SETUP_LIST[template];
     let s = base_setting;
     let is = s as usize;
@@ -241,7 +300,14 @@ pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> Q
     // vorbis_encode_setup_init clamps
     ath_floating_db = ath_floating_db.clamp(-200., -80.);
 
-    let psy_global = global_psych(tpl, s, blocksizes, rate, amplitude_track_db_per_sec);
+    let psy_global = global_psych(
+        tpl,
+        s,
+        blocksizes,
+        rate,
+        amplitude_track_db_per_sec,
+        hl.managed,
+    );
 
     let block = |b: usize| block_psy(tpl, s, b, ath_floating_db as f32, ath_absolute_db as f32);
     let (psys, psy) = if singleblock {
@@ -270,13 +336,14 @@ pub(crate) fn quality_config(base_quality: f32, rate: u32, channels: usize) -> Q
 }
 
 /// `vorbis_encode_global_psych_setup` + `vorbis_encode_global_stereo`
-/// (unmanaged / VBR branch).
+/// (VBR branch, or the bitrate-managed one with `managed`).
 fn global_psych(
     tpl: &QualityTemplate,
     s: f64,
     blocksizes: [usize; 2],
     rate: u32,
     amplitude_track: f64,
+    managed: bool,
 ) -> VorbisInfoPsyGlobal {
     let x = tpl.global_mapping;
     let tmpl = tpl.global_params;
@@ -331,6 +398,24 @@ fn global_psych(
 
     let mid = PACKETBLOBS / 2;
     let point = |khz: f32, bs: usize| (khz as f64 * 1000. / rate as f64 * bs as f64) as i32;
+
+    if managed {
+        // hi->managed: every packetblob interpolates its own thresholds.
+        for i in 0..PACKETBLOBS {
+            let khz = lerp(p[is].khz[i] as f64, p[is + 1].khz[i] as f64, ds) as f32;
+            g.coupling_pointlimit[0][i] = point(khz, blocksizes[0]);
+            g.coupling_pointlimit[1][i] = point(khz, blocksizes[1]);
+            g.coupling_pkHz[i] = khz as i32;
+            let khz = lerp(
+                p[is].lowpass_khz[i] as f64,
+                p[is + 1].lowpass_khz[i] as f64,
+                ds,
+            ) as f32;
+            g.sliding_lowpass[0][i] = point(khz, blocksizes[0]);
+            g.sliding_lowpass[1][i] = point(khz, blocksizes[1]);
+        }
+        return g;
+    }
 
     let khz = lerp(p[is].khz[mid] as f64, p[is + 1].khz[mid] as f64, ds) as f32;
     for i in 0..PACKETBLOBS {

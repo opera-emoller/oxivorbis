@@ -38,6 +38,19 @@ pub fn write_id_header_with(
     blocksizes: [usize; 2],
     w: &mut BitWriter,
 ) {
+    write_id_header_bitrates(rate, channels, [0, bitrate_nominal, 0], blocksizes, w);
+}
+
+/// [`write_id_header_with`] with all three bitrate fields,
+/// `[upper, nominal, lower]` (libvorbis's `vi->bitrate_upper`,
+/// `bitrate_nominal`, `bitrate_lower`, each written as its low 32 bits).
+pub fn write_id_header_bitrates(
+    rate: SampleRate,
+    channels: Channels,
+    [bitrate_upper, bitrate_nominal, bitrate_lower]: [i32; 3],
+    blocksizes: [usize; 2],
+    w: &mut BitWriter,
+) {
     debug_assert!(blocksizes.iter().all(|b| b.is_power_of_two()));
     let audio_sample_rate: u32 = rate.hz();
     let audio_channels: u32 = match channels {
@@ -52,9 +65,9 @@ pub fn write_id_header_with(
     w.write(0, 32);
     w.write(audio_channels, 8);
     w.write(audio_sample_rate, 32);
-    w.write(0, 32);
+    w.write(bitrate_upper as u32, 32);
     w.write(bitrate_nominal as u32, 32);
-    w.write(0, 32);
+    w.write(bitrate_lower as u32, 32);
 
     w.write(blocksizes[0].trailing_zeros(), 4);
     w.write(blocksizes[1].trailing_zeros(), 4);
