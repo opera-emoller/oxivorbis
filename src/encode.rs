@@ -268,6 +268,11 @@ pub(crate) struct EncoderCore {
 }
 
 impl EncoderCore {
+    /// Number of interleaved channels this core encodes.
+    pub(crate) fn channels(&self) -> usize {
+        self.ch
+    }
+
     pub(crate) fn new(
         rate: SampleRate,
         channels: Channels,

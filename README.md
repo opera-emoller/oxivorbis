@@ -140,7 +140,7 @@ use std::{fs::File, io::BufWriter};
 
 fn main() -> std::io::Result<()> {
     let sink = BufWriter::new(File::create("out.ogg")?);
-    let mut ogg = OggWriter::new(sink, SampleRate::Hz48000, Channels::Stereo, &Options::default())?;
+    let mut ogg = OggWriter::new(sink, SampleRate::HZ_48000, Channels::Stereo, &Options::default())?;
     let (left, right) = (vec![0.0f32; 4800], vec![0.0f32; 4800]);
     for _ in 0..10 {
         ogg.write_planar_f32(&[&left, &right])?; // or write_i16 / write_f32

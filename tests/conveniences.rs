@@ -9,10 +9,10 @@ use oxivorbis::{Channels, Encoder, OggWriter, Options, Quality, S16LeWriter, Sam
 use std::io::{self, Write};
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::Hz44100, Channels::Mono),
-    (SampleRate::Hz44100, Channels::Stereo),
-    (SampleRate::Hz48000, Channels::Mono),
-    (SampleRate::Hz48000, Channels::Stereo),
+    (SampleRate::HZ_44100, Channels::Mono),
+    (SampleRate::HZ_44100, Channels::Stereo),
+    (SampleRate::HZ_48000, Channels::Mono),
+    (SampleRate::HZ_48000, Channels::Stereo),
 ];
 
 fn opts(q: f32) -> Options {
@@ -147,7 +147,7 @@ impl Drop for TempPath {
 
 #[test]
 fn ogg_writer_file_sinks_match_encode() {
-    let (rate, channels) = (SampleRate::Hz44100, Channels::Stereo);
+    let (rate, channels) = (SampleRate::HZ_44100, Channels::Stereo);
     let pcm = signal_i16(Sig::Transients, 5 * 44_100, 2, 44_100, 7);
     let want = oxivorbis::encode(&pcm, rate, channels, &Options::default());
 
@@ -177,7 +177,7 @@ fn ogg_writer_file_sinks_match_encode() {
 
 #[test]
 fn ogg_writer_forwards_pages_before_finish() {
-    let (rate, channels) = (SampleRate::Hz48000, Channels::Stereo);
+    let (rate, channels) = (SampleRate::HZ_48000, Channels::Stereo);
     let pcm = signal_f32(Sig::Noise, 20 * 48_000, 2, 48_000, 1);
     let mut w = OggWriter::new(Vec::new(), rate, channels, &Options::default()).unwrap();
     let mut sizes = Vec::new();
@@ -200,14 +200,14 @@ fn ogg_writer_forwards_pages_before_finish() {
 fn ogg_writer_from_encoder_and_get_mut() {
     let pcm = signal_i16(Sig::Sine, 44_100, 1, 44_100, 2);
     let o = opts(3.0).with_serial(99).with_comment("TITLE", "t");
-    let enc = Encoder::new(SampleRate::Hz44100, Channels::Mono, &o);
+    let enc = Encoder::new(SampleRate::HZ_44100, Channels::Mono, &o);
     let mut w = OggWriter::from_encoder(enc, Vec::new());
     w.write_i16(&pcm[..1000]).unwrap();
     w.get_mut().flush().unwrap();
     w.write_i16(&pcm[1000..]).unwrap();
     assert_eq!(
         w.finish().unwrap(),
-        oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Mono, &o)
+        oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Mono, &o)
     );
 }
 
@@ -266,7 +266,7 @@ impl Write for FailingSink {
 
 #[test]
 fn sink_errors_propagate_without_panicking() {
-    let (rate, channels) = (SampleRate::Hz44100, Channels::Stereo);
+    let (rate, channels) = (SampleRate::HZ_44100, Channels::Stereo);
     let pcm = signal_i16(Sig::Noise, 10 * 44_100, 2, 44_100, 5);
     let want = oxivorbis::encode(&pcm, rate, channels, &Options::default());
 
@@ -370,7 +370,7 @@ fn s16le_writer_matches_encode_across_byte_chunkings() {
 
 #[test]
 fn s16le_writer_from_ogg_writer_and_io_copy() {
-    let (rate, channels) = (SampleRate::Hz48000, Channels::Mono);
+    let (rate, channels) = (SampleRate::HZ_48000, Channels::Mono);
     let pcm = signal_i16(Sig::Sine, 48_000, 1, 48_000, 4);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let mut ogg = OggWriter::new(Vec::new(), rate, channels, &Options::default()).unwrap();
@@ -437,7 +437,7 @@ fn planar_matches_interleaved_across_chunkings() {
 fn planar_mixes_with_interleaved_writes() {
     // Including an interleaved write that leaves a stereo frame split: the
     // next planar left sample completes it, exactly as interleaving would.
-    let (rate, channels) = (SampleRate::Hz44100, Channels::Stereo);
+    let (rate, channels) = (SampleRate::HZ_44100, Channels::Stereo);
     let pcm = signal_f32(Sig::Sine, 44_100, 2, 44_100, 8);
     let planar = deinterleave(&pcm, 2);
     let mut enc = Encoder::new(rate, channels, &Options::default());
@@ -492,7 +492,7 @@ fn planar_mixes_with_interleaved_writes() {
 
 #[test]
 fn planar_mismatched_lengths_truncate_to_shortest() {
-    let (rate, channels) = (SampleRate::Hz48000, Channels::Stereo);
+    let (rate, channels) = (SampleRate::HZ_48000, Channels::Stereo);
     let pcm = signal_f32(Sig::Transients, 2 * 48_000, 2, 48_000, 3);
     let planar = deinterleave(&pcm, 2);
     let mut rng = Rng(77);
@@ -543,20 +543,28 @@ fn planar_wrong_channel_count_does_not_panic() {
             let len = 30_000 / count.max(1) - 10;
             let f: Vec<&[f32]> = (0..count).map(|i| &x[i % 7..i % 7 + len]).collect();
             let s: Vec<&[i16]> = (0..count).map(|i| &x16[i % 5..i % 5 + len]).collect();
-            let mut enc = Encoder::new(SampleRate::Hz44100, channels, &Options::default());
+            let mut enc = Encoder::new(SampleRate::HZ_44100, channels, &Options::default());
             let mut ogg = enc.write_planar_f32(&f).to_vec();
             ogg.extend_from_slice(enc.write_planar_i16(&s));
             ogg.extend_from_slice(&enc.finish());
-            decodes(&ogg); // a valid stream, whatever audio it holds
+            decodes(&ogg);
+            if count != usize::from(channels.count()) {
+                // A mismatched slice count encodes nothing.
+                assert_eq!(
+                    ogg,
+                    oxivorbis::encode(&[], SampleRate::HZ_44100, channels, &Options::default()),
+                    "{count} slices into a {channels:?} encoder"
+                );
+            }
         }
         // Zero slices encode nothing.
-        let mut enc = Encoder::new(SampleRate::Hz44100, channels, &Options::default());
+        let mut enc = Encoder::new(SampleRate::HZ_44100, channels, &Options::default());
         let none: [&[f32]; 0] = [];
         let mut ogg = enc.write_planar_f32(&none).to_vec();
         ogg.extend_from_slice(&enc.finish());
         assert_eq!(
             ogg,
-            oxivorbis::encode(&[], SampleRate::Hz44100, channels, &Options::default())
+            oxivorbis::encode(&[], SampleRate::HZ_44100, channels, &Options::default())
         );
     }
 }
@@ -567,7 +575,7 @@ fn planar_accepts_common_container_shapes() {
     let r = vec![-0.25f32; 4096];
     let mut want = Vec::new();
     for shape in 0..4 {
-        let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+        let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
         let mut ogg = match shape {
             0 => enc.write_planar_f32(&[&l, &r]).to_vec(),
             1 => enc.write_planar_f32(&[l.as_slice(), r.as_slice()]).to_vec(),
@@ -582,7 +590,7 @@ fn planar_accepts_common_container_shapes() {
             let itl: Vec<f32> = l.iter().zip(&r).flat_map(|(&a, &b)| [a, b]).collect();
             let one_shot = oxivorbis::encode_f32(
                 &itl,
-                SampleRate::Hz44100,
+                SampleRate::HZ_44100,
                 Channels::Stereo,
                 &Options::default(),
             );

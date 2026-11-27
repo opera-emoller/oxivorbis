@@ -28,9 +28,9 @@ impl Encoder {
     ///   channel holds are encoded; the excess in longer channels is
     ///   ignored (not carried over to the next call). This never panics.
     /// - **Wrong channel count:** `channels` must hold one slice per
-    ///   encoder channel. Any other count is a logic error: it does not
-    ///   panic and the stream stays valid, but the audio it encodes is
-    ///   unspecified.
+    ///   encoder channel. With any other count the call encodes nothing
+    ///   and returns no bytes; the stream is unaffected and later calls
+    ///   work normally. This never panics.
     ///
     /// Planar and interleaved writes may be mixed. Nothing is allocated
     /// per call.
@@ -41,14 +41,14 @@ impl Encoder {
     /// let left: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.03).sin() * 0.5).collect();
     /// let right: Vec<f32> = (0..44_100).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
     ///
-    /// let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+    /// let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
     /// let mut ogg = enc.write_planar_f32(&[&left, &right]).to_vec();
     /// ogg.extend_from_slice(&enc.finish());
     ///
     /// // Same bytes as interleaving first.
     /// let interleaved: Vec<f32> = left.iter().zip(&right).flat_map(|(&l, &r)| [l, r]).collect();
     /// let one_shot = oxivorbis::encode_f32(
-    ///     &interleaved, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+    ///     &interleaved, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
     /// assert_eq!(ogg, one_shot);
     /// ```
     pub fn write_planar_f32<S: AsRef<[f32]>>(&mut self, channels: &[S]) -> &[u8] {
@@ -67,7 +67,7 @@ impl Encoder {
     ///
     /// let left = vec![1000i16; 4800];
     /// let right = vec![-1000i16; 4800];
-    /// let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Stereo, &Options::default());
+    /// let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Stereo, &Options::default());
     /// let mut ogg = enc.write_planar_i16(&[left, right]).to_vec();
     /// ogg.extend_from_slice(&enc.finish());
     /// assert_eq!(&ogg[..4], b"OggS");
@@ -88,9 +88,12 @@ where
     S: AsRef<[T]>,
     F: Fn(T) -> f32 + Copy,
 {
+    if channels.len() != core.channels() {
+        // Wrong slice count: encode nothing (documented).
+        return;
+    }
     let frames = channels.iter().map(|c| c.as_ref().len()).min().unwrap_or(0);
     match channels {
-        [] => {}
         [mono] => core.feed(&mono.as_ref()[..frames], conv),
         [l, r] => {
             let (l, r) = (&l.as_ref()[..frames], &r.as_ref()[..frames]);
@@ -104,21 +107,8 @@ where
                 core.feed(out, conv);
             }
         }
-        _ => {
-            // Any other count: a generic (slower) interleave.
-            let mut buf = [T::default(); SCRATCH];
-            let mut n = 0;
-            for f in 0..frames {
-                for c in channels {
-                    buf[n] = c.as_ref()[f];
-                    n += 1;
-                    if n == SCRATCH {
-                        core.feed(&buf, conv);
-                        n = 0;
-                    }
-                }
-            }
-            core.feed(&buf[..n], conv);
-        }
+        // Unreachable: only mono and stereo encoders exist, and the count
+        // was checked above.
+        _ => {}
     }
 }

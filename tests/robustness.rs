@@ -479,10 +479,10 @@ macro_rules! adversarial_tests {
     };
 }
 adversarial_tests! {
-    hz44100_stereo: Hz44100, Stereo;
-    hz44100_mono: Hz44100, Mono;
-    hz48000_stereo: Hz48000, Stereo;
-    hz48000_mono: Hz48000, Mono;
+    hz44100_stereo: HZ_44100, Stereo;
+    hz44100_mono: HZ_44100, Mono;
+    hz48000_stereo: HZ_48000, Stereo;
+    hz48000_mono: HZ_48000, Mono;
 }
 
 // ---------------------------------------------------------------------------

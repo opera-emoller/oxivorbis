@@ -640,8 +640,8 @@ fn rejects_unsupported_inputs() {
         ("six", six, "6 channels"),
         (
             "rate",
-            wav(Fmt::S16, 2, 1_000, &data, WavOpts::default()),
-            "sample rate 1000",
+            wav(Fmt::S16, 2, 384_000, &data, WavOpts::default()),
+            "sample rate 384000",
         ),
         ("text", b"hello, this is not audio".to_vec(), "not a WAV"),
         ("empty", Vec::new(), "empty"),

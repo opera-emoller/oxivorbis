@@ -29,7 +29,7 @@ fn run() -> std::io::Result<std::path::PathBuf> {
         .with_quality(Quality::new(4.0).expect("in range"))
         .with_comment("TITLE", "oxivorbis planar example");
     let sink = BufWriter::new(File::create(&path)?);
-    let mut ogg = OggWriter::new(sink, SampleRate::Hz48000, Channels::Stereo, &opts)?;
+    let mut ogg = OggWriter::new(sink, SampleRate::HZ_48000, Channels::Stereo, &opts)?;
 
     // Per-channel block buffers, reused for every block.
     let mut left = vec![0.0f32; BLOCK];

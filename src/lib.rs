@@ -46,7 +46,7 @@
 //! use oxivorbis::{Channels, OggWriter, Options, SampleRate};
 //!
 //! let (left, right) = (vec![0.0f32; 48_000], vec![0.0f32; 48_000]);
-//! let mut w = OggWriter::new(Vec::new(), SampleRate::Hz48000, Channels::Stereo, &Options::default())?;
+//! let mut w = OggWriter::new(Vec::new(), SampleRate::HZ_48000, Channels::Stereo, &Options::default())?;
 //! w.write_planar_f32(&[&left, &right])?;
 //! let ogg: Vec<u8> = w.finish()?; // or a File, socket, ...
 //! assert_eq!(&ogg[..4], b"OggS");
@@ -202,16 +202,6 @@ impl SampleRate {
     pub const HZ_96000: SampleRate = SampleRate(96_000);
     /// 192 000 Hz.
     pub const HZ_192000: SampleRate = SampleRate(192_000);
-
-    /// Transitional alias of [`SampleRate::HZ_44100`] for code written
-    /// against the old enum; will be removed.
-    #[doc(hidden)]
-    #[allow(non_upper_case_globals)]
-    pub const Hz44100: SampleRate = SampleRate(44_100);
-    /// Transitional alias of [`SampleRate::HZ_48000`]; will be removed.
-    #[doc(hidden)]
-    #[allow(non_upper_case_globals)]
-    pub const Hz48000: SampleRate = SampleRate(48_000);
 
     /// `hz` if it is in `1..=200_000`, else `None`.
     pub const fn new(hz: u32) -> Option<SampleRate> {
