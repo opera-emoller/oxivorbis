@@ -34,6 +34,25 @@
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
+//! # Writing to files and streams
+//!
+//! [`OggWriter`] owns an [`Encoder`] and any [`std::io::Write`] sink and
+//! writes pages to it as they complete; [`S16LeWriter`] does the same for
+//! raw s16le PCM bytes, through `std::io::Write`. Planar input (one slice
+//! per channel) goes through [`Encoder::write_planar_f32`] /
+//! [`Encoder::write_planar_i16`] or the `OggWriter` equivalents.
+//!
+//! ```
+//! use oxivorbis::{Channels, OggWriter, Options, SampleRate};
+//!
+//! let (left, right) = (vec![0.0f32; 48_000], vec![0.0f32; 48_000]);
+//! let mut w = OggWriter::new(Vec::new(), SampleRate::Hz48000, Channels::Stereo, &Options::default())?;
+//! w.write_planar_f32(&[&left, &right])?;
+//! let ogg: Vec<u8> = w.finish()?; // or a File, socket, ...
+//! assert_eq!(&ogg[..4], b"OggS");
+//! # Ok::<(), std::io::Error>(())
+//! ```
+//!
 //! # Parity contract
 //!
 //! The audio packets, granule positions and page layout are bit-identical
@@ -115,6 +134,10 @@ mod setup;
 mod setup_gen;
 mod setup_templates;
 mod window;
+
+mod planar;
+mod writer;
+pub use writer::{OggWriter, S16LeWriter};
 
 use std::fmt;
 
