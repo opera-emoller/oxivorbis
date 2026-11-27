@@ -73,10 +73,11 @@ debug = "line-tables-only"
 [lints.rust]
 unsafe_code = "forbid"
 
-# CI's oracle suites: optimized like release (the suite is ~3000 encodes
+# CI's test runs: optimized like release (the oracle suite is ~3000 encodes
 # against libvorbis, 4-10x faster than a debug build), but with the
 # debug-build safety checks kept on, so overflow and debug_assert! still
-# fire. The no-oracle unit/integration runs stay plain debug builds.
+# fire. (Optimization doesn't change safe Rust's behaviour; these two
+# checks are what a debug build adds.)
 [profile.ci]
 inherits = "release"
 debug-assertions = true

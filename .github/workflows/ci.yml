@@ -182,7 +182,7 @@ jobs:
           echo "total: $(wc -l < "$RUNNER_TEMP/tests.txt") tests with --features oracle"
           exit $fail
       - name: Unit + integration tests (no oracle)
-        run: cargo nextest run --status-level=fail --no-tests=fail
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail
       - name: Full suite with oracle, serial path (Linux glibc libm)
         # Every non-ignored test with the oracle feature on: the parity
         # matrix, 30-120 s long-signal parity, short-input sweeps (incl.
@@ -231,7 +231,7 @@ jobs:
           ./tools/oracle-encoder/build_quality_dumpers.sh
           ./tools/oracle-encoder/build_dsp_oracle.sh
       - name: Unit + integration tests (no oracle, parallel)
-        run: cargo nextest run --status-level=fail --no-tests=fail --features parallel
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features parallel
       - name: Full suite with oracle, parallel path
         run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features oracle,parallel
 
@@ -308,6 +308,12 @@ jobs:
         # Same pristine sources, built with -fsanitize=address: any
         # out-of-bounds access in libvorbis/libogg on these inputs makes
         # the oracle fail, which parity-fuzz reports as oracle-fail.
+        # Leak detection is off: libvorbis 1.3.7 itself leaks 2848 bytes
+        # from vorbis_encode_residue_setup (vorbisenc.c:463) for the 5.1
+        # template at q-1, which LeakSanitizer (Linux only) would report as
+        # an oracle failure. Memory-safety errors are still fatal.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
         run: |
           OUT="$RUNNER_TEMP/oracle-asan" LW_EXTRA_CFLAGS="-g -fsanitize=address -fno-omit-frame-pointer" \
             ./tools/oracle-encoder/build.sh
