@@ -63,6 +63,9 @@ rayon = "1.10"
 # Integration tests reach the `__internal` entry points through this
 # self-dependency, so plain `cargo test` works without extra flags.
 oxivorbis = { path = ".", features = ["__internal"] }
+# examples/transcode.rs only (decode MP3/FLAC/WAV/Vorbis to planar f32).
+# Pure Rust, small tree; not a dependency of the library.
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "ogg", "vorbis", "wav", "pcm", "flac"] }
 
 [profile.release]
 debug = "line-tables-only"
