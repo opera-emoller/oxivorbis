@@ -174,9 +174,9 @@ jobs:
         # q-1 up to 8400 frames), quality_oracle_grid, setup header sweep,
         # fuzz-repro replay, golden-vector freshness, DSP manifest tests
         # and parity_oggenc_quality_conversion.
-        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features oracle
       - name: Full suite with oracle, parallel path
-        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle,parallel
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features oracle,parallel
       - name: Release-only streaming tests
         # #[ignore]d in debug builds (too slow there).
         run: >-
@@ -296,9 +296,9 @@ jobs:
       - name: Oracle-derived committed files are up to date
         run: ./tools/oracle-encoder/check_fresh.sh
       - name: Full suite with oracle, serial path (macOS libm)
-        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features oracle
       - name: Full suite with oracle, parallel path
-        run: cargo nextest run --status-level=fail --no-tests=fail --features oracle,parallel
+        run: cargo nextest run --cargo-profile ci --status-level=fail --no-tests=fail --features oracle,parallel
       - name: Release-only streaming tests
         run: >-
           cargo nextest run --release --status-level=fail --no-tests=fail
