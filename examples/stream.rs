@@ -9,7 +9,7 @@
 //! 5). Pages are written as soon as the encoder completes them, so memory
 //! stays bounded for any input length.
 
-use lewtoff::{Channels, Encoder, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
 use std::io::{Read, Write};
 use std::process::ExitCode;
 

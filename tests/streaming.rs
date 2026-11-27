@@ -6,7 +6,7 @@
 mod common;
 
 use common::{ALL_SIGS, Rng, Sig, ch_count, rate_hz, signal_f32, signal_i16};
-use lewtoff::{Channels, Encoder, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
     (SampleRate::Hz44100, Channels::Mono),
@@ -138,7 +138,7 @@ fn check_invariance(q: f32) {
             for frames in lengths(q) {
                 seed += 1;
                 let pcm = signal_i16(sig, frames, ch, rate_hz(rate), seed);
-                let want = lewtoff::encode(&pcm, rate, channels, &o);
+                let want = oxivorbis::encode(&pcm, rate, channels, &o);
                 for c in chunkings(q, ch, frames, seed) {
                     let got = stream_i16(&pcm, rate, channels, &o, &c);
                     assert!(
@@ -149,7 +149,7 @@ fn check_invariance(q: f32) {
                     );
                 }
                 let pcm = signal_f32(sig, frames, ch, rate_hz(rate), seed);
-                let want = lewtoff::encode_f32(&pcm, rate, channels, &o);
+                let want = oxivorbis::encode_f32(&pcm, rate, channels, &o);
                 for c in chunkings(q, ch, frames, seed) {
                     let got = stream_f32(&pcm, rate, channels, &o, &c);
                     assert!(
@@ -192,7 +192,7 @@ fn chunking_invariance_10s() {
             seed += 1;
             let frames = 10 * rate_hz(rate) as usize;
             let pcm = signal_i16(sig, frames, ch, rate_hz(rate), seed);
-            let want = lewtoff::encode(&pcm, rate, channels, &o);
+            let want = oxivorbis::encode(&pcm, rate, channels, &o);
             for c in [Chunking::Random(seed), Chunking::Split(n_lpc(q) * ch + 1)] {
                 assert!(
                     stream_i16(&pcm, rate, channels, &o, &c) == want,
@@ -200,7 +200,7 @@ fn chunking_invariance_10s() {
                 );
             }
             let pcm = signal_f32(sig, frames, ch, rate_hz(rate), seed);
-            let want = lewtoff::encode_f32(&pcm, rate, channels, &o);
+            let want = oxivorbis::encode_f32(&pcm, rate, channels, &o);
             assert!(
                 stream_f32(&pcm, rate, channels, &o, &Chunking::Random(seed)) == want,
                 "f32 q{q} {rate:?} {channels:?} {sig:?} 10 s"
@@ -216,7 +216,7 @@ fn mixed_i16_and_f32_writes() {
     let pcm = signal_i16(Sig::Transients, 20_000, 2, 44100, 5);
     let floats: Vec<f32> = pcm.iter().map(|&x| x as f32 / 32768.0).collect();
     let o = Options::default();
-    let want = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
+    let want = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
     let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &o);
     let mut out = Vec::new();
     let mut i = 0;
@@ -248,10 +248,10 @@ fn headers_first_and_trailing_half_frame() {
     out.extend_from_slice(enc.write(&pcm));
     out.extend_from_slice(enc.write(&[123]));
     out.extend_from_slice(&enc.finish());
-    assert!(out == lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o));
     let mut odd = pcm.clone();
     odd.push(123);
-    assert!(out == lewtoff::encode(&odd, SampleRate::Hz44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&odd, SampleRate::Hz44100, Channels::Stereo, &o));
 }
 
 /// A 60 s input produces almost all of its pages before `finish` (the
@@ -280,7 +280,7 @@ fn streaming_emits_pages_before_finish() {
     }
     let before_finish = out.len();
     out.extend_from_slice(&enc.finish());
-    assert!(out == lewtoff::encode(&pcm, rate, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&pcm, rate, Channels::Stereo, &o));
     let at = first_audio_page_at.expect("no pages before finish");
     assert!(
         at < 20,
@@ -333,7 +333,7 @@ fn extreme_f32_does_not_panic() {
                     }
                 })
                 .collect();
-            let ogg = lewtoff::encode_f32(&s, SampleRate::Hz44100, Channels::Stereo, &opts(q));
+            let ogg = oxivorbis::encode_f32(&s, SampleRate::Hz44100, Channels::Stereo, &opts(q));
             assert_eq!(&ogg[..4], b"OggS");
         }
     }
@@ -350,7 +350,7 @@ fn parallel_batch_sizes_give_identical_bytes() {
     ] {
         let pcm = signal_i16(sig, 5 * 44100, 2, 44100, 4);
         let o = opts(q);
-        let want = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
+        let want = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
         for batch in [1usize, 3, 256] {
             let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &o);
             enc.set_parallel_batch(batch);

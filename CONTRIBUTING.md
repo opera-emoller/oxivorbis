@@ -1,6 +1,6 @@
-# Contributing to lewtoff
+# Contributing to oxivorbis
 
-lewtoff's one hard requirement is byte-for-byte parity with libvorbis
+oxivorbis's one hard requirement is byte-for-byte parity with libvorbis
 1.3.7. Any change to the encoder has to keep every parity test green on
 every platform. This document covers how that is checked and how to
 work on the code.
@@ -53,7 +53,7 @@ only deviations from upstream are applied from outside the trees:
 The oracle reads s16le (or f32 LE with the `f32` argument) from stdin
 and takes `<rate> <channels> [base_quality [s16|f32 [comment]]]`. It
 feeds libvorbis in 64-frame `vorbis_analysis_wrote` chunks and drains
-blocks after every call. lewtoff's output is defined to match this. The
+blocks after every call. oxivorbis's output is defined to match this. The
 oracle writes nothing to stderr unless it fails.
 
 `dump_params`, `dump_quality_tables`, `dsp_oracle`,
@@ -64,7 +64,7 @@ the same trees with the same flags.
 
 `tools/debug-libvorbis-dump/vendored-libvorbis/` is a separate,
 modified copy of libvorbis. It adds debug `fprintf`s, dumps to
-`/tmp/lewtoff-debug`, `getenv` hooks and a few post-1.3.7 upstream fixes
+`/tmp/oxivorbis-debug`, `getenv` hooks and a few post-1.3.7 upstream fixes
 (psy.c's `inthalfoc` clamp and `<<16` to `*(1<<16)`, floor1.c's `val<<1`
 to `val*2`, and small sharedbook.c, os.h and smallft.c changes). Only
 the `debug-*` tools use it. It is never used to build an oracle.
@@ -93,7 +93,7 @@ cargo run -p parity-fuzz --release -- --oracle /tmp/oracle-asan --iters 2000 --q
 
 ## How parity is enforced
 
-`tests/parity.rs` (behind the `oracle` feature) byte-diffs lewtoff's
+`tests/parity.rs` (behind the `oracle` feature) byte-diffs oxivorbis's
 output against two reference encoders:
 
 - **`oracle_parity_*`**: the authoritative tests, run against the
@@ -137,7 +137,7 @@ It covers several qualities and configs, values beyond ±1.0,
 subnormals, `-0.0`, NaN/inf (encoded as 0.0) and odd-sized chunked
 writes.
 
-`tests/golden.rs` compares lewtoff against committed oracle output
+`tests/golden.rs` compares oxivorbis against committed oracle output
 (`tests/vectors/golden/*.ogg`) for six integer-generated signals,
 including q-1, q10 and f32 input. It needs no oracle at run time, so it
 runs in every `cargo test` and on wasm. With `--features oracle`,
@@ -164,10 +164,10 @@ Inside `src/`, the oracle-gated unit tests are:
 - `dsp_manifest_*`: MDCT, FFT and window outputs against hashes
   produced by `tools/oracle-encoder/dsp_oracle`. These tests always run.
 
-`tests/psy.rs`'s `psy_compute_mask_determinism` is a lewtoff snapshot,
+`tests/psy.rs`'s `psy_compute_mask_determinism` is a oxivorbis snapshot,
 not an oracle vector. It pins the mask bits across hosts (including
 wasm), and the build fails if the snapshot file is missing. Re-bless it
-deliberately with `LEWTOFF_BLESS=1`.
+deliberately with `OXIVORBIS_BLESS=1`.
 
 Integration tests reach a few unstable internals (header writers, exact
 `base_quality` entry points, some DSP modules, test hooks) through the
@@ -209,7 +209,7 @@ just corpus "" "" -0.1,0.5,1.0 all         # q-1/q5/q10 in all four configs
 
 The sweep walks the directory recursively and picks up `.wav`, `.mp3`,
 `.ogg`, `.flac`, `.m4a`, `.aif` and `.aiff` files. It decodes each one
-with ffmpeg, so ffmpeg must be on `PATH`. It then byte-compares lewtoff
+with ffmpeg, so ffmpeg must be on `PATH`. It then byte-compares oxivorbis
 against the in-tree oracle-encoder, running in parallel across all
 cores. If there is no corpus, it prints a loud warning that nothing was
 tested and passes. Set `CORPUS_REQUIRE=1` to make that an error. CI
@@ -241,7 +241,7 @@ Earlier sweeps, against the instrumented build, also covered
 ## Differential fuzzer
 
 `tools/parity-fuzz` generates seeded synthetic signals and encodes each
-one with both lewtoff and the oracle. lewtoff streams each case through
+one with both oxivorbis and the oracle. oxivorbis streams each case through
 `Encoder` in pseudo-random chunk sizes, so every case also checks that
 chunking doesn't change the output. On any divergence or panic, the
 fuzzer saves the case and a minimized reproduction under
@@ -277,7 +277,7 @@ keeps it fixed.
 
 ## Debugging a divergence
 
-- `cargo run -p parity-diff -- lewtoff.ogg oracle.ogg` parses both Ogg
+- `cargo run -p parity-diff -- oxivorbis.ogg oracle.ogg` parses both Ogg
   files strictly and verifies every page CRC. It then compares them page
   by page (flags, granule, serial, sequence number, CRC, lacing, body)
   and packet by packet, and reports the first divergence at each level.
@@ -287,13 +287,13 @@ keeps it fixed.
   failure.
 - `just debug-diff` builds `tools/debug-libvorbis-dump` (the
   instrumented copy, with `$CC` and the vendored libogg), dumps the
-  first short block of a 440 Hz sine to `/tmp/lewtoff-debug/c_*`, writes
-  the matching `/tmp/lewtoff-debug/r_*` from lewtoff
-  (`LEWTOFF_DEBUG_DUMP=1`), and compares the two layer by layer
+  first short block of a 440 Hz sine to `/tmp/oxivorbis-debug/c_*`, writes
+  the matching `/tmp/oxivorbis-debug/r_*` from oxivorbis
+  (`OXIVORBIS_DEBUG_DUMP=1`), and compares the two layer by layer
   (windowed PCM, FFT, logfft, mask, floor posts, floor bits). `just
   debug-dump-c` and `just debug-dump-rust` run the halves separately.
-- `just bench [input] [parallel] [quality]` times lewtoff against
-  `oggenc` with hyperfine, using `tools/lewtoff-cli`. `just profile
+- `just bench [input] [parallel] [quality]` times oxivorbis against
+  `oggenc` with hyperfine, using `tools/oxivorbis-cli`. `just profile
   [input]` records a samply profile.
 
 The usual culprits are:

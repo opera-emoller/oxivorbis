@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds tools/debug-libvorbis-dump/harness: the instrumented libvorbis copy
-# in vendored-libvorbis/ (debug fprintf, /tmp/lewtoff-debug dumps, getenv
+# in vendored-libvorbis/ (debug fprintf, /tmp/oxivorbis-debug dumps, getenv
 # hooks and a few post-1.3.7 upstream fixes) plus harness.c, which encodes
 # 1 s of a 440 Hz sine and dumps the first short block's intermediate
-# buffers to /tmp/lewtoff-debug/c_*.
+# buffers to /tmp/oxivorbis-debug/c_*.
 #
 # This is a debugging aid only. It is NOT the parity oracle: the oracles
 # are built from the pristine tools/libvorbis-1.3.7 tree by

@@ -1,7 +1,7 @@
-# lewtoff
+# oxivorbis
 
-[![crates.io](https://img.shields.io/crates/v/lewtoff.svg)](https://crates.io/crates/lewtoff)
-[![docs.rs](https://docs.rs/lewtoff/badge.svg)](https://docs.rs/lewtoff)
+[![crates.io](https://img.shields.io/crates/v/oxivorbis.svg)](https://crates.io/crates/oxivorbis)
+[![docs.rs](https://docs.rs/oxivorbis/badge.svg)](https://docs.rs/oxivorbis)
 
 A pure-Rust Ogg Vorbis **encoder** that produces the same bytes as
 libvorbis 1.3.7. It supports VBR mode at oggenc qualities -1 to 10,
@@ -17,16 +17,16 @@ including fractional ones.
 - An optional `parallel` feature encodes long inputs several times
   faster. Its output is byte-identical to the serial path.
 
-The name comes from [lewton](https://github.com/RustAudio/lewton), the
-pure-Rust Vorbis decoder. lewtoff is the encoder to go with it.
+Pairs naturally with [lewton](https://github.com/RustAudio/lewton), the
+pure-Rust Vorbis decoder.
 
 ## Install
 
 ```toml
 [dependencies]
-lewtoff = "0.1"
+oxivorbis = "0.1"
 # or, for multi-core encoding of long inputs:
-# lewtoff = { version = "0.1", features = ["parallel"] }
+# oxivorbis = { version = "0.1", features = ["parallel"] }
 ```
 
 The minimum supported Rust version is 1.85 (edition 2024).
@@ -36,13 +36,13 @@ The minimum supported Rust version is 1.85 (edition 2024).
 Encode a whole buffer in one call:
 
 ```rust
-use lewtoff::{Channels, Options, SampleRate};
+use oxivorbis::{Channels, Options, SampleRate};
 
 // One second of interleaved 16-bit stereo PCM (silence, for brevity).
 let pcm = vec![0i16; 44_100 * 2];
 
-// Quality 5, deterministic default serial, vendor "lewtoff <version>".
-let ogg: Vec<u8> = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+// Quality 5, deterministic default serial, vendor "oxivorbis <version>".
+let ogg: Vec<u8> = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
@@ -50,7 +50,7 @@ Stream chunks of any size, including odd sample counts that split a
 stereo frame. Each call returns the Ogg pages it completed:
 
 ```rust,no_run
-use lewtoff::{Channels, Encoder, Options, SampleRate};
+use oxivorbis::{Channels, Encoder, Options, SampleRate};
 use std::io::Write;
 
 fn main() -> std::io::Result<()> {
@@ -69,11 +69,11 @@ fn main() -> std::io::Result<()> {
 are passed to the encoder unscaled:
 
 ```rust
-use lewtoff::{Channels, Encoder, Options, SampleRate};
+use oxivorbis::{Channels, Encoder, Options, SampleRate};
 
 let floats: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.0576).sin() * 0.5).collect();
 
-let ogg = lewtoff::encode_f32(&floats, SampleRate::Hz48000, Channels::Mono, &Options::default());
+let ogg = oxivorbis::encode_f32(&floats, SampleRate::Hz48000, Channels::Mono, &Options::default());
 
 // Encoder::write_f32 is the streaming form; it can be mixed with write().
 let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
@@ -85,7 +85,7 @@ assert_eq!(streamed, ogg);
 Set the quality, stream serial, vendor and comments:
 
 ```rust
-use lewtoff::{Channels, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Options, Quality, SampleRate};
 
 let opts = Options::default()
     .with_quality(Quality::new(7.5).expect("in -1..=10")) // oggenc -q 7.5
@@ -99,7 +99,7 @@ let rate = SampleRate::try_from(44_100u32).expect("44100 or 48000");
 let channels = Channels::try_from(2u16).expect("1 or 2");
 
 let pcm = vec![0i16; 44_100 * 2];
-let ogg = lewtoff::encode(&pcm, rate, channels, &opts);
+let ogg = oxivorbis::encode(&pcm, rate, channels, &opts);
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
@@ -131,13 +131,13 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
 - **f32 edge cases:** values outside ±1.0, subnormals and `-0.0` are
   encoded the way libvorbis encodes them. Parity is tested up to ±10⁴.
   At extreme magnitudes, quantized values pass ±2³¹, where libvorbis's
-  float-to-int conversions are undefined behaviour in C. lewtoff's
+  float-to-int conversions are undefined behaviour in C. oxivorbis's
   conversions saturate instead (Rust `as`), and the integer sums over
   them wrap, as C's do in practice. The result is always a valid,
   decodable stream, but it is not guaranteed to match libvorbis there.
   This is tested up to ±`f32::MAX` at every quality and configuration
   with overflow checks on. NaN and ±infinity make libvorbis emit a
-  corrupt stream, so lewtoff encodes them as `0.0`.
+  corrupt stream, so oxivorbis encodes them as `0.0`.
 - **Odd sample counts in stereo:** `Encoder::write` holds an unpaired
   trailing sample until the next call. `finish` and the one-shot
   functions drop a final unpaired sample.
@@ -153,24 +153,24 @@ ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example s
   `qsort`, and fed the same samples in
   64-frame `vorbis_analysis_wrote` chunks. The `qsort` condition matters
   at q0 to q3 only: libvorbis's noise normalization sorts values that
-  can tie, and lewtoff breaks ties the stable way. The reference build
+  can tie, and oxivorbis breaks ties the stable way. The reference build
   links a stable merge sort. glibc's `qsort`, a merge sort, gives the
   same order. macOS libc's `qsort` can order ties differently, so stock
-  libvorbis on macOS can differ from lewtoff at q0 to q3. How you split the input across
+  libvorbis on macOS can differ from oxivorbis at q0 to q3. How you split the input across
   `write` calls does not affect the output. The concatenated output of
   `write`/`write_f32` and `finish` is exactly what `encode`/`encode_f32`
   return.
 - **Headers:** identical, given the same stream serial, vendor string
-  and comments. lewtoff's defaults are its own. The serial is
-  `lewtoff::DEFAULT_SERIAL`, the vendor is `lewtoff::DEFAULT_VENDOR`
-  (`"lewtoff <version>"`), and there are no comments. Default output is
+  and comments. oxivorbis's defaults are its own. The serial is
+  `oxivorbis::DEFAULT_SERIAL`, the vendor is `oxivorbis::DEFAULT_VENDOR`
+  (`"oxivorbis <version>"`), and there are no comments. Default output is
   therefore fully deterministic. It is *not* byte-identical to
   `oggenc -q X`, which picks a random serial and writes a different
   vendor and comments. To reproduce another encoder's headers, set
   `Options::{serial, vendor, comments}`.
 - **oggenc's own audio** is not a byte-for-byte reference. oggenc feeds
   libvorbis 1024-frame chunks, which changes the LPC pre-extrapolation
-  at the start of the stream. Its audio therefore matches lewtoff only
+  at the start of the stream. Its audio therefore matches oxivorbis only
   where that makes no difference, such as silence. Packaged libvorbis
   builds may also use FMA.
 
@@ -182,7 +182,7 @@ rate/channel configurations at q-1, q5 and q10 (79,836 encodes), and at
 run more than 190,000 generated cases clean, with 16-bit and f32 input
 and inputs of up to 30 s, and CI compares 30 to 120 s of non-silent
 audio on every push. Parity is verified on macOS arm64, Linux x86_64
-(glibc) and wasm32 (under wasmtime). lewtoff's output is also identical
+(glibc) and wasm32 (under wasmtime). oxivorbis's output is also identical
 on Windows x86_64 (MSVC).
 
 This works because libvorbis's encoder uses f32 throughout. Without FMA
@@ -254,11 +254,11 @@ Encoding a 261 s real stereo track (44.1 kHz s16le from stdin, Ogg to
 `/dev/null`, hyperfine, mean of 6–8 runs). The reference is `oggenc`
 1.4.3 / libvorbis 1.3.7 as packaged: Homebrew on macOS, Ubuntu on
 Linux. libvorbis's build defaults to `-O3 -ffast-math`, which lets the
-compiler fuse and reorder float operations. lewtoff can't do that and
+compiler fuse and reorder float operations. oxivorbis can't do that and
 stay bit-exact, so its speed comes from doing less work rather than
 looser arithmetic.
 
-| Machine | Quality | oggenc | lewtoff serial | lewtoff `parallel` |
+| Machine | Quality | oggenc | oxivorbis serial | oxivorbis `parallel` |
 |---|---|---|---|---|
 | Apple M4 (10 cores) | q-1 | 1.67 s | **0.93 s** | **0.20 s** |
 | | q5 | 1.29 s | **0.77 s** | **0.18 s** |
@@ -267,7 +267,7 @@ looser arithmetic.
 | | q5 | 1.80 s | **1.17 s** | **0.20 s** |
 | | q10 | 2.06 s | **1.40 s** | **0.23 s** |
 
-Serial lewtoff is about 1.5–1.8× as fast as oggenc. With `parallel` it is
+Serial oxivorbis is about 1.5–1.8× as fast as oggenc. With `parallel` it is
 7–11× faster on long inputs, at about 1.6× the total CPU time of serial.
 
 Memory: streaming through `Encoder` peaks at about 3–4 MB serial and
@@ -278,6 +278,6 @@ quality is cached, and under about 1 ms the first time in a process.
 
 ## License
 
-Apache-2.0 (see [`LICENSE`](LICENSE)). lewtoff is a port of portions of
+Apache-2.0 (see [`LICENSE`](LICENSE)). oxivorbis is a port of portions of
 libvorbis 1.3.7, which is BSD-3-Clause and copyright the Xiph.Org
 Foundation. The upstream attribution is in [`NOTICE`](NOTICE).

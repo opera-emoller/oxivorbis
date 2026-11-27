@@ -9,7 +9,7 @@
 mod common;
 
 use common::{Rng, Sig, ch_count, rate_hz, signal_f32};
-use lewtoff::{Channels, SampleRate};
+use oxivorbis::{Channels, SampleRate};
 
 fn f32_bytes(samples: &[f32]) -> Vec<u8> {
     samples.iter().flat_map(|s| s.to_le_bytes()).collect()
@@ -25,10 +25,10 @@ fn oracle_f32(samples: &[f32], rate: SampleRate, channels: Channels, q: f32) -> 
     )
 }
 
-/// lewtoff over `samples`, fed through `write_f32` in the given chunk
+/// oxivorbis over `samples`, fed through `write_f32` in the given chunk
 /// sizes (cycled; empty = one-shot), with the oracle's serial and comment
 /// strings.
-fn lewtoff_f32(
+fn oxivorbis_f32(
     samples: &[f32],
     rate: SampleRate,
     channels: Channels,
@@ -39,7 +39,7 @@ fn lewtoff_f32(
     let serial = common::extract_serial(oracle);
     let (vendor, tag) = common::extract_comment_strings(oracle);
     if chunks.is_empty() {
-        return lewtoff::encode_f32_with_base_quality_and_meta(
+        return oxivorbis::encode_f32_with_base_quality_and_meta(
             samples,
             rate,
             channels,
@@ -49,7 +49,7 @@ fn lewtoff_f32(
             Some(&tag),
         );
     }
-    let mut enc = lewtoff::encoder_with_base_quality_and_meta(
+    let mut enc = oxivorbis::encoder_with_base_quality_and_meta(
         rate,
         channels,
         q,
@@ -75,7 +75,7 @@ fn assert_same(what: &str, lw: &[u8], oracle: &[u8]) {
     if lw != oracle {
         let d = common::first_diff(lw, oracle);
         panic!(
-            "{what}: f32 parity diverged at byte {d} (lewtoff {} bytes, oracle {} bytes)",
+            "{what}: f32 parity diverged at byte {d} (oxivorbis {} bytes, oracle {} bytes)",
             lw.len(),
             oracle.len()
         );
@@ -96,12 +96,12 @@ fn check(
     let oracle = oracle_f32(oracle_input, rate, channels, q);
     assert_same(
         what,
-        &lewtoff_f32(samples, rate, channels, q, &oracle, &[]),
+        &oxivorbis_f32(samples, rate, channels, q, &oracle, &[]),
         &oracle,
     );
     assert_same(
         &format!("{what} (chunked 1/63/1001/7)"),
-        &lewtoff_f32(samples, rate, channels, q, &oracle, &[1, 63, 1001, 7]),
+        &oxivorbis_f32(samples, rate, channels, q, &oracle, &[1, 63, 1001, 7]),
         &oracle,
     );
 }
@@ -221,7 +221,7 @@ fn parity_f32_subnormals_and_signed_zero() {
 }
 
 /// NaN and ±infinity are encoded as 0.0 (libvorbis itself produces a
-/// corrupt stream for them): lewtoff on the raw input must equal the
+/// corrupt stream for them): oxivorbis on the raw input must equal the
 /// oracle on the input with those samples zeroed.
 #[test]
 fn parity_f32_non_finite_encoded_as_zero() {
@@ -261,7 +261,7 @@ fn parity_f32_odd_chunking() {
     for chunks in [&[1usize][..], &[3], &[127, 2113], &[4095, 1]] {
         assert_same(
             &format!("chunks {chunks:?}"),
-            &lewtoff_f32(
+            &oxivorbis_f32(
                 &s,
                 SampleRate::Hz48000,
                 Channels::Stereo,
@@ -284,7 +284,7 @@ fn parity_f32_matches_i16_scaling() {
     let oracle_s16 = common::oracle_encode_raw(&raw, 44100, 2, 0.5, "s16");
     let oracle_f = oracle_f32(&floats, SampleRate::Hz44100, Channels::Stereo, 0.5);
     assert_eq!(oracle_s16, oracle_f, "oracle s16 vs f32 input");
-    let lw = lewtoff_f32(
+    let lw = oxivorbis_f32(
         &floats,
         SampleRate::Hz44100,
         Channels::Stereo,

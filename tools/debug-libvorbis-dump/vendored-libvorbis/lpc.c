@@ -77,7 +77,7 @@ float vorbis_lpc_from_data(float *data,float *lpci,int n,int m){
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *f = fopen("/tmp/lewtoff-debug/c_lpc_aut.bin", "wb");
+      FILE *f = fopen("/tmp/oxivorbis-debug/c_lpc_aut.bin", "wb");
       if (f) { fwrite(aut, sizeof(double), m+1, f); fclose(f); }
       fprintf(stderr, "C_LPC: aut dumped (m=%d, n=%d)\n", m, n);
     }
@@ -139,9 +139,9 @@ float vorbis_lpc_from_data(float *data,float *lpci,int n,int m){
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *f = fopen("/tmp/lewtoff-debug/c_lpc_coeffs.bin", "wb");
+      FILE *f = fopen("/tmp/oxivorbis-debug/c_lpc_coeffs.bin", "wb");
       if (f) { fwrite(lpc, sizeof(double), m, f); fclose(f); }
-      FILE *f2 = fopen("/tmp/lewtoff-debug/c_lpc_coeffs_f32.bin", "wb");
+      FILE *f2 = fopen("/tmp/oxivorbis-debug/c_lpc_coeffs_f32.bin", "wb");
       if (f2) { fwrite(lpci, sizeof(float), m, f2); fclose(f2); }
     }
   }
@@ -175,9 +175,9 @@ void vorbis_lpc_predict(float *coeff,float *prime,int m,
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *f = fopen("/tmp/lewtoff-debug/c_lpc_predict_prime.bin", "wb");
+      FILE *f = fopen("/tmp/oxivorbis-debug/c_lpc_predict_prime.bin", "wb");
       if (f) { fwrite(prime, sizeof(float), m, f); fclose(f); }
-      FILE *f2 = fopen("/tmp/lewtoff-debug/c_lpc_predict_coeff.bin", "wb");
+      FILE *f2 = fopen("/tmp/oxivorbis-debug/c_lpc_predict_coeff.bin", "wb");
       if (f2) { fwrite(coeff, sizeof(float), m, f2); fclose(f2); }
     }
   }
@@ -197,7 +197,7 @@ void vorbis_lpc_predict(float *coeff,float *prime,int m,
     static int dumped_out = 0;
     if (!dumped_out) {
       dumped_out = 1;
-      FILE *f = fopen("/tmp/lewtoff-debug/c_lpc_predict_out.bin", "wb");
+      FILE *f = fopen("/tmp/oxivorbis-debug/c_lpc_predict_out.bin", "wb");
       if (f) { fwrite(data, sizeof(float), n, f); fclose(f); }
     }
   }
@@ -209,6 +209,6 @@ int g_drftf1_dumped = 0;
 void debug_dump_drftf1_in(int n, float *c) {
   if (g_drftf1_dumped) return;
   g_drftf1_dumped = 1;
-  FILE *f = fopen("/tmp/lewtoff-debug/c_drftf1_in.bin", "wb");
+  FILE *f = fopen("/tmp/oxivorbis-debug/c_drftf1_in.bin", "wb");
   if (f) { fwrite(c, sizeof(float), n, f); fclose(f); }
 }

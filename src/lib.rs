@@ -1,4 +1,4 @@
-//! lewtoff: a pure-Rust Ogg Vorbis encoder whose audio packets are
+//! oxivorbis: a pure-Rust Ogg Vorbis encoder whose audio packets are
 //! bit-identical to libvorbis 1.3.7 (VBR mode, oggenc qualities -1..10).
 //!
 //! Input is interleaved `i16` or `f32` PCM at 44.1 or 48 kHz, mono or
@@ -9,20 +9,20 @@
 //! # One-shot
 //!
 //! ```
-//! use lewtoff::{Channels, Options, Quality, SampleRate};
+//! use oxivorbis::{Channels, Options, Quality, SampleRate};
 //!
 //! let pcm = vec![0i16; 44100 * 2]; // 1 s of stereo silence
 //! let opts = Options::default()
 //!     .with_quality(Quality::new(6.5).unwrap())
 //!     .with_comment("TITLE", "Silence");
-//! let ogg = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+//! let ogg = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
 //! assert_eq!(&ogg[..4], b"OggS");
 //! ```
 //!
 //! # Streaming
 //!
 //! ```
-//! use lewtoff::{Channels, Encoder, Options, SampleRate};
+//! use oxivorbis::{Channels, Encoder, Options, SampleRate};
 //!
 //! let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
 //! let mut ogg = Vec::new();
@@ -42,7 +42,7 @@
 //! chunks. The header packets are identical given the same stream serial,
 //! vendor string and comments, which are set through [`Options`].
 //!
-//! The default vendor string is [`DEFAULT_VENDOR`] (`"lewtoff <version>"`)
+//! The default vendor string is [`DEFAULT_VENDOR`] (`"oxivorbis <version>"`)
 //! and the default serial is [`DEFAULT_SERIAL`], so default output is fully
 //! deterministic.
 //!
@@ -59,7 +59,7 @@
 //! The crate has no other public features; `oracle` and `__internal` exist
 //! only for this crate's own test suite and are not part of the API.
 //!
-//! See the [README](https://github.com/opera-emoller/lewtoff#readme) for
+//! See the [README](https://github.com/opera-emoller/oxivorbis#readme) for
 //! performance numbers, and `CONTRIBUTING.md` for how parity is tested.
 
 #![forbid(unsafe_code)]
@@ -138,7 +138,7 @@ impl SampleRate {
     }
 }
 
-/// Error for a sample rate or channel count lewtoff does not support.
+/// Error for a sample rate or channel count oxivorbis does not support.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Unsupported {
     what: &'static str,
@@ -271,7 +271,7 @@ impl Default for Quality {
 pub const DEFAULT_SERIAL: u32 = 0x6C65_7774; // "lewt"
 
 /// Vendor string used when [`Options::vendor`] is `None`.
-pub const DEFAULT_VENDOR: &str = concat!("lewtoff ", env!("CARGO_PKG_VERSION"));
+pub const DEFAULT_VENDOR: &str = concat!("oxivorbis ", env!("CARGO_PKG_VERSION"));
 
 /// Encoder settings.
 ///
@@ -280,7 +280,7 @@ pub const DEFAULT_VENDOR: &str = concat!("lewtoff ", env!("CARGO_PKG_VERSION"));
 /// it with the `with_*` setters or by assigning fields:
 ///
 /// ```
-/// use lewtoff::{Options, Quality};
+/// use oxivorbis::{Options, Quality};
 ///
 /// let opts = Options::default()
 ///     .with_quality(Quality::new(3.0).unwrap())
@@ -343,7 +343,7 @@ impl Options {
     /// see [`Options::comments`].
     ///
     /// ```
-    /// # use lewtoff::Options;
+    /// # use oxivorbis::Options;
     /// let opts = Options::default()
     ///     .with_comment("TITLE", "a=b")  // TITLE=a=b
     ///     .with_comment("A=B", "v")      // written as AB=v
@@ -401,7 +401,7 @@ fn comment_bytes(key: &str, value: &str) -> Option<Vec<u8>> {
 /// the same bytes as the one-shot [`encode`] / [`encode_f32`].
 ///
 /// ```
-/// use lewtoff::{Channels, Encoder, Options, SampleRate};
+/// use oxivorbis::{Channels, Encoder, Options, SampleRate};
 ///
 /// let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
 /// let mut ogg = Vec::new();
@@ -410,7 +410,7 @@ fn comment_bytes(key: &str, value: &str) -> Option<Vec<u8>> {
 /// }
 /// ogg.extend_from_slice(&enc.finish());
 /// let pcm = vec![0i16; 44100 * 2];
-/// let one_shot = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+/// let one_shot = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
 /// assert_eq!(ogg, one_shot);
 /// ```
 pub struct Encoder {
@@ -457,7 +457,7 @@ impl Encoder {
     /// libvorbis for finite input, including values outside ±1.0,
     /// subnormals and `-0.0` (parity is tested up to ±10⁴; at absurd
     /// magnitudes libvorbis's own float-to-int conversions are undefined,
-    /// but lewtoff still produces a valid stream). Non-finite samples
+    /// but oxivorbis still produces a valid stream). Non-finite samples
     /// (NaN, ±infinity), which make libvorbis emit a corrupt stream, are
     /// encoded as `0.0`.
     ///

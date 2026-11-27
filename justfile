@@ -1,4 +1,4 @@
-# Common dev commands for lewtoff.
+# Common dev commands for oxivorbis.
 # Install just via `brew install just` or `cargo install just`.
 
 default:
@@ -27,7 +27,7 @@ fmt-check:
 clippy:
     cargo clippy --all-targets -- -D warnings
     cargo clippy --all-targets --features parallel -- -D warnings
-    cargo clippy --workspace --all-targets --features lewtoff/oracle,lewtoff/parallel -- -D warnings
+    cargo clippy --workspace --all-targets --features oxivorbis/oracle,oxivorbis/parallel -- -D warnings
 
 # All unit + integration tests. Uses cargo-nextest if available
 # (~40% faster wall-clock and ~99% less output on green runs).
@@ -62,7 +62,7 @@ test-release:
     cargo nextest run --release --no-tests=fail \
         -E 'binary(streaming) & (test(chunking_invariance_10s) | test(streaming_emits_pages_before_finish) | test(buffer_is_bounded_over_10_minutes))'
 
-# Oracle parity: encodes the same input via lewtoff and via the in-tree
+# Oracle parity: encodes the same input via oxivorbis and via the in-tree
 # oracle-encoder (pristine libvorbis 1.3.7, deterministic flags) and
 # byte-diffs the output. Runs both serial and parallel paths so a
 # regression in either is caught locally.
@@ -116,7 +116,7 @@ corpus limit="" extra_features="" quality="" configs="" jobs="":
 # encoders end-to-end (stdin → ogg on stdout, dropped to /dev/null).
 #
 # Pass `parallel` as the second arg to bench the Rayon-parallel build:
-#     just bench                                       # serial lewtoff
+#     just bench                                       # serial oxivorbis
 #     just bench corpus/path/to/file.wav               # serial on file
 #     just bench corpus/path/to/file.wav parallel      # parallel on file
 #     just bench corpus/beach_bro/snd_neon_nights.mp3 parallel
@@ -135,7 +135,7 @@ bench input="corpus/beach_bro/snd_neon_nights.mp3" features="" quality="5":
         exit 2
     fi
     : ${TMPDIR:=/tmp/}
-    PCM="${TMPDIR%/}/lewtoff-bench.s16le"
+    PCM="${TMPDIR%/}/oxivorbis-bench.s16le"
     if [ ! -f "{{input}}" ]; then
         echo "input not found: {{input}}" >&2
         exit 2
@@ -148,13 +148,13 @@ bench input="corpus/beach_bro/snd_neon_nights.mp3" features="" quality="5":
     SECS=$(awk "BEGIN{printf \"%.2f\", $SAMPLES/44100}")
     echo "input: $SAMPLES frames (${SECS}s of audio, $SIZE bytes raw)"
     BUILD_FLAGS=""
-    LW_NAME="lewtoff"
+    LW_NAME="oxivorbis"
     if [ -n "{{features}}" ]; then
         BUILD_FLAGS="--features {{features}}"
-        LW_NAME="lewtoff ({{features}})"
+        LW_NAME="oxivorbis ({{features}})"
     fi
-    cargo build --release -q -p lewtoff-cli $BUILD_FLAGS
-    LWBIN="$PWD/target/release/lewtoff"
+    cargo build --release -q -p oxivorbis-cli $BUILD_FLAGS
+    LWBIN="$PWD/target/release/oxivorbis"
     echo
     hyperfine --warmup 1 \
         --command-name "$LW_NAME" \
@@ -162,7 +162,7 @@ bench input="corpus/beach_bro/snd_neon_nights.mp3" features="" quality="5":
         --command-name 'oggenc (libvorbis)' \
         "oggenc -Q -q {{quality}} -R 44100 -B 16 -C 2 --raw - -o - < $PCM > /dev/null"
 
-# Profile a single lewtoff encode end-to-end with samply, opening the
+# Profile a single oxivorbis encode end-to-end with samply, opening the
 # resulting profile in a browser (Firefox profiler UI). Same input
 # semantics as `bench`.
 #
@@ -176,7 +176,7 @@ profile input="corpus/beach_bro/snd_neon_nights.mp3":
         exit 2
     fi
     : ${TMPDIR:=/tmp/}
-    PCM="${TMPDIR%/}/lewtoff-bench.s16le"
+    PCM="${TMPDIR%/}/oxivorbis-bench.s16le"
     if [ ! -f "{{input}}" ]; then
         echo "input not found: {{input}}" >&2
         exit 2
@@ -184,14 +184,14 @@ profile input="corpus/beach_bro/snd_neon_nights.mp3":
     echo "decoding {{input}} → s16le 44100Hz stereo..."
     ffmpeg -hide_banner -loglevel error -y -i "{{input}}" \
         -f s16le -ar 44100 -ac 2 "$PCM"
-    cargo build --release -q -p lewtoff-cli
-    LWBIN="$PWD/target/release/lewtoff"
+    cargo build --release -q -p oxivorbis-cli
+    LWBIN="$PWD/target/release/oxivorbis"
     echo "recording samply profile (browser will open when encode finishes)..."
     samply record -- "$LWBIN" 44100 stereo < "$PCM" > /dev/null
 
-# Packet/page-level diff of two Ogg files (e.g. lewtoff.ogg vs oracle.ogg
+# Packet/page-level diff of two Ogg files (e.g. oxivorbis.ogg vs oracle.ogg
 # from a saved corpus/fuzz failure).
-# Usage: just parity-diff lewtoff.ogg oracle.ogg
+# Usage: just parity-diff oxivorbis.ogg oracle.ogg
 parity-diff a b:
     cargo run -p parity-diff -- {{a}} {{b}}
 
@@ -212,7 +212,7 @@ regen-header-vectors:
 # compares against, also on wasm) from a fresh oracle run.
 regen-golden-vectors:
     ./tools/oracle-encoder/build.sh
-    LEWTOFF_BLESS=1 cargo nextest run --features oracle --no-tests=fail \
+    OXIVORBIS_BLESS=1 cargo nextest run --features oracle --no-tests=fail \
         -E 'binary(golden) & test(golden_vectors_are_fresh)'
 
 # Regenerate src/tables/quality.rs (libvorbis 44.1/48 kHz mode-template
@@ -230,9 +230,9 @@ regen-quality-tables:
 # bit-for-bit. No Rust-side cos/sin, so the result is host-independent.
 regen-tables:
     ./tools/oracle-encoder/build_dsp_oracle.sh
-    mkdir -p /tmp/lewtoff-dsp-tables
-    ./tools/oracle-encoder/dsp_oracle tables /tmp/lewtoff-dsp-tables
-    cargo run -p gen-tables -- /tmp/lewtoff-dsp-tables
+    mkdir -p /tmp/oxivorbis-dsp-tables
+    ./tools/oracle-encoder/dsp_oracle tables /tmp/oxivorbis-dsp-tables
+    cargo run -p gen-tables -- /tmp/oxivorbis-dsp-tables
     cargo fmt --all
 
 # Regenerate tools/oracle-encoder/dsp_manifest.txt: libvorbis hashes of the
@@ -249,7 +249,7 @@ regen-mdct-vectors:
 
 # The non-oracle test suite on wasm32-wasip1 under wasmtime: unit tests
 # (incl. the DSP manifest), header/MDCT vectors, encode smoke tests, the
-# psy snapshot and tests/golden.rs (lewtoff vs committed oracle output),
+# psy snapshot and tests/golden.rs (oxivorbis vs committed oracle output),
 # exercising wasm's own libm and codegen. Needs wasmtime on PATH
 # (`brew install wasmtime`, or see https://wasmtime.dev).
 wasm-test:
@@ -261,15 +261,15 @@ wasm-test:
 # Debug dumps of the first short block of a 440 Hz sine, from the
 # INSTRUMENTED libvorbis copy (tools/debug-libvorbis-dump, not the oracle).
 debug-dump-c:
-    mkdir -p /tmp/lewtoff-debug
+    mkdir -p /tmp/oxivorbis-debug
     ./tools/debug-libvorbis-dump/build.sh
     ./tools/debug-libvorbis-dump/harness
-    @echo "dumps in /tmp/lewtoff-debug/c_*"
+    @echo "dumps in /tmp/oxivorbis-debug/c_*"
 
 debug-dump-rust:
-    mkdir -p /tmp/lewtoff-debug
-    LEWTOFF_DEBUG_DUMP=1 cargo run -p debug-rust-dump
-    @echo "dumps in /tmp/lewtoff-debug/r_*"
+    mkdir -p /tmp/oxivorbis-debug
+    OXIVORBIS_DEBUG_DUMP=1 cargo run -p debug-rust-dump
+    @echo "dumps in /tmp/oxivorbis-debug/r_*"
 
 # Layer-by-layer comparison of the two dumps.
 debug-diff: debug-dump-c debug-dump-rust

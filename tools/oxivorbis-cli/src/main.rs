@@ -2,23 +2,23 @@
 //! write to stdout. Exists for hyperfine-style benchmarking against
 //! `oggenc -q <quality>`. Usage:
 //!
-//!     lewtoff [--stream] <rate> <channels> [quality] < input.s16le > output.ogg
+//!     oxivorbis [--stream] <rate> <channels> [quality] < input.s16le > output.ogg
 //!
 //! `rate` must be 44100 or 48000; `channels` must be 1 or 2 (or `mono`/`stereo`);
 //! `quality` is on oggenc's `-q` scale, -1..10 (fractional ok), default 5.
-//! Stdin is piped through `lewtoff::Encoder` in 64 KiB reads and pages are
+//! Stdin is piped through `oxivorbis::Encoder` in 64 KiB reads and pages are
 //! written as they complete, so memory stays bounded for any input length
 //! and no copy of the whole input is ever made. The output is the same as
-//! one-shot `lewtoff::encode` of the whole input (the encoder's output does
+//! one-shot `oxivorbis::encode` of the whole input (the encoder's output does
 //! not depend on how its input is split). `--stream` is accepted for
 //! compatibility; it is the only mode.
 
 use std::io::{Read, Write};
 
 fn die(msg: &str) -> ! {
-    eprintln!("lewtoff: {msg}");
+    eprintln!("oxivorbis: {msg}");
     eprintln!(
-        "usage: lewtoff [--stream] <44100|48000> <1|2|mono|stereo> [quality -1..10] < in.s16le > out.ogg"
+        "usage: oxivorbis [--stream] <44100|48000> <1|2|mono|stereo> [quality -1..10] < in.s16le > out.ogg"
     );
     std::process::exit(2);
 }
@@ -43,22 +43,22 @@ fn main() {
         die("expected 2 or 3 arguments: <rate> <channels> [quality]");
     }
     let quality = match args.get(2) {
-        None => lewtoff::Quality::Q5,
+        None => oxivorbis::Quality::Q5,
         Some(q) => q
             .parse::<f32>()
             .ok()
-            .and_then(lewtoff::Quality::new)
+            .and_then(oxivorbis::Quality::new)
             .unwrap_or_else(|| die(&format!("unsupported quality {q:?}; want -1..10"))),
     };
-    let opts = lewtoff::Options::default().with_quality(quality);
+    let opts = oxivorbis::Options::default().with_quality(quality);
     let rate = match args[0].as_str() {
-        "44100" => lewtoff::SampleRate::Hz44100,
-        "48000" => lewtoff::SampleRate::Hz48000,
+        "44100" => oxivorbis::SampleRate::Hz44100,
+        "48000" => oxivorbis::SampleRate::Hz48000,
         other => die(&format!("unsupported rate {other:?}; want 44100 or 48000")),
     };
     let channels = match args[1].as_str() {
-        "1" | "mono" => lewtoff::Channels::Mono,
-        "2" | "stereo" => lewtoff::Channels::Stereo,
+        "1" | "mono" => oxivorbis::Channels::Mono,
+        "2" | "stereo" => oxivorbis::Channels::Stereo,
         other => die(&format!(
             "unsupported channels {other:?}; want 1/2/mono/stereo"
         )),
@@ -66,7 +66,7 @@ fn main() {
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut enc = lewtoff::Encoder::new(rate, channels, &opts);
+    let mut enc = oxivorbis::Encoder::new(rate, channels, &opts);
     let mut stdin = std::io::stdin().lock();
     let mut buf = vec![0u8; 1 << 16];
     let mut carry: Option<u8> = None;

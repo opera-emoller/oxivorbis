@@ -78,7 +78,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo clippy --all-targets --features parallel -- -D warnings
       - run: cargo clippy --all-targets --features oracle,parallel -- -D warnings
-      - run: cargo clippy --workspace --all-targets --features lewtoff/oracle,lewtoff/parallel -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features oxivorbis/oracle,oxivorbis/parallel -- -D warnings
       - name: Guard against silently skipped oracle tests
         # The oracle runs below use no name filter (they run the whole
         # suite with the feature on). This guard makes sure each
@@ -269,7 +269,7 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release
       - name: Tests on wasm32-wasip1 (wasmtime)
         # Unit tests (incl. DSP manifest), header/MDCT vectors, smoke
-        # tests, the psy snapshot and tests/golden.rs, i.e. lewtoff vs
+        # tests, the psy snapshot and tests/golden.rs, i.e. oxivorbis vs
         # committed oracle output under wasm's own libm and codegen.
         # Same list as `just wasm-test`.
         env:

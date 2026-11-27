@@ -7,7 +7,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use lewtoff::{Channels, Encoder, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
 use rayon::prelude::*;
 
 /// Run `f` on its own thread and fail if it doesn't finish within
@@ -62,7 +62,7 @@ fn music(frames: usize, seed: u64) -> Vec<i16> {
 }
 
 fn encode_music(pcm: &[i16]) -> Vec<u8> {
-    lewtoff::encode(
+    oxivorbis::encode(
         pcm,
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -250,7 +250,7 @@ fn setup_cache_is_thread_safe() {
             &pcm[..]
         };
         let opts = Options::default().with_quality(Quality::new(q).unwrap());
-        lewtoff::encode(input, rate, channels, &opts)
+        oxivorbis::encode(input, rate, channels, &opts)
     };
     let want: Vec<Vec<u8>> = keys.iter().map(enc).collect();
     let threads = 32;
@@ -420,7 +420,7 @@ fn adversarial_f32_decodes(rate: SampleRate, channels: Channels) {
     for (name, pcm) in adversarial(frames, ch) {
         for q in [-1.0f32, 0.0, 5.0, 10.0] {
             let opts = Options::default().with_quality(Quality::new(q).unwrap());
-            let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+            let ogg = oxivorbis::encode_f32(&pcm, rate, channels, &opts);
             let got = decode(&ogg);
             assert_eq!(
                 got, frames,
@@ -445,7 +445,7 @@ fn adversarial_f32_tiny_inputs(rate: SampleRate, channels: Channels) {
             let pcm = vec![v; frames * ch];
             for q in [-1.0f32, 0.0, 5.0, 10.0] {
                 let opts = Options::default().with_quality(Quality::new(q).unwrap());
-                let ogg = lewtoff::encode_f32(&pcm, rate, channels, &opts);
+                let ogg = oxivorbis::encode_f32(&pcm, rate, channels, &opts);
                 let got = decode(&ogg);
                 assert_eq!(got, frames, "{v} x{frames} q{q} {rate:?} {channels:?}");
             }
@@ -488,7 +488,7 @@ adversarial_tests! {
 /// Encode a short clip with `opts` and return lewton's view of the
 /// comment header: (vendor, [(key, value)]).
 fn decoded_comments(opts: &Options) -> (String, Vec<(String, String)>) {
-    let ogg = lewtoff::encode(&[0i16; 4410], SampleRate::Hz44100, Channels::Mono, opts);
+    let ogg = oxivorbis::encode(&[0i16; 4410], SampleRate::Hz44100, Channels::Mono, opts);
     let rdr = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(&ogg))
         .expect("lewton rejects the headers");
     (rdr.comment_hdr.vendor, rdr.comment_hdr.comment_list)
@@ -535,7 +535,7 @@ fn comment_keys_are_sanitized() {
 #[test]
 fn comment_defaults_and_valid_keys() {
     let (vendor, comments) = decoded_comments(&Options::default());
-    assert_eq!(vendor, lewtoff::DEFAULT_VENDOR);
+    assert_eq!(vendor, oxivorbis::DEFAULT_VENDOR);
     assert!(comments.is_empty());
 
     let printable: String = (0x20u8..=0x7D)

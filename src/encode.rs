@@ -797,8 +797,8 @@ impl EncoderCore {
                 && crate::debug_dump::dump_enabled()
                 && crate::debug_dump::try_claim_first_short_block()
             {
-                std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
-                crate::debug_dump::write_f32_bin("/tmp/lewtoff-debug/r_windowed.bin", pcm0);
+                std::fs::create_dir_all("/tmp/oxivorbis-debug").ok();
+                crate::debug_dump::write_f32_bin("/tmp/oxivorbis-debug/r_windowed.bin", pcm0);
             }
         }
     }

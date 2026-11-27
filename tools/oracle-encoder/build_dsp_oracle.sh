@@ -4,7 +4,7 @@
 # same pinned flags as build.sh (see common.sh).
 #
 #   ./tools/oracle-encoder/build_dsp_oracle.sh
-#   ./tools/oracle-encoder/dsp_oracle tables /tmp/lewtoff-dsp-tables   # for gen-tables
+#   ./tools/oracle-encoder/dsp_oracle tables /tmp/oxivorbis-dsp-tables   # for gen-tables
 #   ./tools/oracle-encoder/dsp_oracle manifest > tools/oracle-encoder/dsp_manifest.txt
 #
 # See also `just regen-tables` and `just regen-dsp-manifest`.

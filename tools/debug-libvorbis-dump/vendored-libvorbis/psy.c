@@ -162,7 +162,7 @@ static float ***setup_tone_curves(float curveatt_dB[P_BANDS],float binHz,int n,
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *fff = fopen("/tmp/lewtoff-debug/c_workc.bin", "wb");
+      FILE *fff = fopen("/tmp/oxivorbis-debug/c_workc.bin", "wb");
       if (fff) {
         for(int b=0;b<P_BANDS;b++)
           for(int lv=0;lv<P_LEVELS;lv++)
@@ -349,8 +349,8 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
     afired++;
     if(afired<=4){
       char fnt[256], fno[256];
-      snprintf(fnt,sizeof(fnt),"/tmp/lewtoff-debug/c_toneatt_%d.bin", afired);
-      snprintf(fno,sizeof(fno),"/tmp/lewtoff-debug/c_psy_%d.bin", afired);
+      snprintf(fnt,sizeof(fnt),"/tmp/oxivorbis-debug/c_toneatt_%d.bin", afired);
+      snprintf(fno,sizeof(fno),"/tmp/oxivorbis-debug/c_psy_%d.bin", afired);
       FILE *fff=fopen(fnt,"wb");
       if(fff){ fwrite(vi->toneatt, sizeof(float), 17, fff); fclose(fff); }
       fprintf(stderr, "C_PSY_INIT_%d: blockflag=%d n=%d toneatt[10]=%f noisemaxsupp=%f tone_masteratt=[%f,%f,%f]\n",
@@ -365,7 +365,7 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
       }
     }
     if(afired==1){
-      FILE *fff=fopen("/tmp/lewtoff-debug/c_toneatt.bin","wb");
+      FILE *fff=fopen("/tmp/oxivorbis-debug/c_toneatt.bin","wb");
       if(fff){ fwrite(vi->toneatt, sizeof(float), 17, fff); fclose(fff); }
       fprintf(stderr, "C_TONEATT[10]=%f, centerboost=%f, decay=%f\n",
               vi->toneatt[10], vi->tone_centerboost, vi->tone_decay);
@@ -390,7 +390,7 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
       for(int z=0;z<17;z++) fprintf(stderr, "0x%08x ", *(uint32_t*)&vi->noiseoff[1][z]);
       fprintf(stderr, "\n");
       /* Dump ALL psy info as raw bytes so Rust can mirror exactly. */
-      FILE *fpsi = fopen("/tmp/lewtoff-debug/c_psy_info.bin", "wb");
+      FILE *fpsi = fopen("/tmp/oxivorbis-debug/c_psy_info.bin", "wb");
       if(fpsi) {
         fwrite(&vi->blockflag, sizeof(int), 1, fpsi);
         fwrite(&vi->ath_adjatt, sizeof(float), 1, fpsi);
@@ -428,7 +428,7 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
     static int fired=0;
     if(!fired){
       fired=1;
-      FILE *fff=fopen("/tmp/lewtoff-debug/c_tonecurves.bin","wb");
+      FILE *fff=fopen("/tmp/oxivorbis-debug/c_tonecurves.bin","wb");
       if(fff){
         for(int b=0;b<P_BANDS;b++)
           for(int lv=0;lv<P_LEVELS;lv++)
@@ -483,7 +483,7 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
     static int ndumped=0;
     if(!ndumped){
       ndumped=1;
-      FILE *fno=fopen("/tmp/lewtoff-debug/c_noiseoffset_1.bin","wb");
+      FILE *fno=fopen("/tmp/oxivorbis-debug/c_noiseoffset_1.bin","wb");
       if(fno){ fwrite(p->noiseoffset[1], sizeof(float), n, fno); fclose(fno); }
     }
   }
@@ -492,7 +492,7 @@ void _vp_psy_init(vorbis_look_psy *p,vorbis_info_psy *vi,
     static int hdumped=0;
     if(!hdumped){
       hdumped=1;
-      FILE *fh=fopen("/tmp/lewtoff-debug/c_halfoc.bin","wb");
+      FILE *fh=fopen("/tmp/oxivorbis-debug/c_halfoc.bin","wb");
       if(fh){
         for(int hi=0; hi<n; hi++){
           float halfoc_v = toOC((hi+.5)*rate/(2.*n))*2.;
@@ -949,7 +949,7 @@ void _vp_tonemask(vorbis_look_psy *p,
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *fff = fopen("/tmp/lewtoff-debug/c_tone_seed.bin", "wb");
+      FILE *fff = fopen("/tmp/oxivorbis-debug/c_tone_seed.bin", "wb");
       if (fff) { fwrite(seed, sizeof(float), p->total_octave_lines, fff); fclose(fff); }
     }
   }

@@ -45,7 +45,7 @@ pub fn lpc_from_data(data: &[f32], lpci: &mut [f32], n: usize, m: usize) -> f32 
             for v in aut.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_aut.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_aut.bin", &bytes);
         }
     }
 
@@ -104,13 +104,13 @@ pub fn lpc_from_data(data: &[f32], lpci: &mut [f32], n: usize, m: usize) -> f32 
             for v in lpc.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_coeffs.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_coeffs.bin", &bytes);
             // Also dump the f32 lpci (after cast)
             let mut bytes32 = Vec::with_capacity(m * 4);
             for v in lpci.iter() {
                 bytes32.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_coeffs_f32.bin", &bytes32);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_coeffs_f32.bin", &bytes32);
         }
     }
 
@@ -141,12 +141,12 @@ pub fn lpc_predict(coeff: &[f32], prime: &[f32], m: usize, data: &mut [f32], n: 
             for v in prime.iter() {
                 p.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_predict_prime.bin", &p);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_predict_prime.bin", &p);
             let mut c = Vec::new();
             for v in coeff.iter() {
                 c.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_predict_coeff.bin", &c);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_predict_coeff.bin", &c);
         }
     }
 
@@ -181,7 +181,7 @@ pub fn lpc_predict(coeff: &[f32], prime: &[f32], m: usize, data: &mut [f32], n: 
             for v in data.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_lpc_predict_out.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_lpc_predict_out.bin", &bytes);
         }
     }
 }

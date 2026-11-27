@@ -1,4 +1,4 @@
-use lewtoff::{Channels, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Options, Quality, SampleRate};
 
 fn silence(n: usize) -> Vec<i16> {
     vec![0i16; n]
@@ -27,7 +27,7 @@ fn check_ogg(bytes: &[u8]) {
 
 #[test]
 fn encode_silence_mono44_does_not_panic() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(44100),
         SampleRate::Hz44100,
         Channels::Mono,
@@ -38,7 +38,7 @@ fn encode_silence_mono44_does_not_panic() {
 
 #[test]
 fn encode_silence_mono48_does_not_panic() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(48000),
         SampleRate::Hz48000,
         Channels::Mono,
@@ -49,7 +49,7 @@ fn encode_silence_mono48_does_not_panic() {
 
 #[test]
 fn encode_silence_stereo44_does_not_panic() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(44100 * 2),
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -60,7 +60,7 @@ fn encode_silence_stereo44_does_not_panic() {
 
 #[test]
 fn encode_silence_stereo48_does_not_panic() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(48000 * 2),
         SampleRate::Hz48000,
         Channels::Stereo,
@@ -72,7 +72,7 @@ fn encode_silence_stereo48_does_not_panic() {
 #[test]
 fn encode_sine_stereo44_does_not_panic() {
     let samples = sine_stereo(44100, 44100);
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &samples,
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -83,7 +83,7 @@ fn encode_sine_stereo44_does_not_panic() {
 
 #[test]
 fn lewton_can_decode_our_silence_mono44() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(44100),
         SampleRate::Hz44100,
         Channels::Mono,
@@ -115,7 +115,7 @@ fn lewton_can_decode_our_silence_mono44() {
 
 #[test]
 fn lewton_can_decode_our_silence_stereo44() {
-    let bytes = lewtoff::encode(
+    let bytes = oxivorbis::encode(
         &silence(44100 * 2),
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -136,12 +136,12 @@ fn lewton_can_decode_our_silence_stereo44() {
 #[test]
 fn oggenc_base_quality_bits() {
     // Bits produced by vorbis-tools 1.4.3 oggenc's `quality *= 0.1` on a
-    // float (see lewtoff::encode::oggenc_base_quality and the oracle-gated
+    // float (see oxivorbis::encode::oggenc_base_quality and the oracle-gated
     // tests/parity.rs::parity_oggenc_quality_conversion).
-    let bits = |q: f32| lewtoff::oggenc_base_quality(q).to_bits();
-    assert_eq!(lewtoff::oggenc_base_quality(5.0), 0.5);
-    assert_eq!(lewtoff::oggenc_base_quality(10.0), 1.0);
-    assert_eq!(lewtoff::oggenc_base_quality(11.0), 1.0);
+    let bits = |q: f32| oxivorbis::oggenc_base_quality(q).to_bits();
+    assert_eq!(oxivorbis::oggenc_base_quality(5.0), 0.5);
+    assert_eq!(oxivorbis::oggenc_base_quality(10.0), 1.0);
+    assert_eq!(oxivorbis::oggenc_base_quality(11.0), 1.0);
     assert_eq!(bits(9.344), 0x3f6f34d6);
     assert_eq!(bits(9.303), 0x3f6e2825);
 }
@@ -153,17 +153,17 @@ fn at(q: f32) -> Options {
 #[test]
 fn explicit_q5_matches_default_and_others_decode() {
     let samples = sine_stereo(44100, 44100);
-    let a = lewtoff::encode(
+    let a = oxivorbis::encode(
         &samples,
         SampleRate::Hz44100,
         Channels::Stereo,
         &Options::default(),
     );
-    let b = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(5.0));
+    let b = oxivorbis::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(5.0));
     assert_eq!(a, b);
     let mut prev_len = 0;
     for q in [-1.0f32, -0.5, 0.0, 2.5, 6.0, 10.0] {
-        let bytes = lewtoff::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(q));
+        let bytes = oxivorbis::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(q));
         check_ogg(&bytes);
         assert!(bytes.len() > prev_len, "q{q} not larger than lower quality");
         prev_len = bytes.len();
@@ -204,18 +204,18 @@ fn rate_and_channel_conversions() {
     );
 }
 
-/// Default output is deterministic: fixed serial, lewtoff vendor, no
+/// Default output is deterministic: fixed serial, oxivorbis vendor, no
 /// comments.
 #[test]
 fn default_headers_are_deterministic() {
     let pcm = sine_stereo(5000, 44100);
-    let a = lewtoff::encode(
+    let a = oxivorbis::encode(
         &pcm,
         SampleRate::Hz44100,
         Channels::Stereo,
         &Options::default(),
     );
-    let b = lewtoff::encode(
+    let b = oxivorbis::encode(
         &pcm,
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -224,11 +224,11 @@ fn default_headers_are_deterministic() {
     assert_eq!(a, b);
     assert_eq!(
         u32::from_le_bytes(a[14..18].try_into().unwrap()),
-        lewtoff::DEFAULT_SERIAL
+        oxivorbis::DEFAULT_SERIAL
     );
     let comment = comment_packet(&a);
-    let vendor = lewtoff::DEFAULT_VENDOR.as_bytes();
-    assert!(lewtoff::DEFAULT_VENDOR.starts_with("lewtoff "));
+    let vendor = oxivorbis::DEFAULT_VENDOR.as_bytes();
+    assert!(oxivorbis::DEFAULT_VENDOR.starts_with("oxivorbis "));
     assert_eq!(&comment[7..11], (vendor.len() as u32).to_le_bytes());
     assert_eq!(&comment[11..11 + vendor.len()], vendor);
     assert_eq!(&comment[11 + vendor.len()..15 + vendor.len()], [0, 0, 0, 0]);
@@ -243,7 +243,7 @@ fn options_set_serial_vendor_and_comments() {
         .with_vendor("my vendor")
         .with_comment("TITLE", "Tone")
         .with_comment("ARTIST", "A=B");
-    let ogg = lewtoff::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+    let ogg = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
     assert_eq!(
         u32::from_le_bytes(ogg[14..18].try_into().unwrap()),
         0xDEAD_BEEF
@@ -259,7 +259,7 @@ fn options_set_serial_vendor_and_comments() {
     want.push(1);
     assert_eq!(comment_packet(&ogg), want);
     // The audio itself is unaffected by header options.
-    let plain = lewtoff::encode(
+    let plain = oxivorbis::encode(
         &pcm,
         SampleRate::Hz44100,
         Channels::Stereo,

@@ -33,13 +33,13 @@ fn q5_setup_sync_bytes_and_size() {
     );
 }
 
-/// The three header packets of a Q5 44.1 kHz mono lewtoff encode.
+/// The three header packets of a Q5 44.1 kHz mono oxivorbis encode.
 fn q5_header_packets() -> Vec<Vec<u8>> {
-    let ogg = lewtoff::encode(
+    let ogg = oxivorbis::encode(
         &[0i16; 1024],
-        lewtoff::SampleRate::Hz44100,
-        lewtoff::Channels::Mono,
-        &lewtoff::Options::default(),
+        oxivorbis::SampleRate::Hz44100,
+        oxivorbis::Channels::Mono,
+        &oxivorbis::Options::default(),
     );
     let mut reader = ogg::PacketReader::new(std::io::Cursor::new(ogg));
     (0..3)

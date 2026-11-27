@@ -582,7 +582,7 @@ static void drftf1(int n,float *c,float *ch,float *wa,int *ifac){
     static int wadumped = 0;
     if (!wadumped) {
       wadumped = 1;
-      FILE *f = fopen("/tmp/lewtoff-debug/c_drftf1_wa.bin", "wb");
+      FILE *f = fopen("/tmp/oxivorbis-debug/c_drftf1_wa.bin", "wb");
       if (f) { fwrite(wa, sizeof(float), 2*n, f); fclose(f); }
     }
   }
@@ -613,7 +613,7 @@ static void drftf1(int n,float *c,float *ch,float *wa,int *ifac){
       static int iter = 0;
       if (iter < 4) {
         char path[128];
-        snprintf(path, sizeof(path), "/tmp/lewtoff-debug/c_drftf1_iter%d_out.bin", iter);
+        snprintf(path, sizeof(path), "/tmp/oxivorbis-debug/c_drftf1_iter%d_out.bin", iter);
         FILE *f = fopen(path, "wb");
         if (f) {
           float *buf = (na != 0) ? c : ch;

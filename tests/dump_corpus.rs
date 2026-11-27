@@ -1,4 +1,4 @@
-//! Helper that dumps lewtoff/oracle ogg for a corpus file (manually run).
+//! Helper that dumps oxivorbis/oracle ogg for a corpus file (manually run).
 #![cfg(feature = "oracle")]
 
 use std::io::Write;
@@ -54,18 +54,18 @@ fn dump_corpus_one() {
     // extract vendor from oracle to match
     let vendor: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
     let encoder_tag: &[u8] = b"";
-    let lw = lewtoff::encode_with_serial_and_meta(
+    let lw = oxivorbis::encode_with_serial_and_meta(
         &samples,
-        lewtoff::SampleRate::Hz44100,
-        lewtoff::Channels::Stereo,
+        oxivorbis::SampleRate::Hz44100,
+        oxivorbis::Channels::Stereo,
         serial,
         Some(vendor),
         Some(encoder_tag),
     );
     std::fs::write("/tmp/corpus_oracle.ogg", &oracle).unwrap();
-    std::fs::write("/tmp/corpus_lewtoff.ogg", &lw).unwrap();
+    std::fs::write("/tmp/corpus_oxivorbis.ogg", &lw).unwrap();
     eprintln!(
-        "oracle: {} bytes\nlewtoff: {} bytes",
+        "oracle: {} bytes\noxivorbis: {} bytes",
         oracle.len(),
         lw.len()
     );

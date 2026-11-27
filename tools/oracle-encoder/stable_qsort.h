@@ -8,7 +8,7 @@
  * equal magnitudes are common. qsort's tie order is unspecified: glibc
  * uses a merge sort (stable) for these sizes, macOS libc does not. With
  * this shim the oracle behaves like a stable sort everywhere, which is
- * what lewtoff mirrors.
+ * what oxivorbis mirrors.
  *
  * <stdlib.h> is included first so the system qsort prototype is declared
  * under its real name; the macro only rewrites later call sites.

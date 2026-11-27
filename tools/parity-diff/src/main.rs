@@ -1,7 +1,7 @@
 //! parity-diff: structured diff of two Ogg Vorbis files at page and packet
 //! level.
 //!
-//! Usage: parity-diff [--ignore-serial] <lewtoff.ogg> <oracle.ogg>
+//! Usage: parity-diff [--ignore-serial] <oxivorbis.ogg> <oracle.ogg>
 //!
 //! Both files are parsed strictly (shares tools/parity-fuzz/src/oggdiff.rs).
 //! Every page's CRC is verified, then the two streams are compared page by
@@ -20,7 +20,7 @@ mod oggdiff;
 use oggdiff::{Page, crc_of_page, packets, parse_pages};
 
 fn usage() -> ! {
-    eprintln!("usage: parity-diff [--ignore-serial] <lewtoff.ogg> <oracle.ogg>");
+    eprintln!("usage: parity-diff [--ignore-serial] <oxivorbis.ogg> <oracle.ogg>");
     std::process::exit(2)
 }
 
@@ -51,7 +51,7 @@ fn header_diffs(a: &Page, b: &Page, ignore_serial: bool) -> Vec<String> {
     let mut d = Vec::new();
     let mut f = |name: &str, x: String, y: String| {
         if x != y {
-            d.push(format!("{name}: lewtoff {x} | oracle {y}"));
+            d.push(format!("{name}: oxivorbis {x} | oracle {y}"));
         }
     };
     f("version", a.version.to_string(), b.version.to_string());
@@ -102,7 +102,7 @@ fn main() {
     }
     let lw = read(&files[0]);
     let or = read(&files[1]);
-    println!("lewtoff: {} bytes\noracle:  {} bytes", lw.len(), or.len());
+    println!("oxivorbis: {} bytes\noracle:  {} bytes", lw.len(), or.len());
 
     let parse = |name: &str, b: &[u8]| -> Vec<Page> {
         parse_pages(b).unwrap_or_else(|e| {
@@ -110,14 +110,14 @@ fn main() {
             std::process::exit(2)
         })
     };
-    let lp = parse("lewtoff", &lw);
+    let lp = parse("oxivorbis", &lw);
     let op = parse("oracle", &or);
 
     let mut differ = false;
     let mut errors = false;
 
     // Each page's CRC must be valid on its own.
-    for (name, b, pages) in [("lewtoff", &lw, &lp), ("oracle", &or, &op)] {
+    for (name, b, pages) in [("oxivorbis", &lw, &lp), ("oracle", &or, &op)] {
         for (i, p) in pages.iter().enumerate() {
             let want = crc_of_page(b, p);
             if want != p.crc {
@@ -131,7 +131,7 @@ fn main() {
     }
 
     // Page-level comparison.
-    println!("pages: lewtoff {} oracle {}", lp.len(), op.len());
+    println!("pages: oxivorbis {} oracle {}", lp.len(), op.len());
     if lp.len() != op.len() {
         differ = true;
     }
@@ -143,7 +143,7 @@ fn main() {
         if ab != bb {
             let k = oggdiff::first_diff(ab, bb);
             d.push(format!(
-                "body differs at byte {k} (lewtoff {} bytes, oracle {} bytes)",
+                "body differs at byte {k} (oxivorbis {} bytes, oracle {} bytes)",
                 ab.len(),
                 bb.len()
             ));
@@ -153,7 +153,7 @@ fn main() {
             if first_page_diff.is_none() {
                 first_page_diff = Some(i);
                 println!(
-                    "page {i} differs (lewtoff offset {}, oracle offset {}):",
+                    "page {i} differs (oxivorbis offset {}, oracle offset {}):",
                     a.offset, b.offset
                 );
                 for line in &d {
@@ -182,7 +182,7 @@ fn main() {
     // Packet-level comparison.
     let lpk = packets(&lw, &lp);
     let opk = packets(&or, &op);
-    println!("packets: lewtoff {} oracle {}", lpk.len(), opk.len());
+    println!("packets: oxivorbis {} oracle {}", lpk.len(), opk.len());
     let n = lpk.len().max(opk.len());
     let mut first_pkt = None;
     for i in 0..n {
@@ -192,7 +192,7 @@ fn main() {
             (Some(a), Some(b)) => {
                 let k = oggdiff::first_diff(&a.data, &b.data);
                 println!(
-                    "packet {i} ({label}): DIVERGES at byte {k} (lewtoff {} bytes, oracle {} bytes; pages lewtoff {}..{} oracle {}..{})",
+                    "packet {i} ({label}): DIVERGES at byte {k} (oxivorbis {} bytes, oracle {} bytes; pages oxivorbis {}..{} oracle {}..{})",
                     a.data.len(),
                     b.data.len(),
                     a.first_page,
@@ -200,20 +200,20 @@ fn main() {
                     b.first_page,
                     b.last_page
                 );
-                println!("  lewtoff {}", hex_ctx(&a.data, k));
+                println!("  oxivorbis {}", hex_ctx(&a.data, k));
                 println!("  oracle  {}", hex_ctx(&b.data, k));
                 first_pkt = Some(i);
             }
             (None, Some(b)) => {
                 println!(
-                    "packet {i} ({label}): MISSING in lewtoff ({} bytes in oracle)",
+                    "packet {i} ({label}): MISSING in oxivorbis ({} bytes in oracle)",
                     b.data.len()
                 );
                 first_pkt = Some(i);
             }
             (Some(a), None) => {
                 println!(
-                    "packet {i} ({label}): EXTRA in lewtoff ({} bytes)",
+                    "packet {i} ({label}): EXTRA in oxivorbis ({} bytes)",
                     a.data.len()
                 );
                 first_pkt = Some(i);
@@ -250,7 +250,7 @@ fn main() {
         if !ignore_serial {
             let k = oggdiff::first_diff(&lw, &or);
             println!(
-                "raw bytes: first difference at byte {k}: lewtoff {}; oracle {}",
+                "raw bytes: first difference at byte {k}: oxivorbis {}; oracle {}",
                 oggdiff::locate(&lw, &lp, k),
                 oggdiff::locate(&or, &op, k)
             );

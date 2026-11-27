@@ -862,7 +862,7 @@ static int mapping0_forward(vorbis_block *vb){
           static int fired=0;
           if(!fired && dump_now){
             fired=1;
-            FILE *f=fopen("/tmp/lewtoff-debug/c_residue_input.bin","wb");
+            FILE *f=fopen("/tmp/oxivorbis-debug/c_residue_input.bin","wb");
             if(f){ fwrite(couple_bundle[0], sizeof(int), n/2, f); fclose(f); }
           }
         }

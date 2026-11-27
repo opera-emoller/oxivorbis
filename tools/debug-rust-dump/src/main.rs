@@ -1,14 +1,14 @@
-//! debug-rust-dump: trigger LEWTOFF_DEBUG_DUMP=1 on a 440 Hz sine input
+//! debug-rust-dump: trigger OXIVORBIS_DEBUG_DUMP=1 on a 440 Hz sine input
 //! matching the C harness (1 second, 44100 Hz mono, peak amplitude 32767).
 //!
-//! Run with: LEWTOFF_DEBUG_DUMP=1 cargo run --bin debug-rust-dump
-//! Dumps land in /tmp/lewtoff-debug/r_*.
+//! Run with: OXIVORBIS_DEBUG_DUMP=1 cargo run --bin debug-rust-dump
+//! Dumps land in /tmp/oxivorbis-debug/r_*.
 
 fn main() {
     // Dumps are only compiled into debug builds. Edition 2024 makes env::set_var unsafe (and the crate forbids unsafe),
-    // so the caller must set LEWTOFF_DEBUG_DUMP=1 (`just debug-dump-rust` does).
-    if std::env::var_os("LEWTOFF_DEBUG_DUMP").is_none() {
-        eprintln!("debug-rust-dump: set LEWTOFF_DEBUG_DUMP=1 (or run `just debug-dump-rust`)");
+    // so the caller must set OXIVORBIS_DEBUG_DUMP=1 (`just debug-dump-rust` does).
+    if std::env::var_os("OXIVORBIS_DEBUG_DUMP").is_none() {
+        eprintln!("debug-rust-dump: set OXIVORBIS_DEBUG_DUMP=1 (or run `just debug-dump-rust`)");
         std::process::exit(2);
     }
 
@@ -26,12 +26,12 @@ fn main() {
         })
         .collect();
 
-    lewtoff::encode_with_serial(
+    oxivorbis::encode_with_serial(
         &samples,
-        lewtoff::SampleRate::Hz44100,
-        lewtoff::Channels::Mono,
+        oxivorbis::SampleRate::Hz44100,
+        oxivorbis::Channels::Mono,
         0,
     );
 
-    println!("Dumps written to /tmp/lewtoff-debug/r_*");
+    println!("Dumps written to /tmp/oxivorbis-debug/r_*");
 }

@@ -835,7 +835,7 @@ mod tests {
         use std::process::{Command, Stdio};
 
         fn oracle_bin() -> String {
-            std::env::var("LEWTOFF_ORACLE")
+            std::env::var("OXIVORBIS_ORACLE")
                 .unwrap_or_else(|_| "./tools/oracle-encoder/oracle-encoder".to_string())
         }
 

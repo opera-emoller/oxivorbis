@@ -1,7 +1,7 @@
-//! Golden oracle vectors: lewtoff output vs committed libvorbis output.
+//! Golden oracle vectors: oxivorbis output vs committed libvorbis output.
 //!
 //! Each case renders a short signal with integer-only arithmetic (no libm,
-//! so the input is bit-identical on every target) and compares lewtoff's
+//! so the input is bit-identical on every target) and compares oxivorbis's
 //! encode with `tests/vectors/golden/<name>.ogg`, which was produced by the
 //! in-tree oracle-encoder (pristine libvorbis 1.3.7).
 //!
@@ -9,11 +9,11 @@
 //! where the oracle can't: on wasm32-wasip1 under wasmtime (`just
 //! wasm-test`, CI's wasm job), whose libm and codegen differ from the native
 //! hosts. With `--features oracle` the vectors are additionally checked
-//! against a fresh oracle run (and rewritten with `LEWTOFF_BLESS=1`).
+//! against a fresh oracle run (and rewritten with `OXIVORBIS_BLESS=1`).
 
 mod common;
 
-use lewtoff::{Channels, SampleRate};
+use oxivorbis::{Channels, SampleRate};
 
 /// xorshift32.
 struct Xs(u32);
@@ -187,9 +187,9 @@ fn input(c: &Case) -> Input {
     }
 }
 
-fn lewtoff_encode(c: &Case) -> Vec<u8> {
+fn oxivorbis_encode(c: &Case) -> Vec<u8> {
     match input(c) {
-        Input::I16(s) => lewtoff::encode_with_base_quality_and_meta(
+        Input::I16(s) => oxivorbis::encode_with_base_quality_and_meta(
             &s,
             c.rate,
             c.channels,
@@ -198,7 +198,7 @@ fn lewtoff_encode(c: &Case) -> Vec<u8> {
             Some(ORACLE_VENDOR),
             Some(b""),
         ),
-        Input::F32(s) => lewtoff::encode_f32_with_base_quality_and_meta(
+        Input::F32(s) => oxivorbis::encode_f32_with_base_quality_and_meta(
             &s,
             c.rate,
             c.channels,
@@ -214,10 +214,10 @@ fn lewtoff_encode(c: &Case) -> Vec<u8> {
 fn golden_vectors_match() {
     let mut failures = Vec::new();
     for c in CASES {
-        let got = lewtoff_encode(c);
+        let got = oxivorbis_encode(c);
         if got != c.golden {
             failures.push(format!(
-                "{}: diverged at byte {} (lewtoff {} bytes, golden {} bytes)",
+                "{}: diverged at byte {} (oxivorbis {} bytes, golden {} bytes)",
                 c.name,
                 common::first_diff(&got, c.golden),
                 got.len(),
@@ -232,7 +232,7 @@ fn golden_vectors_match() {
 #[cfg(feature = "oracle")]
 #[test]
 fn golden_vectors_are_fresh() {
-    let bless = std::env::var_os("LEWTOFF_BLESS").is_some();
+    let bless = std::env::var_os("OXIVORBIS_BLESS").is_some();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/golden");
     let mut stale = Vec::new();
     for c in CASES {
@@ -257,6 +257,6 @@ fn golden_vectors_are_fresh() {
     }
     assert!(
         stale.is_empty() || bless,
-        "golden vectors differ from the oracle: {stale:?} (LEWTOFF_BLESS=1 rewrites them)"
+        "golden vectors differ from the oracle: {stale:?} (OXIVORBIS_BLESS=1 rewrites them)"
     );
 }

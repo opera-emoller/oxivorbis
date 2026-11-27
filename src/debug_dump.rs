@@ -1,6 +1,6 @@
 //! Env-gated binary dump helpers for layer-diff debugging.
 //!
-//! All functions are no-ops unless LEWTOFF_DEBUG_DUMP=1 is set at runtime.
+//! All functions are no-ops unless OXIVORBIS_DEBUG_DUMP=1 is set at runtime.
 //! Each "first short block" dump fires exactly once per process, guarded by
 //! a OnceLock<()>.
 
@@ -13,7 +13,7 @@ static MAPPING0_DUMPED: OnceLock<()> = OnceLock::new();
 /// Debug builds only: release builds never read the environment.
 pub(crate) fn dump_enabled() -> bool {
     cfg!(debug_assertions)
-        && *DUMP_ENABLED.get_or_init(|| std::env::var("LEWTOFF_DEBUG_DUMP").is_ok())
+        && *DUMP_ENABLED.get_or_init(|| std::env::var("OXIVORBIS_DEBUG_DUMP").is_ok())
 }
 
 /// Memoized read of a debug-toggling environment variable. Each call site gets

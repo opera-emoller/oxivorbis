@@ -1,4 +1,4 @@
-use lewtoff::mdct::mdct_forward;
+use oxivorbis::mdct::mdct_forward;
 
 fn run_case(input_bytes: &[u8], expected_output_bytes: &[u8]) {
     assert_eq!(input_bytes.len(), 2048 * 4);

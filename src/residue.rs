@@ -2,7 +2,7 @@
 //! libvorbis 1.3.7 `lib/res0.c` (encode path only).
 //!
 //! Decoder helpers (`res0_inverse`, `res2_inverse`, `_01inverse`) are NOT
-//! ported; lewtoff is encode-only.
+//! ported; oxivorbis is encode-only.
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::explicit_counter_loop)]

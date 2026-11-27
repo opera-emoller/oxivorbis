@@ -1,15 +1,15 @@
 [package]
-name = "lewtoff-cli"
+name = "oxivorbis-cli"
 version = "0.0.0"
 edition = "2024"
 publish = false
 
 [[bin]]
-name = "lewtoff"
+name = "oxivorbis"
 path = "src/main.rs"
 
 [features]
-parallel = ["lewtoff/parallel"]
+parallel = ["oxivorbis/parallel"]
 
 [dependencies]
-lewtoff = { path = "../.." }
+oxivorbis = { path = "../.." }

@@ -145,8 +145,8 @@ pub(crate) fn channel_spectra(
     fft_buf.copy_from_slice(pcm);
     drft_forward_n(fft_buf);
     if dump {
-        std::fs::create_dir_all("/tmp/lewtoff-debug").ok();
-        dd::write_f32_bin("/tmp/lewtoff-debug/r_drft.bin", fft_buf);
+        std::fs::create_dir_all("/tmp/oxivorbis-debug").ok();
+        dd::write_f32_bin("/tmp/oxivorbis-debug/r_drft.bin", fft_buf);
     }
     let lf = &mut logfft[..n2];
     // DC bin
@@ -164,7 +164,7 @@ pub(crate) fn channel_spectra(
         }
     }
     if dump {
-        dd::write_f32_bin("/tmp/lewtoff-debug/r_logfft.bin", lf);
+        dd::write_f32_bin("/tmp/oxivorbis-debug/r_logfft.bin", lf);
     }
     if local > 0.0 { 0.0 } else { local }
 }
@@ -393,17 +393,17 @@ pub(crate) fn mapping0_forward_spectra(
                 for v in noise_bufs[i].iter() {
                     nbytes.extend_from_slice(&v.to_le_bytes());
                 }
-                let _ = std::fs::write("/tmp/lewtoff-debug/r_noise.bin", &nbytes);
+                let _ = std::fs::write("/tmp/oxivorbis-debug/r_noise.bin", &nbytes);
                 let mut tbytes = Vec::new();
                 for v in tone_bufs[i].iter() {
                     tbytes.extend_from_slice(&v.to_le_bytes());
                 }
-                let _ = std::fs::write("/tmp/lewtoff-debug/r_tone.bin", &tbytes);
+                let _ = std::fs::write("/tmp/oxivorbis-debug/r_tone.bin", &tbytes);
                 let mut obytes = Vec::new();
                 for v in psy_look.noiseoffset[1].iter() {
                     obytes.extend_from_slice(&v.to_le_bytes());
                 }
-                let _ = std::fs::write("/tmp/lewtoff-debug/r_noiseoffset_1.bin", &obytes);
+                let _ = std::fs::write("/tmp/oxivorbis-debug/r_noiseoffset_1.bin", &obytes);
             }
         }
         // Offset + mix (offset_select=1 = nominal, not bitrate managed).
@@ -449,7 +449,7 @@ pub(crate) fn mapping0_forward_spectra(
             }
         }
         if do_dump && i == 0 {
-            dd::write_f32_bin("/tmp/lewtoff-debug/r_mask.bin", logmask);
+            dd::write_f32_bin("/tmp/oxivorbis-debug/r_mask.bin", logmask);
         }
         // iwork[i] is not written until floor1_encode: scratch for the fit.
         floor_used[i] = floor1_fit(
@@ -461,7 +461,7 @@ pub(crate) fn mapping0_forward_spectra(
         );
         let posts = &floor_posts[i][..floor_state.posts as usize];
         if do_dump && i == 0 && floor_used[i] {
-            dd::write_i32_bin("/tmp/lewtoff-debug/r_floor_posts.bin", posts);
+            dd::write_i32_bin("/tmp/oxivorbis-debug/r_floor_posts.bin", posts);
         }
         if crate::debug_flag!("LW_DEBUG_FLOOR") {
             if floor_used[i] {
@@ -515,7 +515,7 @@ pub(crate) fn mapping0_forward_spectra(
     if do_dump {
         let floor_bits = opb.bit_len() - bits_before_floor;
         dd::write_txt(
-            "/tmp/lewtoff-debug/r_floor_bits.txt",
+            "/tmp/oxivorbis-debug/r_floor_bits.txt",
             &format!("{}\n", floor_bits),
         );
     }
@@ -586,7 +586,7 @@ pub(crate) fn mapping0_forward_spectra(
                                 bytes.extend_from_slice(&v.to_le_bytes());
                             }
                             let _ =
-                                std::fs::write("/tmp/lewtoff-debug/r_residue_input.bin", &bytes);
+                                std::fs::write("/tmp/oxivorbis-debug/r_residue_input.bin", &bytes);
                             // partword dump
                             let mut pw_bytes = Vec::new();
                             for ch_pw in pw.iter() {
@@ -594,7 +594,8 @@ pub(crate) fn mapping0_forward_spectra(
                                     pw_bytes.extend_from_slice(&v.to_le_bytes());
                                 }
                             }
-                            let _ = std::fs::write("/tmp/lewtoff-debug/r_partword.bin", &pw_bytes);
+                            let _ =
+                                std::fs::write("/tmp/oxivorbis-debug/r_partword.bin", &pw_bytes);
                         }
                     }
                     res1_forward(
@@ -634,7 +635,7 @@ pub(crate) fn mapping0_forward_spectra(
     }
 }
 
-/// Most channels one residue submap can bundle (lewtoff encodes mono or
+/// Most channels one residue submap can bundle (oxivorbis encodes mono or
 /// stereo).
 const MAX_BUNDLE: usize = 2;
 

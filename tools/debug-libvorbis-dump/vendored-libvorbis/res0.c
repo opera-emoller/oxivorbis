@@ -503,7 +503,7 @@ static long **_01class(vorbis_block *vb,vorbis_look_residue *vl,
     static int fired = 0;
     if (!fired) {
       fired = 1;
-      FILE *fpw = fopen("/tmp/lewtoff-debug/c_partword.bin", "wb");
+      FILE *fpw = fopen("/tmp/oxivorbis-debug/c_partword.bin", "wb");
       if (fpw) {
         fwrite(partword[0], sizeof(long), partvals, fpw);
         fclose(fpw);

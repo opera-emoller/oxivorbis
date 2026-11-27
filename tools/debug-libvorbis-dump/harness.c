@@ -1,7 +1,7 @@
 /*
  * harness.c — debug dump harness for the first short block of 440Hz sine.
  * Feeds 1 second of 440Hz mono 44100Hz sine through libvorbis (Q5) and
- * captures the first short block's intermediate state to /tmp/lewtoff-debug/.
+ * captures the first short block's intermediate state to /tmp/oxivorbis-debug/.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +13,7 @@
 #include "vendored-libvorbis/include/vorbis/vorbisenc.h"
 #include "vendored-libvorbis/debug_dump.h"
 
-#define OUTDIR "/tmp/lewtoff-debug"
+#define OUTDIR "/tmp/oxivorbis-debug"
 
 static void write_f32(const char *name, const float *data, int n) {
     char path[256];

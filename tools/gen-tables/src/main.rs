@@ -10,14 +10,14 @@
 //
 // Usage (from the repo root):
 //     ./tools/oracle-encoder/build_dsp_oracle.sh
-//     ./tools/oracle-encoder/dsp_oracle tables /tmp/lewtoff-dsp-tables
-//     cargo run -p gen-tables [-- <dir>]          # default /tmp/lewtoff-dsp-tables
+//     ./tools/oracle-encoder/dsp_oracle tables /tmp/oxivorbis-dsp-tables
+//     cargo run -p gen-tables [-- <dir>]          # default /tmp/oxivorbis-dsp-tables
 //     cargo fmt --all
 // or simply `just regen-tables`.
 
 use std::fmt::Write as _;
 
-const DEFAULT_DIR: &str = "/tmp/lewtoff-dsp-tables";
+const DEFAULT_DIR: &str = "/tmp/oxivorbis-dsp-tables";
 
 /// MDCT sizes: 128 (envelope), 256/2048 (q0..q10 blocks), 512/4096 (q-1).
 const MDCT_SIZES: [usize; 5] = [2048, 256, 128, 512, 4096];

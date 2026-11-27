@@ -1,4 +1,4 @@
-/* Generates lewtoff's setup-header template data from the vendored
+/* Generates oxivorbis's setup-header template data from the vendored
  * libvorbis 1.3.7 sources:
  *
  *   src/setup_books.bin     every static codebook reachable from the

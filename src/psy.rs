@@ -315,7 +315,7 @@ fn setup_tone_curves(
                     }
                 }
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_workc.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_workc.bin", &bytes);
         }
     }
 
@@ -874,7 +874,7 @@ pub(crate) fn vp_psy_init_reusing(
                     }
                 }
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_tonecurves.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_tonecurves.bin", &bytes);
         }
     }
 
@@ -915,13 +915,13 @@ pub(crate) fn vp_psy_init_reusing(
             for v in halfoc_dump.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_halfoc.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_halfoc.bin", &bytes);
             // dump noiseoffset[1] from short block specifically
             let mut nbytes = Vec::with_capacity(n * 4);
             for v in p.noiseoffset[1].iter() {
                 nbytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_noiseoffset_1.bin", &nbytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_noiseoffset_1.bin", &nbytes);
         }
     }
 
@@ -1632,7 +1632,7 @@ pub fn vp_tonemask(
             for v in seed.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_tone_seed.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_tone_seed.bin", &bytes);
         }
     }
     max_seeds(p, seed, logmask, &mut scratch.posstack, &mut scratch.ampstack);

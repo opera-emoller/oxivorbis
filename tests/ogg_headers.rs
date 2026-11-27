@@ -1,12 +1,12 @@
-use lewtoff::bitpack::BitWriter;
-use lewtoff::headers::{write_comment_header, write_id_header, write_setup_header};
-use lewtoff::ogg_pages::OggStreamWriter;
-use lewtoff::{Channels, SampleRate};
+use oxivorbis::bitpack::BitWriter;
+use oxivorbis::headers::{write_comment_header, write_id_header, write_setup_header};
+use oxivorbis::ogg_pages::OggStreamWriter;
+use oxivorbis::{Channels, SampleRate};
 
 /// Comment-header strings of the oracle-encoder run the vectors were
 /// captured from (`just regen-header-vectors`, tools/gen-header-vectors).
 const VENDOR: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
-const ENCODER_TAG: &[u8] = b"encoder=lewtoff header vectors";
+const ENCODER_TAG: &[u8] = b"encoder=oxivorbis header vectors";
 
 fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<u8> {
     let mut w = OggStreamWriter::new(serial);

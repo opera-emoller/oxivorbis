@@ -176,7 +176,7 @@ fn describe_audio(pkt: &[u8]) -> String {
 
 pub struct DiffReport {
     pub first_byte: usize,
-    pub lewtoff_len: usize,
+    pub oxivorbis_len: usize,
     pub oracle_len: usize,
     pub location: String,
     pub first_packet: Option<usize>,
@@ -191,7 +191,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
     let first_byte = first_diff(lw, or);
     let mut report = DiffReport {
         first_byte,
-        lewtoff_len: lw.len(),
+        oxivorbis_len: lw.len(),
         oracle_len: or.len(),
         location: String::new(),
         first_packet: None,
@@ -203,7 +203,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         (Ok(o), Ok(l)) => (o, l),
         (o, l) => {
             report.location = format!(
-                "unparseable stream (oracle: {:?}, lewtoff: {:?})",
+                "unparseable stream (oracle: {:?}, oxivorbis: {:?})",
                 o.err(),
                 l.err()
             );
@@ -211,14 +211,14 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         }
     };
     report.location = format!(
-        "oracle: {}; lewtoff: {}",
+        "oracle: {}; oxivorbis: {}",
         locate(or, &op, first_byte),
         locate(lw, &lp, first_byte)
     );
     let opk = packets(or, &op);
     let lpk = packets(lw, &lp);
     let mut s = format!(
-        "pages: oracle {} lewtoff {}; packets: oracle {} lewtoff {}",
+        "pages: oracle {} oxivorbis {}; packets: oracle {} oxivorbis {}",
         op.len(),
         lp.len(),
         opk.len(),
@@ -231,7 +231,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
     if !bad_crc.is_empty() {
-        s += &format!("\nlewtoff pages with a bad CRC: {bad_crc:?}");
+        s += &format!("\noxivorbis pages with a bad CRC: {bad_crc:?}");
     }
     let n = opk.len().min(lpk.len());
     let first_pkt = (0..n)
@@ -259,7 +259,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         let od = opk.get(i).map(|p| describe_audio(&p.data));
         let ld = lpk.get(i).map(|p| describe_audio(&p.data));
         s += &format!(
-            "\nfirst differing packet: #{i}{} oracle=[{}] lewtoff=[{}]",
+            "\nfirst differing packet: #{i}{} oracle=[{}] oxivorbis=[{}]",
             if i >= 3 {
                 format!(" (audio block {})", i - 3)
             } else {
@@ -271,7 +271,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         if let (Some(o), Some(l)) = (opk.get(i), lpk.get(i)) {
             let d = first_diff(&o.data, &l.data);
             s += &format!(
-                "\n  first differing byte within packet: {d} (bit ~{}); pages oracle {}..{} lewtoff {}..{}",
+                "\n  first differing byte within packet: {d} (bit ~{}); pages oracle {}..{} oxivorbis {}..{}",
                 d * 8,
                 o.first_page,
                 o.last_page,
@@ -298,7 +298,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
                 .collect()
         };
         s += &format!(
-            "\n  block modes around it (from packet {}): oracle {} lewtoff {}",
+            "\n  block modes around it (from packet {}): oracle {} oxivorbis {}",
             i.saturating_sub(4).max(3),
             modes(&opk),
             modes(&lpk)
@@ -320,7 +320,7 @@ pub fn analyze(lw: &[u8], or: &[u8]) -> DiffReport {
         match first_page {
             Some(k) => {
                 s += &format!(
-                    "\npackets identical; framing differs at page {k}: oracle granule={} flags={:#x} seqno={} crc={:#010x} segs={} | lewtoff granule={} flags={:#x} seqno={} crc={:#010x} segs={}",
+                    "\npackets identical; framing differs at page {k}: oracle granule={} flags={:#x} seqno={} crc={:#010x} segs={} | oxivorbis granule={} flags={:#x} seqno={} crc={:#010x} segs={}",
                     op[k].granule,
                     op[k].flags,
                     op[k].seqno,

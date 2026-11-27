@@ -13,7 +13,7 @@
  * Compiled from the pristine libvorbis 1.3.7 and libogg 1.3.5 sources in
  * tools/libvorbis-1.3.7 and tools/libogg-1.3.5 by build.sh with
  *     -O0 -ffp-contract=off
- * so its byte output is fully deterministic and matches lewtoff's no-FMA
+ * so its byte output is fully deterministic and matches oxivorbis's no-FMA
  * arithmetic. It is the parity oracle for tests/parity.rs and the fuzzer.
  */
 
@@ -26,7 +26,7 @@
 #include "vorbis/codec.h"
 #include "vorbis/vorbisenc.h"
 
-/* Use 64-sample analysis chunk to match ffmpeg/lewtoff's pre-extrapolation
+/* Use 64-sample analysis chunk to match ffmpeg/oxivorbis's pre-extrapolation
  * trigger point (n_lpc=2112). Different chunk sizes give different
  * libvorbis _preextrapolate_helper firing positions and therefore different
  * LPC-predicted virtual samples in the first short block. */

@@ -1,4 +1,4 @@
-//! Byte-parity tests: lewtoff vs oggenc (libvorbis) -q 5.
+//! Byte-parity tests: oxivorbis vs oggenc (libvorbis) -q 5.
 //!
 //! Gated behind the `oracle` feature so contributors without oggenc can still
 //! run the rest of the suite. Run with:
@@ -12,7 +12,7 @@
 
 mod common;
 
-use lewtoff::{Channels, SampleRate};
+use oxivorbis::{Channels, SampleRate};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -57,7 +57,7 @@ fn assert_parity_oracle(samples: &[i16], rate: SampleRate, channels: Channels) {
     let oracle_bytes = oracle_encode_q5(samples, rate_hz, ch);
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-    let lewtoff_bytes = lewtoff::encode_with_serial_and_meta(
+    let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         samples,
         rate,
         channels,
@@ -65,16 +65,16 @@ fn assert_parity_oracle(samples: &[i16], rate: SampleRate, channels: Channels) {
         Some(&vendor),
         Some(&encoder_tag),
     );
-    if lewtoff_bytes != oracle_bytes {
-        let div = first_diff(&lewtoff_bytes, &oracle_bytes);
-        let lw_end = (div + 16).min(lewtoff_bytes.len());
+    if oxivorbis_bytes != oracle_bytes {
+        let div = first_diff(&oxivorbis_bytes, &oracle_bytes);
+        let lw_end = (div + 16).min(oxivorbis_bytes.len());
         let or_end = (div + 16).min(oracle_bytes.len());
         let start = div.saturating_sub(8);
         panic!(
-            "ORACLE parity diverged at byte {div}\n  lewtoff len: {}\n  oracle  len: {}\n  lewtoff ctx: {:02x?}\n  oracle  ctx: {:02x?}",
-            lewtoff_bytes.len(),
+            "ORACLE parity diverged at byte {div}\n  oxivorbis len: {}\n  oracle  len: {}\n  oxivorbis ctx: {:02x?}\n  oracle  ctx: {:02x?}",
+            oxivorbis_bytes.len(),
             oracle_bytes.len(),
-            &lewtoff_bytes[start..lw_end],
+            &oxivorbis_bytes[start..lw_end],
             &oracle_bytes[start.min(oracle_bytes.len())..or_end],
         );
     }
@@ -181,7 +181,7 @@ fn assert_parity(samples: &[i16], rate: SampleRate, channels: Channels) {
     let oracle_bytes = oggenc_encode_q5(samples, rate_hz, ch);
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-    let lewtoff_bytes = lewtoff::encode_with_serial_and_meta(
+    let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         samples,
         rate,
         channels,
@@ -190,23 +190,23 @@ fn assert_parity(samples: &[i16], rate: SampleRate, channels: Channels) {
         Some(&encoder_tag),
     );
 
-    if lewtoff_bytes != oracle_bytes {
-        let div = first_diff(&lewtoff_bytes, &oracle_bytes);
+    if oxivorbis_bytes != oracle_bytes {
+        let div = first_diff(&oxivorbis_bytes, &oracle_bytes);
         let lw_start = div.saturating_sub(8);
-        let lw_end = (div + 16).min(lewtoff_bytes.len());
+        let lw_end = (div + 16).min(oxivorbis_bytes.len());
         let or_end = (div + 16).min(oracle_bytes.len());
         let or_start = div.saturating_sub(8).min(oracle_bytes.len());
         panic!(
-            "parity diverged at byte {div}\n  lewtoff len: {}\n  oggenc  len: {}\n  lewtoff ctx: {:02x?}\n  oggenc  ctx: {:02x?}",
-            lewtoff_bytes.len(),
+            "parity diverged at byte {div}\n  oxivorbis len: {}\n  oggenc  len: {}\n  oxivorbis ctx: {:02x?}\n  oggenc  ctx: {:02x?}",
+            oxivorbis_bytes.len(),
             oracle_bytes.len(),
-            &lewtoff_bytes[lw_start..lw_end],
+            &oxivorbis_bytes[lw_start..lw_end],
             &oracle_bytes[or_start..or_end],
         );
     }
 }
 
-/// `lewtoff::oggenc_base_quality` must reproduce oggenc's `-q` float
+/// `oxivorbis::oggenc_base_quality` must reproduce oggenc's `-q` float
 /// conversion bit for bit. The listed values are ones where the candidate
 /// conversions disagree on the f32 and that disagreement reaches the bytes
 /// (the ID header's bitrate_nominal): 9.344/9.351 separate oggenc's
@@ -222,11 +222,11 @@ fn parity_oggenc_quality_conversion() {
         let serial = extract_serial(&want);
         let (vendor, encoder_tag) = extract_comment_strings(&want);
         let qf: f32 = q.parse().unwrap();
-        let got = lewtoff::encode_with_base_quality_and_meta(
+        let got = oxivorbis::encode_with_base_quality_and_meta(
             &samples,
             SampleRate::Hz44100,
             Channels::Stereo,
-            lewtoff::oggenc_base_quality(qf),
+            oxivorbis::oggenc_base_quality(qf),
             serial,
             Some(&vendor),
             Some(&encoder_tag),
@@ -239,9 +239,9 @@ fn parity_oggenc_quality_conversion() {
     }
     // The test values really do discriminate between the conversions.
     let naive = |q: f64| (q * 0.1) as f32;
-    assert_ne!(lewtoff::oggenc_base_quality(9.344), naive(9.344));
-    assert_ne!(lewtoff::oggenc_base_quality(9.303), naive(9.303));
-    assert_ne!(lewtoff::oggenc_base_quality(9.344), 9.344f32 * 0.1f32);
+    assert_ne!(oxivorbis::oggenc_base_quality(9.344), naive(9.344));
+    assert_ne!(oxivorbis::oggenc_base_quality(9.303), naive(9.303));
+    assert_ne!(oxivorbis::oggenc_base_quality(9.344), 9.344f32 * 0.1f32);
 }
 
 fn make_sine_mono(rate: u32, freq: f32, duration_secs: f32) -> Vec<i16> {
@@ -331,7 +331,7 @@ fn parity_dump_ramp_files() {
     let oracle_bytes = oracle_encode_q5(&samples, 44100, 2);
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-    let lewtoff_bytes = lewtoff::encode_with_serial_and_meta(
+    let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         &samples,
         SampleRate::Hz44100,
         Channels::Stereo,
@@ -340,11 +340,11 @@ fn parity_dump_ramp_files() {
         Some(&encoder_tag),
     );
     std::fs::write("/tmp/oracle_ramp.ogg", &oracle_bytes).unwrap();
-    std::fs::write("/tmp/lw_ramp.ogg", &lewtoff_bytes).unwrap();
+    std::fs::write("/tmp/lw_ramp.ogg", &oxivorbis_bytes).unwrap();
     eprintln!(
         "Wrote oracle_ramp.ogg ({} bytes) and lw_ramp.ogg ({} bytes)",
         oracle_bytes.len(),
-        lewtoff_bytes.len()
+        oxivorbis_bytes.len()
     );
 }
 
@@ -354,14 +354,14 @@ fn parity_dump_files() {
     let samples = vec![0i16; 44100];
     let oracle_bytes = oggenc_encode_q5(&samples, 44100, 1);
     let serial = extract_serial(&oracle_bytes);
-    let lewtoff_bytes =
-        lewtoff::encode_with_serial(&samples, SampleRate::Hz44100, Channels::Mono, serial);
+    let oxivorbis_bytes =
+        oxivorbis::encode_with_serial(&samples, SampleRate::Hz44100, Channels::Mono, serial);
     std::fs::write("/tmp/oggenc_parity.ogg", &oracle_bytes).unwrap();
-    std::fs::write("/tmp/lw_parity.ogg", &lewtoff_bytes).unwrap();
+    std::fs::write("/tmp/lw_parity.ogg", &oxivorbis_bytes).unwrap();
     eprintln!(
         "Wrote oggenc_parity.ogg ({} bytes) and lw_parity.ogg ({} bytes)",
         oracle_bytes.len(),
-        lewtoff_bytes.len()
+        oxivorbis_bytes.len()
     );
 }
 
@@ -372,7 +372,7 @@ fn parity_dump_sine_files() {
     let oracle_bytes = oggenc_encode_q5(&samples, 44100, 1);
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-    let lewtoff_bytes = lewtoff::encode_with_serial_and_meta(
+    let oxivorbis_bytes = oxivorbis::encode_with_serial_and_meta(
         &samples,
         SampleRate::Hz44100,
         Channels::Mono,
@@ -381,11 +381,11 @@ fn parity_dump_sine_files() {
         Some(&encoder_tag),
     );
     std::fs::write("/tmp/oggenc_sine.ogg", &oracle_bytes).unwrap();
-    std::fs::write("/tmp/lw_sine.ogg", &lewtoff_bytes).unwrap();
+    std::fs::write("/tmp/lw_sine.ogg", &oxivorbis_bytes).unwrap();
     eprintln!(
         "Wrote oggenc_sine.ogg ({} bytes) and lw_sine.ogg ({} bytes)",
         oracle_bytes.len(),
-        lewtoff_bytes.len()
+        oxivorbis_bytes.len()
     );
 }
 
@@ -406,8 +406,8 @@ fn channel_count(channels: Channels) -> u16 {
 
 /// Oracle parity at an arbitrary libvorbis base_quality (-0.1..1.0).
 ///
-/// The oracle gets `base_quality` as its 3rd argument; lewtoff goes through
-/// `common::lewtoff_encode_q`.
+/// The oracle gets `base_quality` as its 3rd argument; oxivorbis goes through
+/// `common::oxivorbis_encode_q`.
 fn assert_parity_oracle_q(
     samples: &[i16],
     rate: SampleRate,
@@ -422,7 +422,7 @@ fn assert_parity_oracle_q(
     );
     let serial = extract_serial(&oracle_bytes);
     let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-    let lewtoff_bytes = common::lewtoff_encode_q(
+    let oxivorbis_bytes = common::oxivorbis_encode_q(
         samples,
         rate,
         channels,
@@ -431,16 +431,16 @@ fn assert_parity_oracle_q(
         Some(&vendor),
         Some(&encoder_tag),
     );
-    if lewtoff_bytes != oracle_bytes {
-        let div = first_diff(&lewtoff_bytes, &oracle_bytes);
+    if oxivorbis_bytes != oracle_bytes {
+        let div = first_diff(&oxivorbis_bytes, &oracle_bytes);
         let start = div.saturating_sub(8);
-        let lw_end = (div + 16).min(lewtoff_bytes.len());
+        let lw_end = (div + 16).min(oxivorbis_bytes.len());
         let or_end = (div + 16).min(oracle_bytes.len());
         panic!(
-            "ORACLE parity (base_quality {base_quality}) diverged at byte {div}\n  lewtoff len: {}\n  oracle  len: {}\n  lewtoff ctx: {:02x?}\n  oracle  ctx: {:02x?}",
-            lewtoff_bytes.len(),
+            "ORACLE parity (base_quality {base_quality}) diverged at byte {div}\n  oxivorbis len: {}\n  oracle  len: {}\n  oxivorbis ctx: {:02x?}\n  oracle  ctx: {:02x?}",
+            oxivorbis_bytes.len(),
             oracle_bytes.len(),
-            &lewtoff_bytes[start.min(lewtoff_bytes.len())..lw_end],
+            &oxivorbis_bytes[start.min(oxivorbis_bytes.len())..lw_end],
             &oracle_bytes[start.min(oracle_bytes.len())..or_end],
         );
     }
@@ -652,7 +652,7 @@ fn oracle_parity_transients_signal_uses_short_blocks() {
 
 /// Regression: Q5 digital silence packs into 1-byte packets, so libogg
 /// force-flushes pages at 255 segments (ogg_stream_flush_i `vals==255`).
-/// lewtoff's page accounting used to carry its byte/packet counters across
+/// oxivorbis's page accounting used to carry its byte/packet counters across
 /// those forced flushes and cut a short page once ~4096 cumulative packets
 /// (~95 s at 44.1 kHz) had gone by. 120 s of silence crosses that point.
 #[test]
@@ -901,7 +901,7 @@ fn run_short_input_sweep(
         );
         let serial = extract_serial(&oracle_bytes);
         let (vendor, encoder_tag) = extract_comment_strings(&oracle_bytes);
-        let lewtoff_bytes = common::lewtoff_encode_q(
+        let oxivorbis_bytes = common::oxivorbis_encode_q(
             &samples,
             rate,
             channels,
@@ -910,7 +910,7 @@ fn run_short_input_sweep(
             Some(&vendor),
             Some(&encoder_tag),
         );
-        if lewtoff_bytes != oracle_bytes {
+        if oxivorbis_bytes != oracle_bytes {
             failures.push(frames);
         }
     }
@@ -1130,7 +1130,7 @@ fn oracle_parity_fuzz_repros() {
         } else {
             Channels::Mono
         };
-        let (oracle_bytes, lewtoff_bytes) = if repro.f32_input {
+        let (oracle_bytes, oxivorbis_bytes) = if repro.f32_input {
             let samples: Vec<f32> = raw
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1139,7 +1139,7 @@ fn oracle_parity_fuzz_repros() {
                 common::oracle_encode_raw(&raw, repro.rate, repro.channels, repro.quality, "f32");
             let serial = extract_serial(&oracle);
             let (vendor, tag) = extract_comment_strings(&oracle);
-            let lw = lewtoff::encode_f32_with_base_quality_and_meta(
+            let lw = oxivorbis::encode_f32_with_base_quality_and_meta(
                 &samples,
                 rate,
                 channels,
@@ -1157,7 +1157,7 @@ fn oracle_parity_fuzz_repros() {
             let oracle = oracle_encode_q(&samples, repro.rate, repro.channels, repro.quality);
             let serial = extract_serial(&oracle);
             let (vendor, tag) = extract_comment_strings(&oracle);
-            let lw = common::lewtoff_encode_q(
+            let lw = common::oxivorbis_encode_q(
                 &samples,
                 rate,
                 channels,
@@ -1168,7 +1168,7 @@ fn oracle_parity_fuzz_repros() {
             );
             (oracle, lw)
         };
-        if lewtoff_bytes != oracle_bytes {
+        if oxivorbis_bytes != oracle_bytes {
             failures.push(name.to_string());
         }
     }

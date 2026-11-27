@@ -1,5 +1,5 @@
 /*
- * dsp_oracle — ground truth for lewtoff's DSP layer (MDCT, real FFT,
+ * dsp_oracle — ground truth for oxivorbis's DSP layer (MDCT, real FFT,
  * window tables / window application), straight from the pristine
  * vendored libvorbis 1.3.7 sources (tools/libvorbis-1.3.7).
  *
@@ -21,7 +21,7 @@
  *       every table above plus mdct_forward / drft_forward /
  *       _vorbis_apply_window outputs on seeded LCG input. The committed
  *       copy lives at tools/oracle-encoder/dsp_manifest.txt and is checked
- *       by lewtoff's always-on unit tests (`dsp_manifest_*` in src/mdct.rs,
+ *       by oxivorbis's always-on unit tests (`dsp_manifest_*` in src/mdct.rs,
  *       src/drft.rs, src/window.rs).
  *
  * The LCG and float mapping are reproduced exactly on the Rust side

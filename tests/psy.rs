@@ -5,7 +5,7 @@
 
 #![allow(clippy::field_reassign_with_default)]
 
-use lewtoff::psy::{
+use oxivorbis::psy::{
     PsyScratch, VorbisInfoPsy, VorbisInfoPsyGlobal, vp_noisemask, vp_psy_init, vp_tonemask,
 };
 
@@ -14,7 +14,7 @@ use lewtoff::psy::{
 /// "short" psy_param[0] used at Q5.  They are approximate but sufficient to
 /// exercise the code paths.
 fn make_vi() -> VorbisInfoPsy {
-    use lewtoff::psy::{NOISE_COMPAND_LEVELS, P_BANDS, P_NOISECURVES};
+    use oxivorbis::psy::{NOISE_COMPAND_LEVELS, P_BANDS, P_NOISECURVES};
     let mut vi = VorbisInfoPsy::default();
     vi.blockflag = 1;
     vi.ath_adjatt = -140.0;
@@ -139,14 +139,14 @@ fn psy_compute_mask_determinism() {
 
     let actual_bytes: Vec<u8> = mask.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    // A committed lewtoff snapshot (not an oracle vector): it pins the mask
+    // A committed oxivorbis snapshot (not an oracle vector): it pins the mask
     // bits across hosts, including wasm, and catches unintended changes.
     // Parity of the psy layer itself is covered end to end by the oracle
     // tests. The file is compiled in, so a missing snapshot fails the build
     // instead of passing silently. Re-bless deliberately with
-    // LEWTOFF_BLESS=1 (native only).
+    // OXIVORBIS_BLESS=1 (native only).
     let expected_bytes: &[u8] = include_bytes!("vectors/psy/mask_default.bin");
-    if std::env::var_os("LEWTOFF_BLESS").is_some() {
+    if std::env::var_os("OXIVORBIS_BLESS").is_some() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/vectors/psy/mask_default.bin");
         std::fs::write(&path, &actual_bytes).expect("failed to write expected bytes");

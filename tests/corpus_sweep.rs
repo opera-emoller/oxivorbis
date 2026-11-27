@@ -3,7 +3,7 @@
 //! doesn't exist (CI-friendly; contributors symlink their own corpus).
 //!
 //! Each input is decoded via ffmpeg to s16le at every requested
-//! rate/channel config, encoded by both lewtoff and the oracle-encoder at
+//! rate/channel config, encoded by both oxivorbis and the oracle-encoder at
 //! every requested quality, and compared byte-for-byte.
 //!
 //! Environment:
@@ -17,7 +17,7 @@
 //!
 //! Failing cases are saved to
 //! `target/corpus-failures/<rate>x<ch>-q<q>/<relpath>/` as `input.s16le`,
-//! `oracle.ogg`, `lewtoff.ogg` and `descriptor.txt` (which includes a
+//! `oracle.ogg`, `oxivorbis.ogg` and `descriptor.txt` (which includes a
 //! `parity-fuzz --pcm` replay command).
 
 #![cfg(feature = "oracle")]
@@ -73,14 +73,14 @@ impl SweepConfig {
         format!("{ch}, {rate}")
     }
 
-    fn lewtoff(&self) -> (lewtoff::SampleRate, lewtoff::Channels) {
+    fn oxivorbis(&self) -> (oxivorbis::SampleRate, oxivorbis::Channels) {
         let r = match self.rate {
-            44100 => lewtoff::SampleRate::Hz44100,
-            _ => lewtoff::SampleRate::Hz48000,
+            44100 => oxivorbis::SampleRate::Hz44100,
+            _ => oxivorbis::SampleRate::Hz48000,
         };
         let c = match self.ch {
-            1 => lewtoff::Channels::Mono,
-            _ => lewtoff::Channels::Stereo,
+            1 => oxivorbis::Channels::Mono,
+            _ => oxivorbis::Channels::Stereo,
         };
         (r, c)
     }
@@ -221,7 +221,7 @@ fn preflight() {
 
 struct Divergence {
     why: String,
-    /// (input PCM, oracle output, lewtoff output) when there is something
+    /// (input PCM, oracle output, oxivorbis output) when there is something
     /// to save.
     artifacts: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
 }
@@ -242,9 +242,9 @@ fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<()
     }
     let serial = u32::from_le_bytes(oracle[14..18].try_into().unwrap());
     let vendor: &[u8] = b"Xiph.Org libVorbis I 20200704 (Reducing Environment)";
-    let (rate, channels) = cfg.lewtoff();
+    let (rate, channels) = cfg.oxivorbis();
     let lw = match catch_unwind(AssertUnwindSafe(|| {
-        lewtoff::encode_with_base_quality_and_meta(
+        oxivorbis::encode_with_base_quality_and_meta(
             samples,
             rate,
             channels,
@@ -262,7 +262,7 @@ fn check_one(cfg: SweepConfig, samples: &[i16], raw: &[u8], q: f32) -> Result<()
                 .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
                 .unwrap_or_else(|| "<non-string panic>".into());
             return Err(Divergence {
-                why: format!("lewtoff panicked: {msg}"),
+                why: format!("oxivorbis panicked: {msg}"),
                 artifacts: Some((raw.to_vec(), oracle, Vec::new())),
             });
         }
@@ -298,7 +298,7 @@ fn save_failure(cfg: SweepConfig, q: f32, rel: &Path, d: &Divergence) {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("input.s16le"), pcm)?;
         std::fs::write(dir.join("oracle.ogg"), oracle)?;
-        std::fs::write(dir.join("lewtoff.ogg"), lw)?;
+        std::fs::write(dir.join("oxivorbis.ogg"), lw)?;
         let input = dir.join("input.s16le");
         std::fs::write(
             dir.join("descriptor.txt"),

@@ -2,7 +2,7 @@
 //! `lib/floor1.c` (encode path only).
 //!
 //! Decoder helpers (`floor1_inverse1`, `floor1_inverse2`) are NOT ported;
-//! we only need the encode path for lewtoff.
+//! we only need the encode path for oxivorbis.
 
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::manual_clamp)]

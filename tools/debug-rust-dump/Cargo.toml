@@ -9,4 +9,4 @@ name = "debug-rust-dump"
 path = "src/main.rs"
 
 [dependencies]
-lewtoff = { path = "../..", features = ["__internal"] }
+oxivorbis = { path = "../..", features = ["__internal"] }

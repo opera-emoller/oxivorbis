@@ -1,7 +1,7 @@
 //! debug-diff: compare C and Rust debug dumps to find the first diverging layer.
 //!
 //! Usage: cargo run -p debug-diff (or `just debug-diff`)
-//! Expects /tmp/lewtoff-debug/c_* (`just debug-dump-c`) and r_*
+//! Expects /tmp/oxivorbis-debug/c_* (`just debug-dump-c`) and r_*
 //! (`just debug-dump-rust`) to already exist.
 
 use std::fs;
@@ -114,7 +114,7 @@ fn compare_i32(name: &str, c: &[i32], r: &[i32]) -> bool {
 }
 
 fn main() {
-    let base = "/tmp/lewtoff-debug";
+    let base = "/tmp/oxivorbis-debug";
 
     println!("=== Layer diff: C vs Rust first short block ===\n");
 

@@ -9,7 +9,7 @@
 //! below is deliberately minimal (no dependencies); use a crate such as
 //! `hound` or `symphonia` for anything more general.
 
-use lewtoff::{Channels, Options, Quality, SampleRate};
+use oxivorbis::{Channels, Options, Quality, SampleRate};
 use std::process::ExitCode;
 
 struct Wav {
@@ -91,7 +91,7 @@ fn run() -> Result<(), String> {
     let channels = Channels::try_from(wav.channels).map_err(|e| e.to_string())?;
 
     let opts = Options::default().with_quality(quality);
-    let ogg = lewtoff::encode(&wav.samples, rate, channels, &opts);
+    let ogg = oxivorbis::encode(&wav.samples, rate, channels, &opts);
     std::fs::write(output, &ogg).map_err(|e| format!("{output}: {e}"))?;
 
     let frames = wav.samples.len() / channels.count() as usize;

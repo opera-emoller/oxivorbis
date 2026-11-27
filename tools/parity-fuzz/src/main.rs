@@ -1,6 +1,6 @@
-//! parity-fuzz: differential fuzzer for lewtoff vs the in-tree libvorbis
+//! parity-fuzz: differential fuzzer for oxivorbis vs the in-tree libvorbis
 //! oracle (tools/oracle-encoder). Generates seeded synthetic signals, encodes
-//! with both, and on any byte divergence (or lewtoff panic) saves the case
+//! with both, and on any byte divergence (or oxivorbis panic) saves the case
 //! and a minimized reproduction under target/parity-fuzz/<id>/.
 //!
 //! Usage:
@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// lewtoff adapter: the ONLY place lewtoff is called. `quality` is a libvorbis
+// oxivorbis adapter: the ONLY place oxivorbis is called. `quality` is a libvorbis
 // base_quality (the oracle's 3rd argument), -0.1..=1.0.
 // ---------------------------------------------------------------------------
 
@@ -54,7 +54,7 @@ trait Sample: Copy + PartialEq + Default + std::panic::RefUnwindSafe + 'static {
     const FORMAT: &'static str;
     fn to_le(pcm: &[Self]) -> Vec<u8>;
     fn from_le(raw: &[u8]) -> Vec<Self>;
-    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8];
+    fn write<'a>(enc: &'a mut oxivorbis::Encoder, s: &[Self]) -> &'a [u8];
     fn render(case: &Case) -> Vec<Self>;
 }
 
@@ -68,7 +68,7 @@ impl Sample for i16 {
             .map(|b| i16::from_le_bytes([b[0], b[1]]))
             .collect()
     }
-    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8] {
+    fn write<'a>(enc: &'a mut oxivorbis::Encoder, s: &[Self]) -> &'a [u8] {
         enc.write(s)
     }
     fn render(case: &Case) -> Vec<Self> {
@@ -86,7 +86,7 @@ impl Sample for f32 {
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect()
     }
-    fn write<'a>(enc: &'a mut lewtoff::Encoder, s: &[Self]) -> &'a [u8] {
+    fn write<'a>(enc: &'a mut oxivorbis::Encoder, s: &[Self]) -> &'a [u8] {
         enc.write_f32(s)
     }
     fn render(case: &Case) -> Vec<Self> {
@@ -104,7 +104,7 @@ fn case_id(prefix: &str, quality: f32, f32_input: bool, rate: u32, ch: u16) -> S
     )
 }
 
-fn lewtoff_encode<S: Sample>(
+fn oxivorbis_encode<S: Sample>(
     pcm: &[S],
     rate: u32,
     channels: u16,
@@ -115,21 +115,27 @@ fn lewtoff_encode<S: Sample>(
 ) -> Vec<u8> {
     debug_assert!(quality_supported(quality));
     let r = match rate {
-        44100 => lewtoff::SampleRate::Hz44100,
-        48000 => lewtoff::SampleRate::Hz48000,
+        44100 => oxivorbis::SampleRate::Hz44100,
+        48000 => oxivorbis::SampleRate::Hz48000,
         _ => unreachable!("rate validated at CLI"),
     };
     let c = match channels {
-        1 => lewtoff::Channels::Mono,
-        2 => lewtoff::Channels::Stereo,
+        1 => oxivorbis::Channels::Mono,
+        2 => oxivorbis::Channels::Stereo,
         _ => unreachable!("channels validated at CLI"),
     };
     // Stream through `Encoder` in pseudo-random chunk sizes (seeded by the
     // input length, so a case stays reproducible): every case then checks
     // chunking invariance against the oracle too. Sizes include 1 and odd
     // counts that split stereo frames.
-    let mut enc =
-        lewtoff::encoder_with_base_quality_and_meta(r, c, quality, serial, Some(vendor), Some(tag));
+    let mut enc = oxivorbis::encoder_with_base_quality_and_meta(
+        r,
+        c,
+        quality,
+        serial,
+        Some(vendor),
+        Some(tag),
+    );
     let mut out = Vec::new();
     let mut state = (pcm.len() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     let mut rest = pcm;
@@ -290,7 +296,7 @@ fn parse_args() -> Config {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Class {
     Mismatch,
-    LewtoffPanic,
+    OxivorbisPanic,
     OracleFail,
 }
 
@@ -298,7 +304,7 @@ impl Class {
     fn name(self) -> &'static str {
         match self {
             Class::Mismatch => "mismatch",
-            Class::LewtoffPanic => "lewtoff-panic",
+            Class::OxivorbisPanic => "oxivorbis-panic",
             Class::OracleFail => "oracle-fail",
         }
     }
@@ -307,7 +313,7 @@ impl Class {
 struct Outcome {
     class: Option<Class>,
     oracle: Vec<u8>,
-    lewtoff: Vec<u8>,
+    oxivorbis: Vec<u8>,
     message: String,
     /// Coarse bucket for de-duplicating failures, e.g. "mismatch/final/long".
     signature: String,
@@ -371,13 +377,13 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
     let oracle = match run_oracle(&cfg.oracle, pcm, rate, ch, cfg.quality) {
         Ok(o) => o,
         Err(e) => {
-            // Still see whether lewtoff survives the same input.
+            // Still see whether oxivorbis survives the same input.
             let lw = std::panic::catch_unwind(|| {
-                lewtoff_encode(pcm, rate, ch, cfg.quality, 0, b"", b"")
+                oxivorbis_encode(pcm, rate, ch, cfg.quality, 0, b"", b"")
             });
             let extra = if lw.is_err() {
                 format!(
-                    "; lewtoff also panicked: {}",
+                    "; oxivorbis also panicked: {}",
                     PANIC_MSG
                         .with(|m| m.borrow_mut().take())
                         .unwrap_or_default()
@@ -388,7 +394,7 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
             return Outcome {
                 class: Some(Class::OracleFail),
                 oracle: vec![],
-                lewtoff: lw.unwrap_or_default(),
+                oxivorbis: lw.unwrap_or_default(),
                 message: format!("{e}{extra}"),
                 signature: "oracle-fail".into(),
             };
@@ -397,7 +403,7 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
     let serial = oggdiff::extract_serial(&oracle).unwrap_or(0);
     let (vendor, tag) = oggdiff::extract_comment_strings(&oracle).unwrap_or_default();
     let lw = std::panic::catch_unwind(|| {
-        lewtoff_encode(pcm, rate, ch, cfg.quality, serial, &vendor, &tag)
+        oxivorbis_encode(pcm, rate, ch, cfg.quality, serial, &vendor, &tag)
     });
     let frames = pcm.len() / ch as usize;
     // libvorbis' EOS buffer still holds pre-extrapolated samples for streams
@@ -413,9 +419,9 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
                 .with(|m| m.borrow_mut().take())
                 .unwrap_or_else(|| "<unknown panic>".into());
             Outcome {
-                class: Some(Class::LewtoffPanic),
+                class: Some(Class::OxivorbisPanic),
                 oracle,
-                lewtoff: vec![],
+                oxivorbis: vec![],
                 signature: format!(
                     "panic/{}",
                     message.rsplit(" at ").next().unwrap_or_default()
@@ -428,18 +434,18 @@ fn run_case<S: Sample>(cfg: &Config, pcm: &[S], rate: u32, ch: u16) -> Outcome {
             Outcome {
                 class: Some(Class::Mismatch),
                 message: format!(
-                    "first divergent byte {} (lewtoff len {}, oracle len {})\n{}\n{}",
-                    rep.first_byte, rep.lewtoff_len, rep.oracle_len, rep.location, rep.summary
+                    "first divergent byte {} (oxivorbis len {}, oracle len {})\n{}\n{}",
+                    rep.first_byte, rep.oxivorbis_len, rep.oracle_len, rep.location, rep.summary
                 ),
                 oracle,
-                lewtoff: lw,
+                oxivorbis: lw,
                 signature: format!("mismatch/{}/{len_class}", rep.position),
             }
         }
         Ok(lw) => Outcome {
             class: None,
             oracle,
-            lewtoff: lw,
+            oxivorbis: lw,
             message: String::new(),
             signature: String::new(),
         },
@@ -621,11 +627,11 @@ fn save<S: Sample>(dir: &Path, m: &Meta, pcm: &[S], o: &Outcome) -> std::io::Res
     let input = dir.join(format!("input.{}le", S::FORMAT));
     std::fs::write(&input, S::to_le(pcm))?;
     std::fs::write(dir.join("oracle.ogg"), &o.oracle)?;
-    std::fs::write(dir.join("lewtoff.ogg"), &o.lewtoff)?;
+    std::fs::write(dir.join("oxivorbis.ogg"), &o.oxivorbis)?;
     let frames = pcm.len() / m.ch as usize;
     let case_dbg = m.case.map(|c| format!("{c:#?}")).unwrap_or_default();
     let (fb, fp, blk) = if o.class == Some(Class::Mismatch) {
-        let r = oggdiff::analyze(&o.lewtoff, &o.oracle);
+        let r = oggdiff::analyze(&o.oxivorbis, &o.oracle);
         (Some(r.first_byte), r.first_packet, r.block_index)
     } else {
         (None, None, None)

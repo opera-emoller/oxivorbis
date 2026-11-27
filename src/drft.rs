@@ -384,7 +384,7 @@ fn drftf1(n: usize, c: &mut [f32], ch: &mut [f32], wa: &[f32], ifac: &[i32]) {
             for v in c.iter() {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_drftf1_in.bin", &bytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_drftf1_in.bin", &bytes);
 
             // C dumps 2n floats of `trigcache + n`; only the first n are
             // populated (we embed just those), so zero-pad to the C layout.
@@ -392,7 +392,7 @@ fn drftf1(n: usize, c: &mut [f32], ch: &mut [f32], wa: &[f32], ifac: &[i32]) {
             for v in wa.iter().chain(std::iter::repeat(&0.0f32)).take(2 * n) {
                 wabytes.extend_from_slice(&v.to_le_bytes());
             }
-            let _ = std::fs::write("/tmp/lewtoff-debug/r_drftf1_wa.bin", &wabytes);
+            let _ = std::fs::write("/tmp/oxivorbis-debug/r_drftf1_wa.bin", &wabytes);
         }
     }
 
@@ -439,7 +439,7 @@ fn drftf1(n: usize, c: &mut [f32], ch: &mut [f32], wa: &[f32], ifac: &[i32]) {
                         bytes.extend_from_slice(&v.to_le_bytes());
                     }
                     let _ = std::fs::write(
-                        format!("/tmp/lewtoff-debug/r_drftf1_iter{iter}_out.bin"),
+                        format!("/tmp/oxivorbis-debug/r_drftf1_iter{iter}_out.bin"),
                         &bytes,
                     );
                 }
@@ -661,9 +661,9 @@ fn drft_logfft_sine_440() {
     let n = 256; // 256
     let _n2 = n / 2;
 
-    // Build 256 samples of sine at 440Hz (matching lewtoff test amplitude)
+    // Build 256 samples of sine at 440Hz (matching oxivorbis test amplitude)
     // In the test: (sin(2pi*440*t) * 16384.0) as i16, normalized to f32 by /32768.0
-    // Actually lewtoff normalizes: pcm[i] = sample as f32 / 32768.0
+    // Actually oxivorbis normalizes: pcm[i] = sample as f32 / 32768.0
     let mut pcm = [0.0f32; 256];
     for i in 0..n {
         let t = i as f32 / rate as f32;

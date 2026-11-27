@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 
 /// User comment passed to the oracle (tests/headers.rs and
 /// tests/ogg_headers.rs use the same string).
-const COMMENT: &str = "encoder=lewtoff header vectors";
+const COMMENT: &str = "encoder=oxivorbis header vectors";
 
 const COMBOS: &[(&str, u32, u16)] = &[
     ("mono44", 44100, 1),
