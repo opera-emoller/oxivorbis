@@ -322,8 +322,8 @@ pub(crate) fn mapping0_forward_spectra(
 
         // Compute logmdct in-place into scratch (per-channel; reused across channels).
         let logmdct = &mut scratch_logmdct[..n2];
-        for j in 0..n2 {
-            logmdct[j] = add_345(to_db(gmdct[i][j].abs()));
+        for (o, &m) in logmdct.iter_mut().zip(&gmdct[i][..n2]) {
+            *o = add_345(to_db(m.abs()));
         }
         let logmdct = &*logmdct; // immutable view downstream
         if crate::debug_flag!("LW_DEBUG_MDCT_RAW") {
