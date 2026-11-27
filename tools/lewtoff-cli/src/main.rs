@@ -6,9 +6,12 @@
 //!
 //! `rate` must be 44100 or 48000; `channels` must be 1 or 2 (or `mono`/`stereo`);
 //! `quality` is on oggenc's `-q` scale, -1..10 (fractional ok), default 5.
-//! By default the whole input is read, then encoded one-shot. `--stream`
-//! instead pipes stdin through `lewtoff::Encoder` in 64 KiB reads, writing
-//! pages as they complete (memory stays bounded for any input length).
+//! Stdin is piped through `lewtoff::Encoder` in 64 KiB reads and pages are
+//! written as they complete, so memory stays bounded for any input length
+//! and no copy of the whole input is ever made. The output is the same as
+//! one-shot `lewtoff::encode` of the whole input (the encoder's output does
+//! not depend on how its input is split). `--stream` is accepted for
+//! compatibility; it is the only mode.
 
 use std::io::{Read, Write};
 
@@ -33,8 +36,7 @@ fn read_retrying(r: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let stream = args.first().is_some_and(|a| a == "--stream");
-    if stream {
+    if args.first().is_some_and(|a| a == "--stream") {
         args.remove(0);
     }
     if args.len() != 2 && args.len() != 3 {
@@ -64,46 +66,32 @@ fn main() {
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    if stream {
-        let mut enc = lewtoff::Encoder::new(rate, channels, &opts);
-        let mut stdin = std::io::stdin().lock();
-        let mut buf = vec![0u8; 1 << 16];
-        let mut carry: Option<u8> = None;
-        let mut samples: Vec<i16> = Vec::with_capacity(buf.len() / 2 + 1);
-        loop {
-            let n = read_retrying(&mut stdin, &mut buf)
-                .unwrap_or_else(|e| die(&format!("read stdin failed: {e}")));
-            if n == 0 {
-                break;
-            }
-            samples.clear();
-            let mut bytes = &buf[..n];
-            if let Some(lo) = carry.take() {
-                samples.push(i16::from_le_bytes([lo, bytes[0]]));
-                bytes = &bytes[1..];
-            }
-            let mut it = bytes.chunks_exact(2);
-            samples.extend(it.by_ref().map(|c| i16::from_le_bytes([c[0], c[1]])));
-            carry = it.remainder().first().copied();
-            out.write_all(enc.write(&samples))
-                .expect("write stdout failed");
+    let mut enc = lewtoff::Encoder::new(rate, channels, &opts);
+    let mut stdin = std::io::stdin().lock();
+    let mut buf = vec![0u8; 1 << 16];
+    let mut carry: Option<u8> = None;
+    let mut samples: Vec<i16> = Vec::with_capacity(buf.len() / 2 + 1);
+    loop {
+        let n = read_retrying(&mut stdin, &mut buf)
+            .unwrap_or_else(|e| die(&format!("read stdin failed: {e}")));
+        if n == 0 {
+            break;
         }
-        out.write_all(&enc.finish()).expect("write stdout failed");
-        return;
+        samples.clear();
+        let mut bytes = &buf[..n];
+        if let Some(lo) = carry.take() {
+            samples.push(i16::from_le_bytes([lo, bytes[0]]));
+            bytes = &bytes[1..];
+        }
+        let mut it = bytes.chunks_exact(2);
+        samples.extend(it.by_ref().map(|c| i16::from_le_bytes([c[0], c[1]])));
+        carry = it.remainder().first().copied();
+        out.write_all(enc.write(&samples))
+            .expect("write stdout failed");
     }
-
-    let mut raw = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut raw)
-        .expect("read stdin failed");
-
-    let samples: Vec<i16> = raw
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
-
-    let ogg = lewtoff::encode(&samples, rate, channels, &opts);
-    out.write_all(&ogg).expect("write stdout failed");
+    // A trailing odd byte is not a sample; it is dropped, as is a
+    // trailing half stereo frame (see `Encoder::finish`).
+    out.write_all(&enc.finish()).expect("write stdout failed");
 }
 
 #[cfg(test)]
