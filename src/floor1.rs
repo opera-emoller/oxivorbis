@@ -423,6 +423,9 @@ fn vorbis_dBquant(x: f32) -> i32 {
 /// Bit set in a fit code when `mdct + twofitatten >= flr` for that line.
 const FIT_ABOVE: i32 = 1 << 16;
 
+/// Lines inspect_error tests per stride.
+const INSPECT_LANES: usize = 8;
+
 /// For each line x < n: `vorbis_dBquant(flr[x])`, with [`FIT_ABOVE`] set
 /// when `mdct[x] + twofitatten >= flr[x]`. libvorbis recomputes both inside
 /// accumulate_fit and in every inspect_error call over overlapping ranges;
@@ -620,6 +623,67 @@ fn inspect_error(x0: i32, x1: i32, y0: i32, y1: i32, codes: &[i32], info: &Floor
         }
     }
 
+    // The rest of the line, x0 < x < x1. libvorbis steps y with Bresenham
+    // (err += ady; carry into sy when err >= adx, else base), so after k
+    // steps y = y0 + k*base + (sy-base)*floor(k*ady/adx) and
+    // err = k*ady % adx. INSPECT_LANES lanes each run that recurrence
+    // INSPECT_LANES steps at a time (the same carry test, with the stride's
+    // quotient and remainder), giving every line's exact y without the
+    // serial dependency, so the tests vectorize. Any failing line returns
+    // 1 and mse is an integer sum, so neither depends on the order the
+    // lines are visited in; failures are checked once per stride.
+    let check = |y: i32, c: i32, mse: &mut i32| {
+        let val = c & 0xffff;
+        *mse += (y - val) * (y - val);
+        // Same tests as libvorbis, evaluated without short-circuiting.
+        let checked = (c & FIT_ABOVE != 0) & (val != 0);
+        let over = (y as f32) + info.maxover < val as f32;
+        let under = (y as f32) - info.maxunder > val as f32;
+        checked & (over | under)
+    };
+    const L: usize = INSPECT_LANES;
+    let end = (x1 - x0) as usize; // lines k = 1..end
+    let mut k0 = 1usize;
+    if end > L {
+        let step = sy - base;
+        let mut ys = [0i32; L];
+        let mut errs = [0i32; L];
+        for j in 0..L {
+            let k = (j + 1) as i32;
+            ys[j] = y0 + k * base + step * (k * ady / adx);
+            errs[j] = k * ady % adx;
+        }
+        let stride = L as i32 * ady;
+        let (sq, sr) = (stride / adx, stride % adx);
+        let ystride = L as i32 * base + step * sq;
+        let mut mses = [0i32; L];
+        let lines = &codes[x0 as usize + 1..x1 as usize];
+        while k0 + L <= end {
+            let cs: &[i32; L] = lines[k0 - 1..k0 - 1 + L].try_into().expect("L lines");
+            let mut bad = false;
+            for j in 0..L {
+                bad |= check(ys[j], cs[j], &mut mses[j]);
+            }
+            if bad {
+                return 1;
+            }
+            for j in 0..L {
+                let e = errs[j] + sr;
+                let carry = e >= adx;
+                errs[j] = if carry { e - adx } else { e };
+                ys[j] += ystride + if carry { step } else { 0 };
+            }
+            k0 += L;
+        }
+        mse += mses.iter().sum::<i32>();
+        // Resume the serial walk at line k0 - 1.
+        let k = (k0 - 1) as i32;
+        y = y0 + k * base + step * (k * ady / adx);
+        err = k * ady % adx;
+        x = x0 + k;
+    }
+    n += end as i32 - 1;
+    // The remaining lines, serially as libvorbis does.
     loop {
         x += 1;
         if x >= x1 {
@@ -632,17 +696,7 @@ fn inspect_error(x0: i32, x1: i32, y0: i32, y1: i32, codes: &[i32], info: &Floor
         } else {
             y += base;
         }
-
-        let c = codes[x as usize];
-        let val = c & 0xffff;
-        mse += (y - val) * (y - val);
-        n += 1;
-        // Same tests as libvorbis, evaluated without short-circuiting so
-        // the only branch is the (rarely taken) early return.
-        let checked = (c & FIT_ABOVE != 0) & (val != 0);
-        let over = (y as f32) + info.maxover < val as f32;
-        let under = (y as f32) - info.maxunder > val as f32;
-        if checked & (over | under) {
+        if check(y, codes[x as usize], &mut mse) {
             return 1;
         }
     }
