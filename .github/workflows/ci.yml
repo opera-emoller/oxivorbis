@@ -21,6 +21,9 @@ env:
   FUZZ_F32_QUALITIES: "-0.1 0.5 1.0"
   FUZZ_LONG_ITERS: "40"
   FUZZ_LONG_QUALITIES: "-0.1 1.0"
+  # One rate per libvorbis template family other than 44.1/48 kHz, plus
+  # range edges (XX, 8, 11, 16, 22, 32, X).
+  FUZZ_FAMILY_RATES: "4000,8000,11025,15000,22050,25999,32000,96000,200000"
 
 jobs:
   test:
@@ -99,12 +102,18 @@ jobs:
             [ "$n" -ge "$min" ] || { echo "::error::only $n tests match '$pat' (expected >= $min)"; fail=1; }
           done <<'EOF'
           quality::tests::quality_oracle_grid|1
+          quality::tests::templates_cover_every_rate_and_quality|1
+          quality::tests::template_selection_edges|1
+          quality::tests::template_lists_agree|1
+          quality::tests::libvorbis_oob_inputs_are_exactly_known|1
           setup_gen::tests::oracle::oracle_setup_header_sweep|1
           parity oracle_parity_fuzz_repros|1
           parity oracle_parity_fuzz_repro_names|1
           parity oracle_parity_q::|360
-          parity oracle_parity_short_input::|22
-          parity oracle_parity_long::cases::|10
+          parity oracle_parity_rate::family::|560
+          parity oracle_parity_rate::edge::|870
+          parity oracle_parity_short_input::|47
+          parity oracle_parity_long::cases::|18
           parity oracle_parity_long_silence_|2
           parity oracle_parity_transients_signal_uses_short_blocks|1
           parity parity_oggenc_quality_conversion|1
@@ -156,6 +165,14 @@ jobs:
             ./target/release/parity-fuzz --max-len 30 --iters "$FUZZ_LONG_ITERS" --seed 3 \
               --quality "$q" --minimize-per-sig 1
           done
+      - name: parity-fuzz smoke (every template family)
+        run: |
+          for q in $FUZZ_QUALITIES; do
+            ./target/release/parity-fuzz --rates "$FUZZ_FAMILY_RATES" --iters "$FUZZ_ITERS" \
+              --seed 5 --quality "$q" --minimize-per-sig 1
+            ./target/release/parity-fuzz --f32 --rates "$FUZZ_FAMILY_RATES" --iters "$FUZZ_F32_ITERS" \
+              --seed 6 --quality "$q" --minimize-per-sig 1
+          done
       - name: parity-fuzz against an AddressSanitizer oracle
         # Same pristine sources, built with -fsanitize=address: any
         # out-of-bounds access in libvorbis/libogg on these inputs makes
@@ -166,6 +183,8 @@ jobs:
           for q in -0.1 0.5 1.0; do
             ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --iters 150 --seed 4 \
               --quality "$q" --no-minimize
+            ./target/release/parity-fuzz --oracle "$RUNNER_TEMP/oracle-asan" --iters 150 --seed 7 \
+              --rates "$FUZZ_FAMILY_RATES" --quality "$q" --no-minimize
           done
       - name: Upload parity-fuzz failures
         if: failure()
@@ -234,6 +253,10 @@ jobs:
           for q in $FUZZ_LONG_QUALITIES; do
             ./target/release/parity-fuzz --max-len 30 --iters "$FUZZ_LONG_ITERS" --seed 3 \
               --quality "$q" --minimize-per-sig 1
+          done
+          for q in $FUZZ_QUALITIES; do
+            ./target/release/parity-fuzz --rates "$FUZZ_FAMILY_RATES" --iters "$FUZZ_ITERS" \
+              --seed 5 --quality "$q" --minimize-per-sig 1
           done
       - name: Upload parity-fuzz failures
         if: failure()

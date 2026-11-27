@@ -108,7 +108,7 @@ let opts = Options::default()
     .with_comment("ARTIST", "Someone");
 
 // Rates and channel counts from a file header convert with TryFrom.
-let rate = SampleRate::try_from(44_100u32).expect("44100 or 48000");
+let rate = SampleRate::try_from(44_100u32).expect("1..=200000 Hz");
 let channels = Channels::try_from(2u16).expect("1 or 2");
 
 let pcm = vec![0i16; 44_100 * 2];
@@ -188,7 +188,7 @@ exit codes and the overwrite policy.
 | | |
 |---|---|
 | Sample format | Interleaved `i16` (scaled by 1/32768) or `f32` (passed through unscaled) |
-| Sample rate   | 44100 Hz **or** 48000 Hz (`SampleRate`) |
+| Sample rate   | Any rate from 1 Hz to 200 kHz (`SampleRate`), as libvorbis |
 | Channels      | Mono **or** stereo (`Channels`) |
 | Quality       | -1.0 to 10.0 on oggenc's `-q` scale (fractional ok); default 5 |
 
@@ -197,8 +197,33 @@ exit codes and the overwrite policy.
   to libvorbis's `base_quality` exactly as oggenc 1.4.3 does it, with
   `(float)((double)(float)q * 0.1)`. So `Quality::new(9.344)` picks the
   same setup, and the same nominal bitrate in the ID header, as
-  `oggenc -q 9.344`. Qualities below 0 select libvorbis's q-1 template
-  (512/4096-sample blocks) and match byte for byte as well.
+  `oggenc -q 9.344`. Every quality is available at every rate and
+  channel count, as in libvorbis.
+- **Sample rate** picks the libvorbis mode template the way
+  `vorbis_encode_init_vbr` does, and with it the block sizes and psy
+  tuning. `SampleRate::new(hz)` accepts `1..=200_000`, the range libvorbis
+  1.3.7 has templates for (it has none above 200 kHz). Constants cover the
+  common rates (`SampleRate::HZ_8000` … `HZ_192000`):
+
+  | Rate (Hz)      | libvorbis template | Block sizes (short/long) |
+  |----------------|--------------------|--------------------------|
+  | 1–7999         | `XX` (`setup_X.h`) | 512/512 |
+  | 8000–8999      | `8`                | 512/512 |
+  | 9000–14999     | `11`               | 512/512 |
+  | 15000–18999    | `16`               | 1024/1024 below q0.5, else 512/1024 |
+  | 19000–25999    | `22`               | as `16` |
+  | 26000–39999    | `32`               | 512/4096 below q0, else 256/2048 |
+  | 40000–50000    | `44`               | as `32` |
+  | 50001–200000   | `X` (`setup_X.h`)  | as `32` |
+
+  The `X` and `XX` catch-all templates have no bitrate table, so the ID
+  header's nominal bitrate is -1 per channel there, as libvorbis writes it.
+- **One quality at low rates:** below 26 kHz, `base_quality` `0x3f7ffffd`
+  (oggenc `-q 9.999998`) makes libvorbis 1.3.7 read past the end of its
+  mode tables (`j + del` rounds up to the number of settings), so its
+  output there is undefined and depends on how the compiler laid out the
+  tables. oxivorbis encodes that one request as libvorbis's top setting,
+  q10. Every other float matches.
 - **f32 edge cases:** values outside ±1.0, subnormals and `-0.0` are
   encoded the way libvorbis encodes them. Parity is tested up to ±10⁴.
   At extreme magnitudes, quantized values pass ±2³¹, where libvorbis's
@@ -212,9 +237,9 @@ exit codes and the overwrite policy.
 - **Odd sample counts in stereo:** `Encoder::write` holds an unpaired
   trailing sample until the next call. `finish` and the one-shot
   functions drop a final unpaired sample.
-- Other rates and more than two channels are not supported.
-  `SampleRate` and `Channels` are `#[non_exhaustive]`, so support can
-  be added later without breaking changes.
+- More than two channels are not supported. `Channels` is
+  `#[non_exhaustive]`, so support can be added later without breaking
+  changes.
 
 ## Parity contract
 
@@ -265,9 +290,11 @@ libvorbis. A few setup-time tables do call the platform libm, as
 libvorbis does: the envelope analysis windows (`sin`), and the
 psychoacoustic model's bark and octave scales, ATH and tone-curve maps
 (`atan`, `log`, `exp`). libm results can differ by an ulp between
-platforms. Every decision those values feed (rounded band edges and
-comparisons) has been checked to be robust to ±1 ulp in all supported
-configurations, so the output does not depend on the platform's libm.
+platforms. Every value and decision the psychoacoustic setup derives
+from them (rounded band edges, comparisons, the stored tables) is
+unchanged when each libm result moves by ±1 ulp, at every rate from
+1 Hz to 200 kHz and every block size, so the output does not depend on
+the platform's libm (`psy_setup_robust_to_libm_ulps`).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how parity is enforced.
 
 ## Features

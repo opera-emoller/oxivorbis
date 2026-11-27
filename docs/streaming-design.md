@@ -13,7 +13,8 @@ The implementation lives in:
 - `tests/streaming.rs`, `tests/parity.rs` (`oracle_parity_short_input`) and `tests/parity_f32.rs`.
 
 Where the shipped code differs from the plan below, a **Now:** note says so. Block-size
-constants come from the quality setup (256/2048 for q0 and up, 512/4096 for q-1).
+constants come from the quality setup (at 44.1 kHz: 256/2048 for q0 and up, 512/4096 for q-1;
+other rates use 512/512, 512/1024 or 1024/1024, see `SampleRate`).
 
 ## Parity contract
 

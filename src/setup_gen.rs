@@ -324,8 +324,8 @@ fn vorbis_encode_residue_setup(
         freq = nyq;
     }
     // (f->n = freq/nyq*blocksize is dead: floor1_look uses postlist[1].)
-    // limit_type 1 (point-stereo) / 2 (LFE) only occur in 5.1 and
-    // low-rate templates; the generator data has none for 44.1/48 kHz.
+    // limit_type 1 (point-stereo) / 2 (LFE) only occur in the 5.1
+    // template; no 1-2 channel template uses them.
     assert_eq!(rt.limit_type, 0, "unsupported residue limit_type");
 
     let grouping = r.grouping;

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! `quality` is on oggenc's `-q` scale (-1..10, default 5). The WAV must be
-//! 16-bit integer PCM, 44100 or 48000 Hz, mono or stereo. The RIFF parser
+//! 16-bit integer PCM, 1 Hz to 200 kHz, mono or stereo. The RIFF parser
 //! below is deliberately minimal (no dependencies); use a crate such as
 //! `hound` or `symphonia` for anything more general.
 

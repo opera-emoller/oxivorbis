@@ -146,18 +146,22 @@ use std::fmt;
 /// libvorbis 1.3.7 has an encoder template for every rate in
 /// `1..=200_000` Hz, mono and stereo, at every quality from -1 to 10, so
 /// every [`SampleRate`] encodes with every [`Quality`] and [`Channels`].
-/// The rate selects the template exactly as libvorbis does:
+/// The rate selects the libvorbis template (`modes/setup_*.h`) exactly as
+/// libvorbis does, and with it the block sizes:
 ///
-/// | Rate (Hz)         | Template | Blocks (short/long)         |
-/// |-------------------|----------|-----------------------------|
-/// | 1 – 7999          | `XX`     | 512/512                     |
-/// | 8000 – 8999       | `8`      | 512/512                     |
-/// | 9000 – 14999      | `11`     | 512/512                     |
-/// | 15000 – 18999     | `16`     | 1024/1024 at q-1..q0, else 512/1024 |
-/// | 19000 – 25999     | `22`     | as `16`                     |
-/// | 26000 – 39999     | `32`     | 512/4096 at q-1, else 256/2048 |
-/// | 40000 – 50000     | `44`     | as `32`                     |
-/// | 50001 – 200000    | `X`      | as `32`                     |
+/// | Rate (Hz)       | Template | Block sizes (short/long)                  |
+/// |-----------------|----------|-------------------------------------------|
+/// | 1 – 7999        | `XX`     | 512/512                                   |
+/// | 8000 – 8999     | `8`      | 512/512                                   |
+/// | 9000 – 14999    | `11`     | 512/512                                   |
+/// | 15000 – 18999   | `16`     | 1024/1024 below q0.5, 512/1024 from q0.5  |
+/// | 19000 – 25999   | `22`     | as `16`                                   |
+/// | 26000 – 39999   | `32`     | 512/4096 below q0, 256/2048 from q0       |
+/// | 40000 – 50000   | `44`     | as `32`                                   |
+/// | 50001 – 200000  | `X`      | as `32`                                   |
+///
+/// Rates above 200 kHz have no libvorbis template (`vorbis_encode_init_vbr`
+/// fails with `OV_EIMPL`), and 0 Hz is rejected (`OV_EINVAL`).
 ///
 /// ```
 /// use oxivorbis::SampleRate;
@@ -303,8 +307,14 @@ impl TryFrom<u16> for Channels {
 /// The value is converted to libvorbis's `base_quality` exactly as oggenc
 /// 1.4.3 does (`(float)((double)q * 0.1)`), so `Quality::new(7.5)` picks
 /// the same libvorbis setup (and ID-header nominal bitrate) as
-/// `oggenc -q 7.5`. Qualities below 0 select libvorbis's q-1 template
-/// (512/4096-sample blocks).
+/// `oggenc -q 7.5`. Every quality works at every [`SampleRate`]; how the
+/// rate's template maps it onto block sizes is listed there (e.g. qualities
+/// below 0 use 512/4096-sample blocks at 26 kHz and up).
+///
+/// One quality differs from libvorbis: below 26 kHz, `base_quality`
+/// `0x3f7ffffd` (oggenc `-q 9.999998`) makes libvorbis 1.3.7 read past
+/// the end of its mode tables, so its output there is undefined.
+/// oxivorbis encodes that request as libvorbis's own top setting (q10).
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub struct Quality {
     /// oggenc `-q` value.

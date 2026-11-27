@@ -114,6 +114,17 @@ The quality matrix is
 crossed with 44.1/48 kHz, mono/stereo, and five signals: silence, sine,
 ramp, noise+tone and 10 s of transients.
 
+`oracle_parity_rate::*` covers the other libvorbis template families
+with the same five signals, mono and stereo:
+
+- `family::<rate>`: one rate per family (4, 8, 11.025, 16, 22.05, 32 and
+  96 kHz) at eight qualities spanning each family's quality mapping,
+  ends included (`base_quality` -0.1, -0.05, 0, 0.05, 0.25, 0.5, 0.75, 1).
+- `edge::<rate>`: both ends of every template's rate range and the rates
+  either side of them (7999/8001, 8999/9000/9001, 14999/15000/15001, …,
+  49999/50000/50001, 199999/200000), 1, 100 and 1000 Hz, and odd rates
+  (37800, 44056, 88200, 192000), at q-1, q5 and q10.
+
 `oracle_parity_long::cases::*` covers long inputs: 30 to 120 s of
 never-silent noise+tone, transients and 20 Hz–20 kHz chirps, across all
 four configs at q-1, q0, q2, q5 and q10. `oracle_parity_long_silence_*`
@@ -124,7 +135,9 @@ flushes.
 covers 0..2100 frames, around the 2048-sample long block. In the q-1
 range (512/4096 blocks; `base_quality` -0.1 mono 44.1 kHz and -0.05
 stereo 48 kHz) it covers 0..8400 frames, with ±1 around every block and
-chunk boundary (4095–4097, 4159–4161, 8191–8193, …).
+chunk boundary (4095–4097, 4159–4161, 8191–8193, …). The same sweeps run
+for the single-block templates (512/512 at 8 and 11.025 kHz, 1024/1024 at
+16 kHz q-1) and the 512/1024 ones (16 and 22.05 kHz).
 
 `oracle_parity_fuzz_repros` replays the minimized fuzzer failures kept
 in `tests/vectors/fuzz/`. File names are parity-fuzz case ids,
@@ -159,10 +172,20 @@ Its long-input tests (`chunking_invariance_10s`,
 Inside `src/`, the oracle-gated unit tests are:
 
 - `quality_oracle_grid`: setup parameters versus libvorbis, for every
-  quality.
-- `oracle_setup_header_sweep`: setup headers.
+  quality, at 45 rates covering every template and range edge, mono and
+  stereo (about 110,000 configurations).
+- `oracle_setup_header_sweep`: setup headers at 26 rates, mono and
+  stereo.
 - `dsp_manifest_*`: MDCT, FFT and window outputs against hashes
   produced by `tools/oracle-encoder/dsp_oracle`. These tests always run.
+
+`psy::tests::psy_setup_robust_to_libm_ulps` (always runs) shifts every
+`atan`/`log`/`exp` result the psy setup uses by ±2 ulps and checks that
+the ATH, octave, bark-window, noise-offset and tone-curve geometry stays
+bit-identical, at ~240 rates. Its `#[ignore]`d sibling
+`psy_setup_robust_to_libm_ulps_every_rate` does the same (±1 ulp) for
+every rate from 1 to 200000 Hz in about a minute (release):
+`cargo nextest run --release --lib --run-ignored only psy_setup_robust`.
 
 `tests/psy.rs`'s `psy_compute_mask_determinism` is a oxivorbis snapshot,
 not an oracle vector. It pins the mask bits across hosts (including
@@ -220,7 +243,7 @@ as positional arguments to `just corpus`:
 |------------------|---------------------------------|------------|---------|
 | `CORPUS_LIMIT`   | `100`                           | all files  | Test only the first N files (sorted) |
 | `CORPUS_QUALITY` | `-0.1,0.5,1.0`                  | `0.5`      | libvorbis `base_quality` list |
-| `CORPUS_CONFIGS` | `44100x2,48000x1`, or `all`     | `44100x2`  | Rate × channel configurations |
+| `CORPUS_CONFIGS` | `44100x2,22050x1`, or `all`     | `44100x2`  | Rate × channel configurations (any rate 1..=200000; `all` = 44.1/48 kHz × mono/stereo) |
 | `CORPUS_JOBS`    | `4`                             | all cores  | Worker threads |
 | `CORPUS_REQUIRE` | `1`                             | unset      | Fail instead of warning when there is no corpus |
 
@@ -318,7 +341,7 @@ differs from what is committed. The golden vectors are checked by the
 |------------------------------|-------------|
 | `just regen-tables`          | `src/tables/{trig,drft,window}.rs` (MDCT, FFT, window tables) via `dsp_oracle` + `gen-tables` |
 | `just regen-dsp-manifest`    | `tools/oracle-encoder/dsp_manifest.txt` (hashes checked by `dsp_manifest_*`) |
-| `just regen-quality-tables`  | `src/tables/quality.rs` (44.1/48 kHz mode-template tables) |
+| `just regen-quality-tables`  | `src/tables/quality.rs` (mode-template tables of every 1–2 channel template) |
 | `just regen-setup-templates` | `src/setup_books.bin` and `src/setup_templates.rs` (codebooks, floor/residue/mapping templates) |
 | `just regen-header-vectors`  | `tests/vectors/headers/*.bin`, `tests/vectors/ogg/*` (from the oracle-encoder) |
 | `just regen-mdct-vectors`    | `tests/vectors/mdct/*.bin` |

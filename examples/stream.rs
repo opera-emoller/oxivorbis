@@ -5,7 +5,7 @@
 //!     | cargo run --release --example stream -- 44100 2 > song.ogg
 //! ```
 //!
-//! Arguments: `<44100|48000> <1|2> [quality -1..10]` (quality defaults to
+//! Arguments: `<rate 1..=200000> <1|2> [quality -1..10]` (quality defaults to
 //! 5). Pages are written as soon as the encoder completes them, so memory
 //! stays bounded for any input length.
 
@@ -16,9 +16,7 @@ use std::process::ExitCode;
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 2 && args.len() != 3 {
-        return Err(
-            "usage: stream <44100|48000> <1|2> [quality -1..10] < in.s16le > out.ogg".into(),
-        );
+        return Err("usage: stream <rate> <1|2> [quality -1..10] < in.s16le > out.ogg".into());
     }
     let rate: u32 = args[0].parse().map_err(|_| "rate must be a number")?;
     let rate = SampleRate::try_from(rate).map_err(|e| e.to_string())?;

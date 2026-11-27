@@ -81,6 +81,7 @@ parity:
 #     just corpus 100 "" 0.3              # libvorbis base_quality 0.3 (= q3)
 #     just corpus "" "" -0.1,0.5,1.0      # several qualities in one run
 #     just corpus "" "" 0.5 all           # 44100x2,44100x1,48000x2,48000x1
+#     just corpus "" "" 0.5 8000x1,22050x2  # any rate 1..=200000
 #     just corpus "" "" "" 48000x1,44100x1 4   # 4 worker threads
 # Each arg falls back to its env var when empty: CORPUS_LIMIT,
 # CORPUS_QUALITY, CORPUS_CONFIGS, CORPUS_JOBS (default: all cores).
@@ -215,8 +216,9 @@ regen-golden-vectors:
     OXIVORBIS_BLESS=1 cargo nextest run --features oracle --no-tests=fail \
         -E 'binary(golden) & test(golden_vectors_are_fresh)'
 
-# Regenerate src/tables/quality.rs (libvorbis 44.1/48 kHz mode-template
-# tables for quality-dependent setup) by compiling the vendored headers.
+# Regenerate src/tables/quality.rs (the quality-dependent mode-template
+# tables of every 1-2 channel libvorbis template) by compiling the vendored
+# headers.
 # Also builds tools/oracle-encoder/dump_params, used by the oracle-gated
 # `quality_oracle_grid` test.
 regen-quality-tables:
@@ -225,7 +227,7 @@ regen-quality-tables:
     cargo fmt --all
 
 # Regenerate src/tables/{trig,drft,window}.rs (MDCT, FFT and window tables
-# for 128/256/512/2048/4096) by dumping libvorbis's runtime tables from the
+# for 128/256/512/1024/2048/4096) by dumping libvorbis's runtime tables from the
 # vendored sources (tools/oracle-encoder/dsp_oracle) and embedding them
 # bit-for-bit. No Rust-side cos/sin, so the result is host-independent.
 regen-tables:
