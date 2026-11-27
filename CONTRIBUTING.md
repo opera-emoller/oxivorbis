@@ -185,10 +185,20 @@ supported bitrate range, ends included, in `Nominal` (`-b`) and
 with hard minimum / maximum / both, with and without an average, CBR
 (`min = avg = max`) and quality mode with limits at q-1 to q10;
 `bitrate_tuning::*` the reservoir knobs; `bitrate_long::*` 30 to 120 s
-inputs so the reservoirs fill and drain many times; and
-`bitrate_rejects_like_libvorbis` requests both sides refuse.
+inputs so the reservoirs fill and drain many times (two of them 5.1);
+`bitrate_multichannel::*` more than two channels, where libvorbis looks
+the bitrate up per channel: 5.1 on its own template at 40, 44.1, 48 and
+70 kHz and on the uncoupled one at 32 kHz, and uncoupled 3, 4 and 8
+channels at two rates each, every one with the ends and middle of its
+range (`Nominal` and `Average`), CBR, ABR with limits, both limits
+modes, quality with limits from q-1 to q10, plus reservoir and encoder
+tuning on 5.1; and `bitrate_rejects_like_libvorbis` requests both sides
+refuse (including per-channel range edges and 5.1 above 70 kHz).
 `tests/bitrate.rs` (no oracle) checks chunking and parallel-batch
-invariance in the managed modes, the `Options` API and its errors.
+invariance in the managed modes (also 5.1 and 4 channels), the
+`Bitrate` constructors and their errors, and that one `Options` and
+`Bitrate` reused at a rate where the request is invalid returns `Err`
+rather than panicking.
 
 `tests/parity_f32.rs` checks `f32` input against the oracle's f32 mode.
 It covers several qualities and configs, values beyond ±1.0,
@@ -336,9 +346,11 @@ cargo run -p parity-fuzz --release -- --iters 10000 --seed 1 --quality 0.5
 #   --keep-going         collect all failures instead of stopping at the first
 #   --minimize-per-sig N only minimize the first N failures per signature
 #   --no-minimize        --start I  --min-frames N  --out DIR  --oracle PATH
-#   --bitrate            a random bitrate mode per case (8-50 kHz rates only;
-#                        default rates 22050,44100,48000); both sides must
-#                        agree on which requests libvorbis rejects
+#   --bitrate            a random bitrate mode per case (only rates with
+#                        bitrate setups for the channel counts: 8-50 kHz,
+#                        to 70 kHz for 6 channels; default rates
+#                        22050,44100,48000); both sides must agree on which
+#                        requests libvorbis rejects
 #   --mode "FLAGS"       one fixed mode as oracle flags, for replays
 
 # Replay a saved raw file (one rate / channel count). The descriptor.json

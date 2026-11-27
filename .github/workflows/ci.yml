@@ -35,6 +35,11 @@ env:
   FUZZ_MC_QUALITIES: "-0.1 0.3 0.5 1.0"
   FUZZ_MC_RATES: "44100,48000,70000,32000,96000"
   FUZZ_MC_CHANNELS: "3,4,5,6,7,8"
+  # Bitrate modes with more than two channels: 5.1 on its template (40-70
+  # kHz) and below it, and uncoupled counts at rates with bitrate setups.
+  FUZZ_MC_BITRATE_51_RATES: "32000,40000,44100,48000,70000"
+  FUZZ_MC_BITRATE_RATES: "11025,22050,44100,48000"
+  FUZZ_MC_BITRATE_CHANNELS: "3,4,5,7,8"
 
 jobs:
   test:
@@ -135,16 +140,20 @@ jobs:
           parity_bitrate bitrate_range::|72
           parity_bitrate bitrate_limits::|168
           parity_bitrate bitrate_tuning::|7
-          parity_bitrate bitrate_long::|9
+          parity_bitrate bitrate_long::|11
           parity_bitrate bitrate_rejects_like_libvorbis|1
           parity_bitrate encoder_tuning::|7
+          parity_bitrate bitrate_multichannel::surround::|51
+          parity_bitrate bitrate_multichannel::uncoupled::|50
           bitrate encoder_tuning_defaults_nan_and_clamps|1
           bitrate chunking_invariance_managed|1
+          bitrate bitrate_api|1
+          bitrate reuse_across_rates_returns_errors|1
           bitrate bitrates_hit_their_targets|1
           bitrate errors|1
           bitrate edges_do_not_panic|1
           bitrate::tests::|4
-          ratecontrol::tests::|3
+          ratecontrol::tests::|4
           dsp_manifest_|6
           parity_f32 |9
           streaming |8
@@ -210,6 +219,11 @@ jobs:
           done
           ./target/release/parity-fuzz --bitrate --f32 --rates "$FUZZ_BITRATE_RATES" \
             --iters "$FUZZ_BITRATE_ITERS" --seed 9 --minimize-per-sig 1
+          ./target/release/parity-fuzz --bitrate --channels 6 --rates "$FUZZ_MC_BITRATE_51_RATES" \
+            --iters "$FUZZ_BITRATE_ITERS" --seed 11 --max-len 10 --minimize-per-sig 1
+          ./target/release/parity-fuzz --bitrate --channels "$FUZZ_MC_BITRATE_CHANNELS" \
+            --rates "$FUZZ_MC_BITRATE_RATES" --iters "$FUZZ_BITRATE_ITERS" --seed 12 --max-len 10 \
+            --minimize-per-sig 1
       - name: parity-fuzz smoke (more than two channels)
         run: |
           for q in $FUZZ_MC_QUALITIES; do

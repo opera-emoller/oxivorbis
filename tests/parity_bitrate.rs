@@ -20,6 +20,12 @@
 //! - `encoder_tuning::*`: libvorbis's lowpass, impulse-noisetune and
 //!   coupling ctls (oggenc's `lowpass_frequency`, `impulse_noisetune`,
 //!   `disable_coupling`), in VBR and bitrate modes, clamps included.
+//! - `bitrate_multichannel::{surround,uncoupled}::<rate>[::<ch>]::*`: more
+//!   than two channels, where libvorbis looks the bitrate up per channel:
+//!   5.1 on its own template (`ve_setup_44_51`, 40-70 kHz) and below it on
+//!   the uncoupled one, and 4 and 8 uncoupled channels. Each runs the
+//!   supported range's ends and middle (nominal and average), "CBR", ABR
+//!   with limits, the limits modes and quality with limits.
 
 #![cfg(feature = "oracle")]
 
@@ -290,10 +296,14 @@ enum Combo {
 }
 
 fn run_limits(hz: u32, ch: Channels, combo: Combo) {
+    run_limits_secs(hz, ch, combo, 8.0)
+}
+
+fn run_limits_secs(hz: u32, ch: Channels, combo: Combo, secs: f64) {
     let (lo, hi) = supported(hz, ch);
     let avg = (lo + hi) / 2;
     // Quieter material than `run_range` uses would rarely hit a minimum.
-    let pcm = music(8.0, ch.count() as usize, hz, 0x5EED ^ hz as u64);
+    let pcm = music(secs, ch.count() as usize, hz, 0x5EED ^ hz as u64);
     let (q, mode) = match combo {
         Combo::AvgMin => (
             0.5,
@@ -597,6 +607,23 @@ mod bitrate_long {
         );
     }
     #[test]
+    fn cbr384_51_48_30s() {
+        let m = BitrateMode::Average {
+            kbps: 384,
+            min_kbps: Some(384),
+            max_kbps: Some(384),
+        };
+        run(30.0, 48000, Channels::SURROUND_5_1, 0.5, m);
+    }
+    #[test]
+    fn q4_max256_51_44_30s() {
+        let m = BitrateMode::QualityLimits {
+            min_kbps: None,
+            max_kbps: Some(256),
+        };
+        run(30.0, 44100, Channels::SURROUND_5_1, 0.4, m);
+    }
+    #[test]
     fn uncoupled_abr176_stereo22_60s() {
         // 88 kb/s per channel: only 22_uncoupled covers it.
         run(
@@ -633,6 +660,22 @@ fn bitrate_rejects_like_libvorbis() {
             BitrateMode::Limits {
                 min_kbps: None,
                 max_kbps: Some(600),
+            },
+        ),
+        // More than two channels: per-channel ranges, the 5.1 template's
+        // 70 kHz top, and 4 channels above 50 kHz.
+        (48000, Channels::SURROUND_5_1, BitrateMode::average(83)),
+        (48000, Channels::SURROUND_5_1, BitrateMode::average(1441)),
+        (70001, Channels::SURROUND_5_1, BitrateMode::average(384)),
+        (32000, Channels::SURROUND_5_1, BitrateMode::average(179)),
+        (50001, Channels::new(4).unwrap(), BitrateMode::average(256)),
+        (44100, Channels::new(8).unwrap(), BitrateMode::average(1921)),
+        (
+            96000,
+            Channels::SURROUND_5_1,
+            BitrateMode::QualityLimits {
+                min_kbps: None,
+                max_kbps: Some(400),
             },
         ),
     ] {
@@ -755,5 +798,136 @@ mod encoder_tuning {
             .with_impulse_noisetune(-3.0)
             .with_coupling_disabled();
         run(48000, Channels::STEREO, 0.5, Some(ql), t);
+    }
+}
+
+mod bitrate_multichannel {
+    use super::*;
+
+    /// Shorter inputs than the stereo cases: up to 8 channels, all 15
+    /// packetblobs, through the -O0 oracle in a debug build.
+    const SECS: f64 = 3.0;
+
+    fn range(hz: u32, ch: Channels, average: bool) {
+        let pcm = music(SECS, ch.count() as usize, hz, hz as u64 ^ 0x51);
+        let (lo, hi) = supported(hz, ch);
+        for k in [lo, (lo + hi) / 2, hi] {
+            let mode = if average {
+                BitrateMode::average(k)
+            } else {
+                BitrateMode::Nominal { kbps: k }
+            };
+            check(&pcm, rate(hz), ch, 0.5, mode, BitrateTuning::default())
+                .unwrap_or_else(|| panic!("{hz} {ch:?} {k} kb/s rejected"));
+        }
+    }
+
+    macro_rules! modes {
+        ($hz:expr, $ch:expr) => {
+            #[test]
+            fn nominal_range() {
+                range($hz, $ch, false)
+            }
+            #[test]
+            fn average_range() {
+                range($hz, $ch, true)
+            }
+            #[test]
+            fn cbr() {
+                run_limits_secs($hz, $ch, Combo::Cbr, SECS)
+            }
+            #[test]
+            fn avg_min_max() {
+                run_limits_secs($hz, $ch, Combo::AvgMinMax, SECS)
+            }
+            #[test]
+            fn limits_max() {
+                run_limits_secs($hz, $ch, Combo::Max, SECS)
+            }
+            #[test]
+            fn limits_min_max() {
+                run_limits_secs($hz, $ch, Combo::MinMax, SECS)
+            }
+            #[test]
+            fn q_m1_max() {
+                run_limits_secs($hz, $ch, Combo::QMax(-0.1), SECS)
+            }
+            #[test]
+            fn q3_min() {
+                run_limits_secs($hz, $ch, Combo::QMin(0.3), SECS)
+            }
+            #[test]
+            fn q5_max() {
+                run_limits_secs($hz, $ch, Combo::QMax(0.5), SECS)
+            }
+            #[test]
+            fn q10_min_max() {
+                run_limits_secs($hz, $ch, Combo::QMinMax(1.0), SECS)
+            }
+        };
+    }
+
+    /// 5.1. At 40-70 kHz libvorbis's 5.1 template (two submaps, below q5
+    /// four coupling steps; the managed setup's per-packetblob coupling
+    /// limits), below 40 kHz the rate's uncoupled template.
+    mod surround {
+        use super::*;
+        macro_rules! rates {
+            ($name:ident, $hz:expr) => {
+                mod $name {
+                    use super::*;
+                    modes!($hz, Channels::SURROUND_5_1);
+                }
+            };
+        }
+        rates!(r44100, 44100);
+        rates!(r48000, 48000);
+        rates!(r40000, 40000);
+        rates!(r70000, 70000);
+        rates!(r32000, 32000);
+
+        /// Reservoir tuning and encoder tuning on 5.1 (coupling can't be
+        /// switched off in a bitrate mode, as with stereo).
+        #[test]
+        fn tuning() {
+            let ch = Channels::SURROUND_5_1;
+            let pcm = music(SECS, 6, 48000, 0x7);
+            let t = BitrateTuning::default()
+                .with_reservoir_bits(200_000)
+                .with_reservoir_bias(0.5)
+                .with_average_damping(0.5);
+            check(&pcm, rate(48000), ch, 0.5, BitrateMode::average(320), t).expect("accepted");
+            let enc = EncoderTuning::default()
+                .with_lowpass_khz(15.0)
+                .with_impulse_noisetune(-5.0)
+                .with_coupling_disabled();
+            let cbr = BitrateMode::Average {
+                kbps: 256,
+                min_kbps: Some(256),
+                max_kbps: Some(256),
+            };
+            let b = Some((cbr, BitrateTuning::default()));
+            check_tuned(&pcm, rate(44100), ch, 0.3, b, enc).expect("accepted");
+            // VBR 5.1 with coupling disabled: the uncoupled template.
+            check_tuned(&pcm, rate(48000), ch, 0.3, None, enc).expect("accepted");
+        }
+    }
+
+    /// Uncoupled 4 and 8 channels.
+    mod uncoupled {
+        use super::*;
+        macro_rules! rates {
+            ($name:ident, $hz:expr, $n:expr) => {
+                mod $name {
+                    use super::*;
+                    modes!($hz, Channels::new($n).unwrap());
+                }
+            };
+        }
+        rates!(r44100_4ch, 44100, 4);
+        rates!(r22050_4ch, 22050, 4);
+        rates!(r48000_8ch, 48000, 8);
+        rates!(r16000_8ch, 16000, 8);
+        rates!(r11025_3ch, 11025, 3);
     }
 }
