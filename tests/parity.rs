@@ -1206,7 +1206,7 @@ fn parse_repro_name(file_name: &str) -> Result<ReproName, String> {
         }
     };
     if !(-0.1..=1.0).contains(&quality)
-        || ![44100, 48000].contains(&rate)
+        || SampleRate::new(rate).is_none()
         || !(1..=2).contains(&channels)
     {
         return Err(format!("{file_name}: unsupported quality/rate/channels"));
@@ -1255,7 +1255,9 @@ fn oracle_parity_fuzz_repro_names() {
         p("s9-i9-q0.5-44100-1ch.f32le").is_err(),
         "f32 ext without tag"
     );
-    assert!(p("s9-i9-q0.5-22050-1ch.s16le").is_err());
+    assert!(p("s9-i9-q0.5-22050-1ch.s16le").is_ok());
+    assert!(p("s9-i9-q0.5-200001-1ch.s16le").is_err());
+    assert!(p("s9-i9-q0.5-0-1ch.s16le").is_err());
 }
 
 /// Replays every minimized tools/parity-fuzz failure kept in
@@ -1276,11 +1278,7 @@ fn oracle_parity_fuzz_repros() {
         let name = path.file_name().unwrap().to_str().unwrap();
         let repro = parse_repro_name(name).unwrap_or_else(|e| panic!("{e}"));
         let raw = std::fs::read(path).unwrap();
-        let rate = if repro.rate == 48000 {
-            SampleRate::HZ_48000
-        } else {
-            SampleRate::HZ_44100
-        };
+        let rate = SampleRate::new(repro.rate).expect("validated by parse_repro_name");
         let channels = if repro.channels == 2 {
             Channels::Stereo
         } else {

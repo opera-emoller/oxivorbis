@@ -126,6 +126,20 @@ pub fn to_db(x: f32) -> f32 {
     bits as f32 * 7.17711438e-7_f32 - 764.6161886_f32
 }
 
+/// libvorbis os.h `max(x,y)`: `((x)<(y)?(y):(x))`. Unlike `f32::max` it
+/// returns `x` when either is NaN (the noise mask can be NaN for some
+/// inputs, and libvorbis then keeps the NaN).
+#[inline(always)]
+pub(crate) fn c_max(x: f32, y: f32) -> f32 {
+    if x < y { y } else { x }
+}
+
+/// libvorbis os.h `min(x,y)`: `((x)>(y)?(y):(x))` (`x` when either is NaN).
+#[inline(always)]
+pub(crate) fn c_min(x: f32, y: f32) -> f32 {
+    if x > y { y } else { x }
+}
+
 /// unitnorm: sign-preserving unit normalisation (scales.h, IEEE path).
 #[inline(always)]
 pub fn unitnorm(x: f32) -> f32 {
@@ -1721,7 +1735,7 @@ pub fn vp_offset_and_mix(
     };
     if offset_select != 1 {
         for i in 0..n {
-            logmask[i] = mix(i).max(tone[i] + toneatt);
+            logmask[i] = c_max(mix(i), tone[i] + toneatt);
         }
         return;
     }
@@ -1729,7 +1743,7 @@ pub fn vp_offset_and_mix(
     let logmdct = &logmdct[..n];
     for i in 0..n {
         let val = mix(i);
-        logmask[i] = val.max(tone[i] + toneatt);
+        logmask[i] = c_max(val, tone[i] + toneatt);
 
         // C: `float de, coeffi, cx; coeffi = -17.2;` — coeffi is float
         // (= -17.20000076f, NOT the f64 literal -17.2 = -17.19999999...).

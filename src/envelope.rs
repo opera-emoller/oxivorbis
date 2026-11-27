@@ -315,8 +315,8 @@ impl EnvelopeLookup {
 
             let this = filter.ampptr;
             let mut p = if this == 0 { VE_AMP - 1 } else { this - 1 };
-            let postmax = acc.max(filter.ampbuf[p]);
-            let postmin = acc.min(filter.ampbuf[p]);
+            let postmax = crate::psy::c_max(acc, filter.ampbuf[p]);
+            let postmin = crate::psy::c_min(acc, filter.ampbuf[p]);
 
             let mut premax = -99999.0f32;
             let mut premin = 99999.0f32;
