@@ -293,7 +293,7 @@ pub(crate) fn setting_config(
     hl: &HighLevel,
 ) -> QualityConfig {
     assert!(
-        (1..=MAX_CHANNELS).contains(&channels),
+        channels != 0 && channels <= MAX_CHANNELS,
         "quality_config: {channels} channels unsupported"
     );
     let tpl = t::SETUP_LIST[template];

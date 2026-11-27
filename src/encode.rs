@@ -141,11 +141,45 @@ struct BlockJob {
     /// replaces it with the channel's spectra (see [`block_spectra`]).
     pcm: Vec<Vec<f32>>,
     /// Per channel, the clamped local ampmax (set by pass A).
-    local_ampmax: Vec<f32>,
+    local_ampmax: LocalAmpmax,
     mode: BlockMode,
     blocktype: BlockType,
     granulepos: u64,
     eos: bool,
+}
+
+/// A block's per-channel local ampmax: inline for mono and stereo, so
+/// queuing a block allocates nothing beyond its PCM; on the heap past two
+/// channels.
+#[cfg(feature = "parallel")]
+enum LocalAmpmax {
+    Inline([f32; 2]),
+    Heap(Vec<f32>),
+}
+
+#[cfg(feature = "parallel")]
+impl LocalAmpmax {
+    fn new(ch: usize) -> Self {
+        if ch <= 2 {
+            LocalAmpmax::Inline([0.0; 2])
+        } else {
+            LocalAmpmax::Heap(vec![0.0; ch])
+        }
+    }
+
+    fn get(&self, c: usize) -> f32 {
+        match self {
+            LocalAmpmax::Inline(a) => a[c],
+            LocalAmpmax::Heap(v) => v[c],
+        }
+    }
+
+    fn set(&mut self, c: usize, v: f32) {
+        match self {
+            LocalAmpmax::Inline(a) => a[c] = v,
+            LocalAmpmax::Heap(h) => h[c] = v,
+        }
+    }
 }
 
 /// Upper bound on a parallel batch, in long-block samples per channel
@@ -220,9 +254,11 @@ pub(crate) struct EncoderCore {
     pcm_current: i64,
     /// Frames appended to `pcm` but not yet passed to `wrote` (< 64).
     unwritten: usize,
-    /// The leading samples (fewer than `ch`) of a frame split across
-    /// `write` calls, converted.
-    partial: Vec<f32>,
+    /// Left sample of a stereo frame split across `write` calls.
+    partial: Option<f32>,
+    /// With more than two channels: the leading samples (fewer than `ch`)
+    /// of a frame split across `write` calls, converted.
+    partial_frame: Vec<f32>,
     /// `v->preextrapolate`.
     preextrapolated: bool,
     /// `v->eofflag`: 0 = open, > 0 = absolute end of real audio, -1 = done.
@@ -401,7 +437,8 @@ impl EncoderCore {
             base: 0,
             pcm_current: center0,
             unwritten: 0,
-            partial: Vec::with_capacity(ch - 1),
+            partial: None,
+            partial_frame: Vec::new(),
             preextrapolated: false,
             eofflag: 0,
             env: EnvelopeLookup::new(ch, minenergy),
@@ -450,19 +487,64 @@ impl EncoderCore {
     /// available.
     pub(crate) fn feed<T: Copy>(&mut self, samples: &[T], conv: impl Fn(T) -> f32) {
         debug_assert_eq!(self.eofflag, 0, "feed after finish");
+        if self.ch > 2 {
+            return self.feed_multichannel(samples, conv);
+        }
+        // Mono and stereo: the hot path, unchanged since before
+        // multichannel input existed (the producer thread runs it for
+        // every sample, and with `parallel` it bounds the throughput).
+        let mut s = samples;
+        if let Some(left) = self.partial {
+            let Some((&right, rest)) = s.split_first() else {
+                return;
+            };
+            self.partial = None;
+            self.pcm[0].push(left);
+            self.pcm[1].push(conv(right));
+            self.frames_appended(1);
+            s = rest;
+        }
+        let ch = self.ch;
+        let frames = s.len() / ch;
+        let mut i = 0;
+        while i < frames {
+            let n = (ANALYSIS_CHUNK - self.unwritten).min(frames - i);
+            let chunk = &s[i * ch..(i + n) * ch];
+            if ch == 1 {
+                self.pcm[0].extend(chunk.iter().map(|&x| conv(x)));
+            } else {
+                let (l, r) = self.pcm.split_at_mut(1);
+                let (l, r) = (&mut l[0], &mut r[0]);
+                for f in chunk.chunks_exact(2) {
+                    l.push(conv(f[0]));
+                    r.push(conv(f[1]));
+                }
+            }
+            self.frames_appended(n);
+            i += n;
+        }
+        if s.len() % ch != 0 {
+            self.partial = Some(conv(s[s.len() - 1]));
+        }
+    }
+
+    /// [`Self::feed`] for more than two channels.
+    #[inline(never)]
+    fn feed_multichannel<T: Copy>(&mut self, samples: &[T], conv: impl Fn(T) -> f32) {
         let ch = self.ch;
         let mut s = samples;
-        if !self.partial.is_empty() {
-            let need = (ch - self.partial.len()).min(s.len());
-            self.partial.extend(s[..need].iter().map(|&x| conv(x)));
+        if !self.partial_frame.is_empty() {
+            let need = (ch - self.partial_frame.len()).min(s.len());
+            self.partial_frame
+                .extend(s[..need].iter().map(|&x| conv(x)));
             s = &s[need..];
-            if self.partial.len() < ch {
+            if self.partial_frame.len() < ch {
                 return;
             }
-            for (buf, &v) in self.pcm.iter_mut().zip(&self.partial) {
+            for (buf, &v) in self.pcm.iter_mut().zip(&self.partial_frame) {
                 buf.push(v);
             }
-            self.partial.clear();
+            self.partial_frame.clear();
             self.frames_appended(1);
         }
         let frames = s.len() / ch;
@@ -470,27 +552,14 @@ impl EncoderCore {
         while i < frames {
             let n = (ANALYSIS_CHUNK - self.unwritten).min(frames - i);
             let chunk = &s[i * ch..(i + n) * ch];
-            match ch {
-                1 => self.pcm[0].extend(chunk.iter().map(|&x| conv(x))),
-                2 => {
-                    let (l, r) = self.pcm.split_at_mut(1);
-                    let (l, r) = (&mut l[0], &mut r[0]);
-                    for f in chunk.chunks_exact(2) {
-                        l.push(conv(f[0]));
-                        r.push(conv(f[1]));
-                    }
-                }
-                _ => {
-                    for (c, buf) in self.pcm.iter_mut().enumerate() {
-                        buf.extend(chunk[c..].iter().step_by(ch).map(|&x| conv(x)));
-                    }
-                }
+            for (c, buf) in self.pcm.iter_mut().enumerate() {
+                buf.extend(chunk[c..].iter().step_by(ch).map(|&x| conv(x)));
             }
             self.frames_appended(n);
             i += n;
         }
         let rest = &s[frames * ch..];
-        self.partial.extend(rest.iter().map(|&x| conv(x)));
+        self.partial_frame.extend(rest.iter().map(|&x| conv(x)));
     }
 
     fn frames_appended(&mut self, n: usize) {
@@ -541,7 +610,8 @@ impl EncoderCore {
         }
         // A dangling partial frame can't be encoded; drop it (the one-shot
         // API has always ignored a trailing incomplete frame).
-        self.partial.clear();
+        self.partial = None;
+        self.partial_frame.clear();
         if self.unwritten > 0 {
             self.wrote(self.unwritten);
         }
@@ -939,7 +1009,7 @@ impl EncoderCore {
         self.dump_first_block(&pcm[0], block);
         self.jobs.push(BlockJob {
             pcm,
-            local_ampmax: vec![0.0; self.ch],
+            local_ampmax: LocalAmpmax::new(self.ch),
             mode: self.block_mode(block),
             blocktype: block.blocktype,
             granulepos: block.granulepos,
@@ -1149,7 +1219,7 @@ fn block_spectra(job: &mut BlockJob, ch: usize) -> f32 {
             );
             pcm[..n2].copy_from_slice(&scratch.logfft[0][..n2]);
             pcm[n2..].copy_from_slice(&scratch.gmdct[0][..n2]);
-            job.local_ampmax[c] = local;
+            job.local_ampmax.set(c, local);
             if local > max_local {
                 max_local = local;
             }
@@ -1185,7 +1255,7 @@ fn analyze_batch(
             for (c, spectra) in job.pcm.iter().enumerate() {
                 scratch.logfft[c][..n2].copy_from_slice(&spectra[..n2]);
                 scratch.gmdct[c][..n2].copy_from_slice(&spectra[n2..]);
-                scratch.local_ampmax[c] = job.local_ampmax[c];
+                scratch.local_ampmax[c] = job.local_ampmax.get(c);
             }
             mapping0_forward_spectra(
                 n,
