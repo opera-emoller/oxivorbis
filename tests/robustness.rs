@@ -64,7 +64,7 @@ fn music(frames: usize, seed: u64) -> Vec<i16> {
 fn encode_music(pcm: &[i16]) -> Vec<u8> {
     oxivorbis::encode(
         pcm,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     )
@@ -73,7 +73,7 @@ fn encode_music(pcm: &[i16]) -> Vec<u8> {
 /// Streaming encode with a small parallel batch so a short input spans
 /// many batches.
 fn stream_music(pcm: &[i16], chunk: usize) -> Vec<u8> {
-    let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
     #[cfg(feature = "parallel")]
     enc.set_parallel_batch(3);
     let mut out = Vec::new();
@@ -172,7 +172,7 @@ fn encoder_moves_into_pool() {
     let pcm = music(3 * 44_100, 4);
     let want = encode_music(&pcm);
     let got = watchdog(WATCHDOG_SECS, move || {
-        let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+        let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
         #[cfg(feature = "parallel")]
         enc.set_parallel_batch(3);
         let (a, b) = pcm.split_at(pcm.len() / 2);
@@ -202,7 +202,7 @@ fn encoder_is_send_sync() {
     send_sync::<Encoder>();
     send_sync::<Options>();
     // And shareable by reference across threads.
-    let enc = Encoder::new(SampleRate::Hz44100, Channels::Mono, &Options::default());
+    let enc = Encoder::new(SampleRate::HZ_44100, Channels::Mono, &Options::default());
     std::thread::scope(|s| {
         s.spawn(|| {
             let _: &Encoder = &enc;
@@ -293,7 +293,7 @@ fn streaming_lag_is_bounded() {
     for q in [5.0f32, -1.0] {
         let opts = Options::default().with_quality(Quality::new(q).unwrap());
         // Sized inside the pool (64 threads), driven from this thread.
-        let mut enc = pool.install(|| Encoder::new(SampleRate::Hz44100, Channels::Stereo, &opts));
+        let mut enc = pool.install(|| Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &opts));
         let mut fed = 0usize;
         let mut emitted = 0u64;
         let mut max_lag = 0usize;
@@ -323,10 +323,10 @@ fn streaming_lag_is_bounded() {
 // ---------------------------------------------------------------------------
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::Hz44100, Channels::Stereo),
-    (SampleRate::Hz44100, Channels::Mono),
-    (SampleRate::Hz48000, Channels::Stereo),
-    (SampleRate::Hz48000, Channels::Mono),
+    (SampleRate::HZ_44100, Channels::Stereo),
+    (SampleRate::HZ_44100, Channels::Mono),
+    (SampleRate::HZ_48000, Channels::Stereo),
+    (SampleRate::HZ_48000, Channels::Mono),
 ];
 
 /// Decode `ogg` with lewton; panics if it isn't a valid stream. Returns
@@ -492,7 +492,7 @@ adversarial_tests! {
 /// Encode a short clip with `opts` and return lewton's view of the
 /// comment header: (vendor, [(key, value)]).
 fn decoded_comments(opts: &Options) -> (String, Vec<(String, String)>) {
-    let ogg = oxivorbis::encode(&[0i16; 4410], SampleRate::Hz44100, Channels::Mono, opts);
+    let ogg = oxivorbis::encode(&[0i16; 4410], SampleRate::HZ_44100, Channels::Mono, opts);
     let rdr = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(&ogg))
         .expect("lewton rejects the headers");
     (rdr.comment_hdr.vendor, rdr.comment_hdr.comment_list)

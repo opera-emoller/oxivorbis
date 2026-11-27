@@ -56,7 +56,7 @@ fn dump_corpus_one() {
     let encoder_tag: &[u8] = b"";
     let lw = oxivorbis::encode_with_serial_and_meta(
         &samples,
-        oxivorbis::SampleRate::Hz44100,
+        oxivorbis::SampleRate::HZ_44100,
         oxivorbis::Channels::Stereo,
         serial,
         Some(vendor),

@@ -107,10 +107,10 @@ fn check(
 }
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::Hz44100, Channels::Mono),
-    (SampleRate::Hz44100, Channels::Stereo),
-    (SampleRate::Hz48000, Channels::Mono),
-    (SampleRate::Hz48000, Channels::Stereo),
+    (SampleRate::HZ_44100, Channels::Mono),
+    (SampleRate::HZ_44100, Channels::Stereo),
+    (SampleRate::HZ_48000, Channels::Mono),
+    (SampleRate::HZ_48000, Channels::Stereo),
 ];
 
 fn signals_at(q: f32) {
@@ -162,7 +162,7 @@ fn parity_f32_out_of_range() {
                 &format!("gain {gain} {channels:?} q{q}"),
                 &s,
                 &s,
-                SampleRate::Hz44100,
+                SampleRate::HZ_44100,
                 channels,
                 q,
             );
@@ -212,7 +212,7 @@ fn parity_f32_subnormals_and_signed_zero() {
                 &format!("{what} q{q}"),
                 s,
                 s,
-                SampleRate::Hz44100,
+                SampleRate::HZ_44100,
                 Channels::Stereo,
                 q,
             );
@@ -246,7 +246,7 @@ fn parity_f32_non_finite_encoded_as_zero() {
             &format!("non-finite q{q}"),
             &raw,
             &zeroed,
-            SampleRate::Hz44100,
+            SampleRate::HZ_44100,
             Channels::Stereo,
             q,
         );
@@ -257,13 +257,13 @@ fn parity_f32_non_finite_encoded_as_zero() {
 #[test]
 fn parity_f32_odd_chunking() {
     let s = signal_f32(Sig::Noise, 12_345, 2, 48000, 8);
-    let oracle = oracle_f32(&s, SampleRate::Hz48000, Channels::Stereo, 0.5);
+    let oracle = oracle_f32(&s, SampleRate::HZ_48000, Channels::Stereo, 0.5);
     for chunks in [&[1usize][..], &[3], &[127, 2113], &[4095, 1]] {
         assert_same(
             &format!("chunks {chunks:?}"),
             &oxivorbis_f32(
                 &s,
-                SampleRate::Hz48000,
+                SampleRate::HZ_48000,
                 Channels::Stereo,
                 0.5,
                 &oracle,
@@ -282,11 +282,11 @@ fn parity_f32_matches_i16_scaling() {
     let floats: Vec<f32> = pcm.iter().map(|&x| x as f32 / 32768.0).collect();
     let raw: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let oracle_s16 = common::oracle_encode_raw(&raw, 44100, 2, 0.5, "s16");
-    let oracle_f = oracle_f32(&floats, SampleRate::Hz44100, Channels::Stereo, 0.5);
+    let oracle_f = oracle_f32(&floats, SampleRate::HZ_44100, Channels::Stereo, 0.5);
     assert_eq!(oracle_s16, oracle_f, "oracle s16 vs f32 input");
     let lw = oxivorbis_f32(
         &floats,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         0.5,
         &oracle_f,

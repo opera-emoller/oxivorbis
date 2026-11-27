@@ -29,7 +29,7 @@ fn check_ogg(bytes: &[u8]) {
 fn encode_silence_mono44_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(44100),
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Mono,
         &Options::default(),
     );
@@ -40,7 +40,7 @@ fn encode_silence_mono44_does_not_panic() {
 fn encode_silence_mono48_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(48000),
-        SampleRate::Hz48000,
+        SampleRate::HZ_48000,
         Channels::Mono,
         &Options::default(),
     );
@@ -51,7 +51,7 @@ fn encode_silence_mono48_does_not_panic() {
 fn encode_silence_stereo44_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(44100 * 2),
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
@@ -62,7 +62,7 @@ fn encode_silence_stereo44_does_not_panic() {
 fn encode_silence_stereo48_does_not_panic() {
     let bytes = oxivorbis::encode(
         &silence(48000 * 2),
-        SampleRate::Hz48000,
+        SampleRate::HZ_48000,
         Channels::Stereo,
         &Options::default(),
     );
@@ -74,7 +74,7 @@ fn encode_sine_stereo44_does_not_panic() {
     let samples = sine_stereo(44100, 44100);
     let bytes = oxivorbis::encode(
         &samples,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
@@ -85,7 +85,7 @@ fn encode_sine_stereo44_does_not_panic() {
 fn lewton_can_decode_our_silence_mono44() {
     let bytes = oxivorbis::encode(
         &silence(44100),
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Mono,
         &Options::default(),
     );
@@ -117,7 +117,7 @@ fn lewton_can_decode_our_silence_mono44() {
 fn lewton_can_decode_our_silence_stereo44() {
     let bytes = oxivorbis::encode(
         &silence(44100 * 2),
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
@@ -155,15 +155,15 @@ fn explicit_q5_matches_default_and_others_decode() {
     let samples = sine_stereo(44100, 44100);
     let a = oxivorbis::encode(
         &samples,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
-    let b = oxivorbis::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(5.0));
+    let b = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::Stereo, &at(5.0));
     assert_eq!(a, b);
     let mut prev_len = 0;
     for q in [-1.0f32, -0.5, 0.0, 2.5, 6.0, 10.0] {
-        let bytes = oxivorbis::encode(&samples, SampleRate::Hz44100, Channels::Stereo, &at(q));
+        let bytes = oxivorbis::encode(&samples, SampleRate::HZ_44100, Channels::Stereo, &at(q));
         check_ogg(&bytes);
         assert!(bytes.len() > prev_len, "q{q} not larger than lower quality");
         prev_len = bytes.len();
@@ -192,9 +192,16 @@ fn quality_range() {
 
 #[test]
 fn rate_and_channel_conversions() {
-    assert_eq!(SampleRate::try_from(44100), Ok(SampleRate::Hz44100));
+    assert_eq!(SampleRate::try_from(44100), Ok(SampleRate::HZ_44100));
+    assert_eq!(SampleRate::try_from(22050), Ok(SampleRate::HZ_22050));
+    assert_eq!(SampleRate::try_from(1).unwrap().hz(), 1);
+    assert_eq!(SampleRate::try_from(200_000), Ok(SampleRate::MAX));
+    assert!(SampleRate::try_from(0).is_err());
+    assert_eq!(
+        SampleRate::try_from(200_001).unwrap_err().to_string(),
+        "unsupported sample rate 200001"
+    );
     assert_eq!(SampleRate::try_from(48000).unwrap().hz(), 48000);
-    assert!(SampleRate::try_from(22050).is_err());
     assert_eq!(Channels::try_from(2u16), Ok(Channels::Stereo));
     assert_eq!(Channels::Mono.count(), 1);
     assert!(Channels::try_from(3u16).is_err());
@@ -211,13 +218,13 @@ fn default_headers_are_deterministic() {
     let pcm = sine_stereo(5000, 44100);
     let a = oxivorbis::encode(
         &pcm,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
     let b = oxivorbis::encode(
         &pcm,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );
@@ -243,7 +250,7 @@ fn options_set_serial_vendor_and_comments() {
         .with_vendor("my vendor")
         .with_comment("TITLE", "Tone")
         .with_comment("ARTIST", "A=B");
-    let ogg = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &opts);
+    let ogg = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &opts);
     assert_eq!(
         u32::from_le_bytes(ogg[14..18].try_into().unwrap()),
         0xDEAD_BEEF
@@ -261,7 +268,7 @@ fn options_set_serial_vendor_and_comments() {
     // The audio itself is unaffected by header options.
     let plain = oxivorbis::encode(
         &pcm,
-        SampleRate::Hz44100,
+        SampleRate::HZ_44100,
         Channels::Stereo,
         &Options::default(),
     );

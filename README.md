@@ -55,7 +55,7 @@ use oxivorbis::{Channels, Options, SampleRate};
 let pcm = vec![0i16; 44_100 * 2];
 
 // Quality 5, deterministic default serial, vendor "oxivorbis <version>".
-let ogg: Vec<u8> = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &Options::default());
+let ogg: Vec<u8> = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &Options::default());
 assert_eq!(&ogg[..4], b"OggS");
 ```
 
@@ -67,7 +67,7 @@ use oxivorbis::{Channels, Encoder, Options, SampleRate};
 use std::io::Write;
 
 fn main() -> std::io::Result<()> {
-    let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &Options::default());
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &Options::default());
     let mut out = std::fs::File::create("out.ogg")?;
     for chunk in vec![0i16; 10 * 44_100 * 2].chunks(4096) {
         // e.g. blocks coming from a decoder
@@ -86,10 +86,10 @@ use oxivorbis::{Channels, Encoder, Options, SampleRate};
 
 let floats: Vec<f32> = (0..48_000).map(|i| (i as f32 * 0.0576).sin() * 0.5).collect();
 
-let ogg = oxivorbis::encode_f32(&floats, SampleRate::Hz48000, Channels::Mono, &Options::default());
+let ogg = oxivorbis::encode_f32(&floats, SampleRate::HZ_48000, Channels::Mono, &Options::default());
 
 // Encoder::write_f32 is the streaming form; it can be mixed with write().
-let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Mono, &Options::default());
+let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Mono, &Options::default());
 let mut streamed = enc.write_f32(&floats).to_vec();
 streamed.extend_from_slice(&enc.finish());
 assert_eq!(streamed, ogg);

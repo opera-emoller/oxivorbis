@@ -114,11 +114,7 @@ fn oxivorbis_encode<S: Sample>(
     tag: &[u8],
 ) -> Vec<u8> {
     debug_assert!(quality_supported(quality));
-    let r = match rate {
-        44100 => oxivorbis::SampleRate::Hz44100,
-        48000 => oxivorbis::SampleRate::Hz48000,
-        _ => unreachable!("rate validated at CLI"),
-    };
+    let r = oxivorbis::SampleRate::new(rate).expect("rate validated at CLI");
     let c = match channels {
         1 => oxivorbis::Channels::Mono,
         2 => oxivorbis::Channels::Stereo,
@@ -262,8 +258,8 @@ fn parse_args() -> Config {
         std::process::exit(2);
     }
     for &r in &rates {
-        if r != 44100 && r != 48000 {
-            eprintln!("parity-fuzz: unsupported rate {r} (44100 or 48000)");
+        if oxivorbis::SampleRate::new(r).is_none() {
+            eprintln!("parity-fuzz: unsupported rate {r} (1..=200000)");
             std::process::exit(2);
         }
     }

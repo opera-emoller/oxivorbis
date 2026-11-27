@@ -37,7 +37,7 @@ fn q5_setup_sync_bytes_and_size() {
 fn q5_header_packets() -> Vec<Vec<u8>> {
     let ogg = oxivorbis::encode(
         &[0i16; 1024],
-        oxivorbis::SampleRate::Hz44100,
+        oxivorbis::SampleRate::HZ_44100,
         oxivorbis::Channels::Mono,
         &oxivorbis::Options::default(),
     );

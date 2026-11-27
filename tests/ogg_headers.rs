@@ -29,7 +29,7 @@ fn write_header_pages(rate: SampleRate, channels: Channels, serial: u32) -> Vec<
 #[test]
 fn ogg_headers_mono44_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_mono44.bin"));
-    let actual = write_header_pages(SampleRate::Hz44100, Channels::Mono, serial);
+    let actual = write_header_pages(SampleRate::HZ_44100, Channels::Mono, serial);
     let expected = include_bytes!("vectors/ogg/headers_mono44.ogg");
     assert_eq!(
         actual.as_slice(),
@@ -41,7 +41,7 @@ fn ogg_headers_mono44_match_oracle() {
 #[test]
 fn ogg_headers_mono48_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_mono48.bin"));
-    let actual = write_header_pages(SampleRate::Hz48000, Channels::Mono, serial);
+    let actual = write_header_pages(SampleRate::HZ_48000, Channels::Mono, serial);
     let expected = include_bytes!("vectors/ogg/headers_mono48.ogg");
     assert_eq!(
         actual.as_slice(),
@@ -53,7 +53,7 @@ fn ogg_headers_mono48_match_oracle() {
 #[test]
 fn ogg_headers_stereo44_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_stereo44.bin"));
-    let actual = write_header_pages(SampleRate::Hz44100, Channels::Stereo, serial);
+    let actual = write_header_pages(SampleRate::HZ_44100, Channels::Stereo, serial);
     let expected = include_bytes!("vectors/ogg/headers_stereo44.ogg");
     assert_eq!(
         actual.as_slice(),
@@ -65,7 +65,7 @@ fn ogg_headers_stereo44_match_oracle() {
 #[test]
 fn ogg_headers_stereo48_match_oracle() {
     let serial = u32::from_le_bytes(*include_bytes!("vectors/ogg/serial_stereo48.bin"));
-    let actual = write_header_pages(SampleRate::Hz48000, Channels::Stereo, serial);
+    let actual = write_header_pages(SampleRate::HZ_48000, Channels::Stereo, serial);
     let expected = include_bytes!("vectors/ogg/headers_stereo48.ogg");
     assert_eq!(
         actual.as_slice(),

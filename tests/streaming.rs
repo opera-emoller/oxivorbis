@@ -9,10 +9,10 @@ use common::{ALL_SIGS, Rng, Sig, ch_count, rate_hz, signal_f32, signal_i16};
 use oxivorbis::{Channels, Encoder, Options, Quality, SampleRate};
 
 const CONFIGS: [(SampleRate, Channels); 4] = [
-    (SampleRate::Hz44100, Channels::Mono),
-    (SampleRate::Hz44100, Channels::Stereo),
-    (SampleRate::Hz48000, Channels::Mono),
-    (SampleRate::Hz48000, Channels::Stereo),
+    (SampleRate::HZ_44100, Channels::Mono),
+    (SampleRate::HZ_44100, Channels::Stereo),
+    (SampleRate::HZ_48000, Channels::Mono),
+    (SampleRate::HZ_48000, Channels::Stereo),
 ];
 
 fn opts(q: f32) -> Options {
@@ -216,8 +216,8 @@ fn mixed_i16_and_f32_writes() {
     let pcm = signal_i16(Sig::Transients, 20_000, 2, 44100, 5);
     let floats: Vec<f32> = pcm.iter().map(|&x| x as f32 / 32768.0).collect();
     let o = Options::default();
-    let want = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
-    let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &o);
+    let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o);
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
     let mut out = Vec::new();
     let mut i = 0;
     let mut rng = Rng(77);
@@ -239,7 +239,7 @@ fn mixed_i16_and_f32_writes() {
 #[test]
 fn headers_first_and_trailing_half_frame() {
     let o = Options::default();
-    let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &o);
+    let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
     let headers = enc.write(&[]).to_vec();
     assert_eq!(&headers[..4], b"OggS");
     assert!(enc.write(&[]).is_empty());
@@ -248,10 +248,10 @@ fn headers_first_and_trailing_half_frame() {
     out.extend_from_slice(enc.write(&pcm));
     out.extend_from_slice(enc.write(&[123]));
     out.extend_from_slice(&enc.finish());
-    assert!(out == oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o));
     let mut odd = pcm.clone();
     odd.push(123);
-    assert!(out == oxivorbis::encode(&odd, SampleRate::Hz44100, Channels::Stereo, &o));
+    assert!(out == oxivorbis::encode(&odd, SampleRate::HZ_44100, Channels::Stereo, &o));
 }
 
 /// A 60 s input produces almost all of its pages before `finish` (the
@@ -260,7 +260,7 @@ fn headers_first_and_trailing_half_frame() {
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
 fn streaming_emits_pages_before_finish() {
-    let rate = SampleRate::Hz44100;
+    let rate = SampleRate::HZ_44100;
     let pcm = signal_i16(Sig::Noise, 60 * 44100, 2, 44100, 9);
     let o = Options::default();
     let mut enc = Encoder::new(rate, Channels::Stereo, &o);
@@ -299,7 +299,7 @@ fn streaming_emits_pages_before_finish() {
 #[cfg_attr(debug_assertions, ignore = "slow in debug builds; run with --release")]
 fn buffer_is_bounded_over_10_minutes() {
     for (q, minutes, limit) in [(5.0f32, 10, 12_000), (-1.0, 2, 20_000)] {
-        let mut enc = Encoder::new(SampleRate::Hz48000, Channels::Stereo, &opts(q));
+        let mut enc = Encoder::new(SampleRate::HZ_48000, Channels::Stereo, &opts(q));
         let mut max = 0;
         let second = signal_i16(Sig::Transients, 48_000, 2, 48_000, 3);
         for _ in 0..minutes * 60 {
@@ -333,7 +333,7 @@ fn extreme_f32_does_not_panic() {
                     }
                 })
                 .collect();
-            let ogg = oxivorbis::encode_f32(&s, SampleRate::Hz44100, Channels::Stereo, &opts(q));
+            let ogg = oxivorbis::encode_f32(&s, SampleRate::HZ_44100, Channels::Stereo, &opts(q));
             assert_eq!(&ogg[..4], b"OggS");
         }
     }
@@ -350,9 +350,9 @@ fn parallel_batch_sizes_give_identical_bytes() {
     ] {
         let pcm = signal_i16(sig, 5 * 44100, 2, 44100, 4);
         let o = opts(q);
-        let want = oxivorbis::encode(&pcm, SampleRate::Hz44100, Channels::Stereo, &o);
+        let want = oxivorbis::encode(&pcm, SampleRate::HZ_44100, Channels::Stereo, &o);
         for batch in [1usize, 3, 256] {
-            let mut enc = Encoder::new(SampleRate::Hz44100, Channels::Stereo, &o);
+            let mut enc = Encoder::new(SampleRate::HZ_44100, Channels::Stereo, &o);
             enc.set_parallel_batch(batch);
             let mut out = Vec::new();
             for c in pcm.chunks(7777) {

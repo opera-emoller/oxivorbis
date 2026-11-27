@@ -53,10 +53,11 @@ impl SweepConfig {
         let parsed = s.split_once(['x', 'X']).and_then(|(r, c)| {
             let rate: u32 = r.trim().parse().ok()?;
             let ch: u16 = c.trim().parse().ok()?;
-            (matches!(rate, 44100 | 48000) && matches!(ch, 1 | 2)).then_some((rate, ch))
+            (oxivorbis::SampleRate::new(rate).is_some() && matches!(ch, 1 | 2))
+                .then_some((rate, ch))
         });
         let Some((rate, ch)) = parsed else {
-            panic!("CORPUS_CONFIGS entry {s:?} is not <44100|48000>x<1|2>");
+            panic!("CORPUS_CONFIGS entry {s:?} is not <rate 1..=200000>x<1|2>");
         };
         SweepConfig { rate, ch }
     }
@@ -69,15 +70,16 @@ impl SweepConfig {
     /// Human description used in the summary header, e.g. `stereo, 44.1k`.
     fn describe(&self) -> String {
         let ch = if self.ch == 1 { "mono" } else { "stereo" };
-        let rate = if self.rate == 44100 { "44.1k" } else { "48k" };
+        let rate = if self.rate % 1000 == 0 {
+            format!("{}k", self.rate / 1000)
+        } else {
+            format!("{}k", self.rate as f64 / 1000.0)
+        };
         format!("{ch}, {rate}")
     }
 
     fn oxivorbis(&self) -> (oxivorbis::SampleRate, oxivorbis::Channels) {
-        let r = match self.rate {
-            44100 => oxivorbis::SampleRate::Hz44100,
-            _ => oxivorbis::SampleRate::Hz48000,
-        };
+        let r = oxivorbis::SampleRate::new(self.rate).expect("validated in parse");
         let c = match self.ch {
             1 => oxivorbis::Channels::Mono,
             _ => oxivorbis::Channels::Stereo,
