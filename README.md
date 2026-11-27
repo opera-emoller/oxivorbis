@@ -123,6 +123,43 @@ cargo run --release --example encode_wav -- input.wav output.ogg 6
 ffmpeg -i song.flac -f s16le -ar 44100 -ac 2 - | cargo run --release --example stream -- 44100 2 > song.ogg
 ```
 
+## Writing to files and streams
+
+`OggWriter` owns an `Encoder` and any `std::io::Write` sink (a file,
+socket, `Vec<u8>`, ...) and writes each page as soon as it is complete.
+`finish` ends the stream, flushes the sink and returns it. Planar input
+(one slice per channel, as most decoders and DSP crates produce) is
+accepted directly, by `OggWriter` and by `Encoder::write_planar_f32` /
+`write_planar_i16`, with the same bytes as interleaving it first:
+
+```rust,no_run
+use oxivorbis::{Channels, OggWriter, Options, SampleRate};
+use std::{fs::File, io::BufWriter};
+
+fn main() -> std::io::Result<()> {
+    let sink = BufWriter::new(File::create("out.ogg")?);
+    let mut ogg = OggWriter::new(sink, SampleRate::Hz48000, Channels::Stereo, &Options::default())?;
+    let (left, right) = (vec![0.0f32; 4800], vec![0.0f32; 4800]);
+    for _ in 0..10 {
+        ogg.write_planar_f32(&[&left, &right])?; // or write_i16 / write_f32
+    }
+    ogg.finish()?;
+    Ok(())
+}
+```
+
+`S16LeWriter` takes raw interleaved s16le bytes through `std::io::Write`,
+so `std::io::copy(&mut stdin, &mut writer)` encodes a PCM stream. Sink
+errors are returned as `io::Error`; after one, the stream in the sink
+is incomplete. More runnable programs: `encode_file` (streams a WAV into
+a file through `S16LeWriter`), `planar` (synthesized planar audio) and
+`transcode` (MP3, FLAC, WAV or Vorbis decoded with Symphonia, a
+dev-dependency only):
+
+```sh
+cargo run --release --example transcode -- song.mp3 song.ogg 6
+```
+
 ## Supported input
 
 | | |
