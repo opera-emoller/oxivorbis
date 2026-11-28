@@ -9,11 +9,6 @@ repository = "https://github.com/opera-emoller/oxivorbis"
 categories = ["command-line-utilities", "multimedia::audio"]
 keywords = ["vorbis", "ogg", "oggenc", "audio", "encoder"]
 readme = "README.md"
-# Not published yet. To publish: publish the `oxivorbis` library first,
-# make sure the `version` on the dependency below matches the API this
-# crate builds against, and drop this line. `cargo install oxivorbis-cli`
-# then works; `cargo install --path tools/oxivorbis-cli` works today.
-publish = false
 
 [[bin]]
 name = "oxivorbis"

@@ -18,12 +18,14 @@ oxivorbis -q 6 -M 192 song.wav            # quality 6, at most 192 kb/s
 ## Install
 
 ```sh
-cargo install --path tools/oxivorbis-cli                       # from a checkout
-cargo install --path tools/oxivorbis-cli --features parallel   # multi-core per file
+cargo install oxivorbis-cli                       # from crates.io
+cargo install oxivorbis-cli --features parallel   # multi-core per file
+cargo install --path tools/oxivorbis-cli          # from a checkout
 ```
 
-Once it is published to crates.io, `cargo install oxivorbis-cli` will
-install it too. The binary is called `oxivorbis`. The minimum supported
+Prebuilt binaries (with `parallel`) for macOS, Linux and Windows are on
+the [releases page](https://github.com/opera-emoller/oxivorbis/releases).
+The binary is called `oxivorbis`. The minimum supported
 Rust version is 1.85, the same as the library's.
 
 ### Shell completions and man page

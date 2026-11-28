@@ -480,6 +480,18 @@ its unit tests `include_str!`, and the top-level docs and licenses (see
 `include` in `Cargo.toml`). Check the contents with
 `cargo package --list` and `cargo publish --dry-run`.
 
+## Releasing
+
+1. Bump `version` in `Cargo.toml`, `ffi/Cargo.toml` and
+   `tools/oxivorbis-cli/Cargo.toml` (and the CLI's `oxivorbis`
+   dependency on a minor bump).
+2. `cargo publish -p oxivorbis -p oxivorbis-cli` (the library goes first).
+3. Tag `vX.Y.Z` and push the tag. `.github/workflows/release.yml` builds
+   the CLI and the C library for each target with
+   `tools/release/package.sh`, runs them, and creates the GitHub release.
+   Run it by hand (`workflow_dispatch`) to check the builds without
+   releasing.
+
 ## Licensing
 
 Contributions are accepted under Apache-2.0. The vendored libvorbis

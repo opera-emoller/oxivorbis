@@ -7,6 +7,12 @@ the Rust API, and therefore to libvorbis 1.3.7. The header is
 
 ## Build
 
+Prebuilt archives for macOS (arm64, x86_64), Linux (x86_64, arm64; glibc
+2.35+) and Windows (x64, MSVC) are on the
+[releases page](https://github.com/opera-emoller/oxivorbis/releases):
+`include/`, the shared and static libraries, a relocatable pkg-config
+file (Unix) and a CMake package (serial build). Or build it yourself:
+
 ```sh
 cargo build --release -p oxivorbis-ffi                      # serial
 cargo build --release -p oxivorbis-ffi --features parallel  # multi-core

@@ -1,0 +1,102 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds the CLI and the C library for each target
+# (tools/release/package.sh), checks the archives, and publishes them as
+# a GitHub release. Publishing the crates to crates.io is done by hand.
+on:
+  push:
+    tags: ["v*"]
+  # Manual runs build and check the archives but don't create a release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin, run: true }
+          - { os: macos-14, target: x86_64-apple-darwin, run: false }
+          # The oldest available runners, for the widest glibc support.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, run: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, run: true }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, run: true }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "v$version" || {
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version $version"; exit 1; }
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          cache: false
+      - name: Build and package
+        run: tools/release/package.sh ${{ matrix.target }} dist
+      - name: Check the CLI runs
+        if: matrix.run
+        run: |
+          mkdir check && cd check
+          for a in ../dist/oxivorbis-cli-*; do
+            case "$a" in *.zip) 7z x -bso0 "$a" ;; *) tar -xzf "$a" ;; esac
+          done
+          ./oxivorbis-cli-*/oxivorbis --version
+      - name: Check the C library passes its C test (shared via pkg-config, and static)
+        if: matrix.run && !contains(matrix.target, 'windows')
+        run: |
+          command -v pkg-config >/dev/null || brew install pkgconf
+          mkdir -p check && cd check
+          tar -xzf ../dist/liboxivorbis-*.tar.gz
+          d="$(echo "$PWD"/liboxivorbis-*)"
+          export PKG_CONFIG_PATH="$d/lib/pkgconfig"
+          t=../ffi/tests/c/test_oxivorbis.c
+          cc -std=c99 "$t" -o test_shared $(pkg-config --cflags --libs oxivorbis) -Wl,-rpath,"$d/lib"
+          cc -std=c99 "$t" -o test_static $(pkg-config --cflags oxivorbis) "$d/lib/liboxivorbis.a" \
+            $(pkg-config --static --libs-only-l oxivorbis | sed 's/-loxivorbis//')
+          mkdir out1 out2 && ./test_shared out1 && ./test_static out2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          A pure-Rust Ogg Vorbis encoder that produces the same bytes as libvorbis 1.3.7.
+
+          - Rust library: `cargo add oxivorbis` ([crates.io](https://crates.io/crates/oxivorbis), [docs.rs](https://docs.rs/oxivorbis))
+          - Command-line encoder: `cargo install oxivorbis-cli`, or a prebuilt `oxivorbis-cli-*` archive below (built with the `parallel` feature)
+          - C library: the `liboxivorbis-*` archives below hold `include/oxivorbis.h`, the shared and static libraries, a pkg-config file and a CMake package (serial build). See [ffi/README.md](https://github.com/opera-emoller/oxivorbis/blob/main/ffi/README.md) for usage. The macOS dylib's install name is `@rpath/liboxivorbis.dylib`.
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --title "oxivorbis $GITHUB_REF_NAME" --notes-file notes.md

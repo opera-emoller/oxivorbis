@@ -104,12 +104,12 @@ channel layout in detail.
 
 ## Command-line encoder
 
-[`tools/oxivorbis-cli`](tools/oxivorbis-cli/README.md) builds an
+[`oxivorbis-cli`](tools/oxivorbis-cli/README.md) installs an
 `oxivorbis` binary that works much like `oggenc`, for WAV (8 to 64-bit,
 integer or float, RF64) and raw PCM:
 
 ```sh
-cargo install --path tools/oxivorbis-cli   # add --features parallel for multi-core
+cargo install oxivorbis-cli   # add --features parallel for multi-core
 oxivorbis -q 6 -a "Artist" -t "Title" track.wav -o out.ogg
 ffmpeg -i in.flac -f wav - | oxivorbis - > out.ogg
 ```
@@ -118,7 +118,9 @@ ffmpeg -i in.flac -f wav - | oxivorbis - > out.ogg
 
 [`ffi/`](ffi/README.md) builds `liboxivorbis` with a C header
 ([`ffi/include/oxivorbis.h`](ffi/include/oxivorbis.h)), byte-identical
-to the Rust API, with streaming, callbacks and the bitrate modes:
+to the Rust API, with streaming, callbacks and the bitrate modes.
+Prebuilt libraries for macOS, Linux and Windows are on the
+[releases page](https://github.com/opera-emoller/oxivorbis/releases):
 
 ```c
 oxv_buffer ogg;
@@ -136,6 +138,10 @@ contraction and fed 64-frame chunks. Headers match given the same serial,
 vendor and comments; oxivorbis's defaults are fixed, so its output is
 deterministic (and not byte-identical to `oggenc`, which uses a random
 serial).
+
+The output for a given input and options is part of the API: it changes
+only in a semver-breaking release (for example, a move to a newer
+libvorbis as the reference).
 
 This is tested against a vendored reference build: a 6653-file real-audio
 corpus across rate templates, qualities, channel layouts and bitrate
