@@ -77,7 +77,7 @@ The header documents each function. A few rules apply throughout:
   `OXV_SAMPLE_RATE_MAX` (200000). The channel count is a plain `uint32_t`
   from 1 to `OXV_CHANNELS_MAX` (255), in **Vorbis channel order** (5.1:
   front left, center, front right, rear left, rear right, LFE; see the
-  [main README](../README.md#multichannel-and-51)). The library never
+  [reference](../docs/reference.md#multichannel-and-51)). The library never
   reorders channels; WAV/SMPTE-ordered input needs reordering first.
   Anything else returns `OXV_STATUS_UNSUPPORTED`.
 - Interleaved functions count **samples** (frames × channels). A partial

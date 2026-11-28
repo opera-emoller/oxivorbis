@@ -21,6 +21,7 @@ include = [
     "/examples/**",
     "/tools/oracle-encoder/dsp_manifest.txt",
     "/README.md",
+    "/docs/reference.md",
     "/CONTRIBUTING.md",
     "/LICENSE",
     "/NOTICE",

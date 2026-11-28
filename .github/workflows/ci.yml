@@ -1,12 +1,12 @@
 name: CI
 
 # Docs that aren't compiled don't need CI. The root README.md is not in
-# this list: its code blocks run as doctests.
+# this list, nor is docs/reference.md: their code blocks run as doctests.
 on:
   push:
     branches: [main]
     paths-ignore:
-      - "docs/**"
+      - "docs/streaming-design.md"
       - "CONTRIBUTING.md"
       - "ffi/README.md"
       - "tools/**/README.md"
@@ -14,7 +14,7 @@ on:
       - "NOTICE"
   pull_request:
     paths-ignore:
-      - "docs/**"
+      - "docs/streaming-design.md"
       - "CONTRIBUTING.md"
       - "ffi/README.md"
       - "tools/**/README.md"

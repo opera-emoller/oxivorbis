@@ -103,8 +103,10 @@
 //! The crate has no other public features; `oracle` and `__internal` exist
 //! only for this crate's own test suite and are not part of the API.
 //!
-//! See the [README](https://github.com/opera-emoller/oxivorbis#readme) for
-//! performance numbers, and `CONTRIBUTING.md` for how parity is tested.
+//! See the [README](https://github.com/opera-emoller/oxivorbis#readme) and
+//! [reference](https://github.com/opera-emoller/oxivorbis/blob/main/docs/reference.md)
+//! for performance numbers and the full parity status, and
+//! `CONTRIBUTING.md` for how parity is tested.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -114,6 +116,10 @@
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/reference.md")]
+struct ReferenceDoctests;
 
 #[allow(dead_code)]
 mod tables;
